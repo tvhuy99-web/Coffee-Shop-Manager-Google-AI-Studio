@@ -556,21 +556,20 @@ pub fn resolve_loose_ball(c: &mut dyn MatchRuntime) {
         .collect();
 
     for (pid, side, rx, ry) in player_snapshots {
-        let p = match c.input().team(side).player(&pid) {
-            Some(p) => p,
+        let attributes = match c.input().team(side).player(&pid) {
+            Some(p) => p.attributes.clone(),
             None => continue,
         };
-        let a = &p.attributes;
         let dist = geometry::distance(rx, ry, bx, by);
         let mdp = c.state().team(side).match_day_performance;
         let roll = c.rng_mut().next_double() * 38.0;
         let score = (25.0 - dist).max(0.0) * 2.0
-            + a.get(8) as f64 * 0.03
-            + a.get(9) as f64 * 0.07
-            + a.get(17) as f64 * 0.14
-            + a.get(13) as f64 * 0.10
-            + a.get(15) as f64 * 0.04
-            + a.get(16) as f64 * 0.04
+            + attributes.get(8) as f64 * 0.03
+            + attributes.get(9) as f64 * 0.07
+            + attributes.get(17) as f64 * 0.14
+            + attributes.get(13) as f64 * 0.10
+            + attributes.get(15) as f64 * 0.04
+            + attributes.get(16) as f64 * 0.04
             + mdp * 0.40
             + if last_team == Some(side) { 0.0 } else { 7.0 }
             + roll;
