@@ -98,3 +98,16 @@ không còn Java, **không** có nghĩa đã được chứng nhận hoạt đ�
 
 Bản sửa này tập trung vào lỗi chặn build/kiểm thử, không thay đổi công thức mô phỏng,
 dữ liệu cầu thủ, các câu bình luận hoặc nội dung âm thanh.
+
+
+## Bản phát hành chính thức Android 1.0
+
+- `versionName = 1.0`, `versionCode = 1`. Mỗi lần cập nhật APK sau bản 1.0 cần tăng `versionCode` để Android chấp nhận nâng cấp.
+- GitHub Actions `.github/workflows/build-apk.yml` chỉ phát hành bản **release** đã ký, với Rust **ARM64 tối ưu `--release`**. Không phân phối APK debug để đo hiệu suất.
+- Áp dụng cơ chế ký từ kho `Abcd-huy`: ở **repository Football Match Lab**, cấu hình ba GitHub Actions secrets `KEYSTORE`, `KEYSTORE_PROPERTIES`, `KEYSTORE_PASSWORD`. Hai secret đầu chứa nội dung file keystore và file `keystore.properties` đã được mã hóa GPG, secret cuối chứa mật khẩu giải mã. Công việc build giải mã vào `app/release.keystore` và `keystore.properties`, dùng Gradle release signing và xóa file mã hóa tạm. Không commit khóa riêng.
+- Nội dung `keystore.properties` sau giải mã phải có `storeFile=release.keystore` (đường dẫn tính từ thư mục `app`), `storePassword`, `keyAlias`, `keyPassword`. Tuyệt đối không dùng alias `androiddebugkey`.
+- Secrets được giới hạn theo repository: cấu hình trên `Abcd-huy` không tự có ở repository Football Match Lab. Nếu thiếu một secret, build dừng và **không phát hành APK không ký**.
+- Chạy workflow khi push lên `main` hoặc qua `Actions → Build signed Football Match Lab Release → Run workflow`. Sau khi thành công, APK ở `Releases` của GitHub và mục artifact của Actions; cùng bằng chứng chữ ký và SHA-256.
+- Quy trình bắt buộc: kiểm tra dữ liệu và bình luận, chạy `cargo test`, biên dịch Rust ARM64 ở chế độ release, `assembleRelease`, kiểm tra `libfootball_match_engine.so`, `apksigner verify`, package ID và phiên bản, rồi mới upload.
+- Vì phiên bản cũ có `versionCode=97`, muốn cài bản mới `versionCode=1` cùng tên gói, cần sao lưu dữ liệu/cài đặt rồi gỡ bản cũ trước khi cài. Không thể cập nhật đè bản 97 bằng bản 1 theo cách thông thường.
+- APK release đã ký là build chính thức để **đo hiệu suất thực tế**; bản thân nó chưa chứng minh bình luận, TalkBack và mô phỏng đều không có lỗi. Cần tiếp tục kiểm tra trên thiết bị.
