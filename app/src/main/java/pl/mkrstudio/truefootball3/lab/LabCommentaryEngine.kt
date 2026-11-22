@@ -160,7 +160,12 @@ class LabCommentaryEngine(
         val isSwitchPlay = abs(ballX - prevBallX) >= 32 || meta?.optString("passType") == "SWITCH"
 
         return when (kind) {
-            LabEventType.MATCH_STARTED, LabEventType.KICKOFF -> listOf("cv3_match_phase")
+            LabEventType.MATCH_STARTED -> listOf("cv3_match_phase")
+            LabEventType.KICKOFF -> {
+                // A restart after a goal is not another match opening.
+                if (minute <= 2 && homeGoals == 0 && awayGoals == 0) listOf("cv3_match_phase")
+                else emptyList()
+            }
             LabEventType.TACTICAL_PHASE_CHANGED -> {
                 when {
                     tracker.isTenMen(side) -> listOf("cv3_ten_men", "cv3_match_phase")
@@ -355,7 +360,22 @@ class LabCommentaryEngine(
         meta: JSONObject?,
         salt: Long = 0L
     ): String? {
-        val candidates = templatesForAny(prefixes)
+        // FIRST_TOUCH events place the receiver in actor, while PASS_COMPLETED uses target.
+        // Never silently substitute the opposing team for a missing receiver.
+        val receiverName = if (kind == LabEventType.FIRST_TOUCH) actorName else targetName
+        val candidates = templatesForAny(prefixes).filter { (key, template) ->
+            val phaseLine = if (key.startsWith("cv3_match_phase_")) {
+                key.removePrefix("cv3_match_phase_").toIntOrNull()
+            } else null
+            val phaseValid = when {
+                phaseLine == null -> true
+                kind == LabEventType.MATCH_STARTED -> phaseLine in 1..3
+                kind == LabEventType.KICKOFF -> phaseLine == 4
+                kind == LabEventType.TACTICAL_PHASE_CHANGED -> phaseLine in 5..10
+                else -> false
+            }
+            phaseValid && (!template.contains("{RECEIVER}") || receiverName.isNotBlank())
+        }
         if (candidates.isEmpty()) return null
         val seq = ev.optLong("sequence", 0L)
         val fresh = candidates.filter { !tracker.isTemplateOnCooldown(it.first) }
@@ -415,7 +435,7 @@ class LabCommentaryEngine(
             "SHOOTER" to safeActor,
             "DEFENDER" to safeActor,
             "GOALKEEPER" to safeActor,
-            "RECEIVER" to safeTarget,
+            "RECEIVER" to receiverName,
             "PRESSURED_PLAYER" to safeTarget,
             "PLAYER_OUT" to safeActor,
             "PLAYER_IN" to safeTarget,

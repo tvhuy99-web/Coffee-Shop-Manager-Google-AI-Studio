@@ -39,4 +39,4 @@ for abi in "${ABIS[@]}"; do
   fi
   echo "BUILT $so ($(wc -c < "$so") bytes)"
 done
-printf 'NEXT: ./gradlew :app:assembleDebug\n'
+printf 'NEXT: ./gradlew :app:assembleRelease (requires signing key)\n'

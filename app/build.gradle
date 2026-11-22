@@ -1,6 +1,14 @@
 apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 
+// The release key is a stable private keystore, decrypted by CI into
+// keystore.properties and app/release.keystore. Never commit either file.
+def signingFile = rootProject.file("keystore.properties")
+def releaseSigning = new Properties()
+if (signingFile.isFile()) {
+    signingFile.withInputStream { stream -> releaseSigning.load(stream) }
+}
+
 android {
     namespace "pl.mkrstudio.truefootball3"
     compileSdk 35
@@ -10,8 +18,8 @@ android {
         applicationId "pl.mkrstudio.truefootball3"
         minSdk 26
         targetSdk 29
-        versionCode 97
-        versionName "3.20.5-transfer-perf-v97"
+        versionCode 1
+        versionName "1.0"
         multiDexEnabled true
     }
 
@@ -22,12 +30,27 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
+    signingConfigs {
+        if (signingFile.isFile()) {
+            release {
+                storeFile file(releaseSigning.getProperty("storeFile", "release.keystore"))
+                storePassword releaseSigning.getProperty("storePassword", "")
+                keyAlias releaseSigning.getProperty("keyAlias", "")
+                keyPassword releaseSigning.getProperty("keyPassword", "")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             minifyEnabled false
         }
         release {
             minifyEnabled false
+            // Never sign the release variant with the Android debug key.
+            if (signingFile.isFile()) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 
@@ -142,4 +165,30 @@ tasks.register("validateCommentaryTokens") {
 
 tasks.named("preBuild").configure {
     dependsOn(tasks.named("validateCommentaryTokens"))
+}
+
+
+// A release build must fail, not silently emit an unsigned APK.
+tasks.register("requireProductionSigning") {
+    group = "verification"
+    doLast {
+        if (!signingFile.isFile()) {
+            throw new GradleException("Missing keystore.properties: production-signed release required.")
+        }
+        ["storeFile", "storePassword", "keyAlias", "keyPassword"].each { field ->
+            if (!releaseSigning.getProperty(field)?.trim()) {
+                throw new GradleException("Missing release signing property: " + field)
+            }
+        }
+        File keystore = file(releaseSigning.getProperty("storeFile"))
+        if (!keystore.isFile()) {
+            throw new GradleException("Release signing keystore missing: " + keystore)
+        }
+        if (releaseSigning.getProperty("keyAlias").equalsIgnoreCase("androiddebugkey")) {
+            throw new GradleException("Public Android debug signing key is forbidden for release.")
+        }
+    }
+}
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    dependsOn(tasks.named("requireProductionSigning"))
 }
