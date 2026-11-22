@@ -1,0 +1,145 @@
+apply plugin: "com.android.application"
+apply plugin: "org.jetbrains.kotlin.android"
+
+android {
+    namespace "pl.mkrstudio.truefootball3"
+    compileSdk 35
+    buildToolsVersion "35.0.1"
+
+    defaultConfig {
+        applicationId "pl.mkrstudio.truefootball3"
+        minSdk 26
+        targetSdk 29
+        versionCode 97
+        versionName "3.20.5-transfer-perf-v97"
+        multiDexEnabled true
+    }
+
+    kotlinOptions { jvmTarget = "1.8" }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+        }
+    }
+
+    packaging {
+        resources {
+            pickFirsts += [
+                "META-INF/services/com.fasterxml.jackson.core.JsonFactory",
+                "META-INF/services/com.fasterxml.jackson.core.ObjectCodec"
+            ]
+        }
+    }
+}
+
+dependencies {
+    implementation files("libs/app-dependencies.jar")
+}
+
+tasks.register("validateCommentaryTokens") {
+    group = "verification"
+    description = "Validates typed commentary variables and locale placeholder parity."
+
+    doLast {
+        // Pure Kotlin project: the available tokens are defined by the map in
+        // LabCommentaryEngine.kt. Never depend on deleted Java sources.
+        File rendererSource = file("src/main/java/pl/mkrstudio/truefootball3/lab/LabCommentaryEngine.kt")
+        if (!rendererSource.isFile()) {
+            throw new GradleException("Kotlin commentary renderer is missing: ${rendererSource}")
+        }
+        String rendererText = rendererSource.getText("UTF-8")
+        def mapStart = rendererText.indexOf('val values = mapOf(')
+        if (mapStart < 0) {
+            throw new GradleException("Cannot find the Kotlin commentary variable map")
+        }
+        // Restrict extraction to the one formatting map, not arbitrary strings.
+        def mapEnd = rendererText.indexOf('\n        )', mapStart)
+        if (mapEnd < 0) {
+            throw new GradleException("Cannot locate the end of the Kotlin variable map")
+        }
+        String mapBody = rendererText.substring(mapStart, mapEnd)
+        Set<String> knownVariables = [] as Set
+        def mapMatcher = mapBody =~ /"([A-Z][A-Z0-9_]*)"\s+to\s+/
+        mapMatcher.each { match -> knownVariables.add(match[1]) }
+        if (knownVariables.isEmpty()) {
+            throw new GradleException("Kotlin commentary variable schema is empty")
+        }
+
+        Closure<Map<String,String>> readCatalogue = { String localeDirectory ->
+            Map<String,String> catalogue = [:]
+            ["commentary_v2.xml", "commentary_v3.xml"].each { String fileName ->
+                File source = file("src/main/res/${localeDirectory}/${fileName}")
+                def resources = new XmlSlurper(false, false).parse(source)
+                resources.string.each { entry ->
+                    String id = entry.@name.text()
+                    if (catalogue.containsKey(id)) {
+                        throw new GradleException("Duplicate commentary template ID ${id} in ${localeDirectory}")
+                    }
+                    catalogue[id] = entry.text()
+                }
+            }
+            return catalogue
+        }
+
+        Map<String,String> defaultCatalogue = readCatalogue("values")
+        Map<String,String> vietnameseCatalogue = readCatalogue("values-vi")
+        List<String> errors = []
+        Set<String> defaultIds = defaultCatalogue.keySet() as Set
+        Set<String> vietnameseIds = vietnameseCatalogue.keySet() as Set
+        (defaultIds - vietnameseIds).sort().each { id ->
+            errors.add("${id}: missing values-vi translation")
+        }
+        (vietnameseIds - defaultIds).sort().each { id ->
+            errors.add("${id}: missing default translation")
+        }
+
+        def tokenPattern = ~/\{([A-Z][A-Z0-9_]*)\}/
+        def legacyPattern = ~/%(?:[0-9]+\$)?[a-zA-Z]/
+        Closure<Map<String,Integer>> inspect = { String locale, String id, String text ->
+            Map<String,Integer> counts = [:].withDefault { 0 }
+            def legacy = text =~ legacyPattern
+            if (legacy.find()) errors.add("${id} [${locale}]: legacy placeholder ${legacy.group()}")
+            def matcher = text =~ tokenPattern
+            matcher.each { token ->
+                String name = token[1]
+                counts[name] = counts[name] + 1
+                if (!knownVariables.contains(name)) {
+                    errors.add("${id} [${locale}]: unknown variable {${name}}")
+                }
+                if (name == "SCORE") {
+                    errors.add("${id} [${locale}]: {SCORE} alias has no resource-level before/after policy")
+                }
+            }
+            String withoutTokens = text.replaceAll(tokenPattern, "")
+            if (withoutTokens.contains("{") || withoutTokens.contains("}")) {
+                errors.add("${id} [${locale}]: malformed variable braces")
+            }
+            return counts
+        }
+
+        (defaultIds.intersect(vietnameseIds) as Set).sort().each { String id ->
+            Map<String,Integer> defaultTokens = inspect("default", id, defaultCatalogue[id])
+            Map<String,Integer> vietnameseTokens = inspect("vi", id, vietnameseCatalogue[id])
+            if (defaultTokens != vietnameseTokens) {
+                errors.add("${id}: placeholder parity mismatch default=${defaultTokens} vi=${vietnameseTokens}")
+            }
+        }
+        if (!errors.isEmpty()) {
+            throw new GradleException("Commentary token validation failed:\n - " + errors.join("\n - "))
+        }
+        logger.lifecycle("Commentary token validation passed: ${defaultCatalogue.size()} templates, ${knownVariables.size()} variables")
+    }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(tasks.named("validateCommentaryTokens"))
+}

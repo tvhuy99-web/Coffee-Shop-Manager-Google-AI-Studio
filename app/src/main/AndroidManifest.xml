@@ -1,27 +1,52 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+    package="pl.mkrstudio.truefootball3">
+
+    <supports-screens
+        android:anyDensity="true"
+        android:largeScreens="true"
+        android:resizeable="true"
+        android:smallScreens="true"
+        android:xlargeScreens="true" />
 
     <application
         android:allowBackup="true"
-        android:dataExtractionRules="@xml/data_extraction_rules"
-        android:fullBackupContent="@xml/backup_rules"
-        android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
-        android:supportsRtl="true"
-        android:theme="@style/Theme.MyApplication">
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name">
+
         <activity
-            android:name=".MainActivity"
+            android:name="pl.mkrstudio.truefootball3.lab.LabMainActivity"
             android:exported="true"
-            android:label="@string/app_name"
-            android:theme="@style/Theme.MyApplication">
+            android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-    </application>
 
+        <activity
+            android:name="pl.mkrstudio.truefootball3.lab.LabReferenceMatchActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
+            android:name="pl.mkrstudio.truefootball3.activities.TtsSettingsActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
+            android:name="pl.mkrstudio.truefootball3.activities.SoundSettingsActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
+            android:name="pl.mkrstudio.truefootball3.activities.SoundSlotActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
+            android:name="pl.mkrstudio.truefootball3.activities.AudioFilePickerActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+    </application>
 </manifest>

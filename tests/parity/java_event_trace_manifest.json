@@ -1,0 +1,9 @@
+{
+  "source": "Unmodified Java V3 core",
+  "seed_event_counts": {
+    "123456789": 2346,
+    "3168002": 2337,
+    "20260822": 2361
+  },
+  "trace_sha256": "bbff016056c76f1129cf22c6ddbe3728912b5da6f0aa3fe9b4740bc2a7643bc6"
+}

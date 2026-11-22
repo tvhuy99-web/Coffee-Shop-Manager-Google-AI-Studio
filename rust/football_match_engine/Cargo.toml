@@ -1,0 +1,17 @@
+[package]
+name = "football_match_engine"
+version = "0.2.0"
+edition = "2021"
+license = "LicenseRef-PingFootball-User-Source"
+description = "Full Rust port of PingFootball V3 simulation/v3/core (70 Java classes across 33 Rust files). Pending cargo test verification on a Rust-enabled host."
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[dependencies]
+# No external crates: deterministic arithmetic can be tested completely offline.

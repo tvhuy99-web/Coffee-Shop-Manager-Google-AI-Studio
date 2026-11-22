@@ -1,21 +1,7 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Football Match Lab V2
 
-# Run and deploy your AI Studio app
+Android match simulation lab with a Kotlin interface and a Rust simulation engine.
 
-This contains everything you need to run your app locally.
+The GitHub Actions workflow builds the native Android libraries, runs the source and parity checks, packages an installable debug APK, and publishes it as a downloadable workflow artifact.
 
-View your app in AI Studio: https://ai.studio/apps/b6ec0a76-40b1-4256-ac08-840aae8e9629
-
-## Run Locally
-
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
-
-
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
+See [MATCH_LAB_README.md](MATCH_LAB_README.md) for app behavior, build details, and audio licensing.
