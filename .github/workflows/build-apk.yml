@@ -1,15 +1,22 @@
-name: Build Football Match Lab APK
+name: Build signed Football Match Lab Release
 
 on:
   push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: match-lab-release-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-apk:
-    runs-on: ubuntu-latest
+  production-release:
+    name: Signed Android release with Rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -26,38 +33,113 @@ jobs:
         with:
           packages: platform-tools
 
-      - name: Install Android SDK and NDK
+      - name: Install SDK, build tools and NDK
         run: |
-          yes | sdkmanager --licenses >/dev/null
+          yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-35" "build-tools;35.0.1" "ndk;27.2.12479018"
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/27.2.12479018" >> "${GITHUB_ENV}"
 
-      - name: Set up Rust for Android
+      - name: Set up Rust with Android target
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
-      - name: Verify source and saved parity fixtures
+      - name: Validate data, commentary and parity fixtures
         run: |
           python3 tools/verify_lab_v2.py
           python3 tools/verify_parity_fixtures.py
 
-      - name: Build native Rust libraries
+      - name: Run Rust tests
+        working-directory: rust/football_match_engine
+        run: cargo test --locked --all-targets
+
+      - name: Compile optimized Rust ARM64 library
         env:
-          RUST_ANDROID_ABIS: arm64-v8a,x86_64
+          RUST_ANDROID_ABIS: arm64-v8a
         run: bash tools/build_lab_rust_android.sh
 
-      - name: Build debug APK
-        run: bash gradlew :app:validateCommentaryTokens :app:assembleDebug --no-daemon
+      # Same secret-encrypted keystore convention as Abcd-huy.
+      # Never fall back to an Android debug or publicly committed test key.
+      - name: Unlock fixed production signing key
+        env:
+          SIGNED_KEYSTORE: ${{ secrets.KEYSTORE }}
+          SIGNED_PROPERTIES: ${{ secrets.KEYSTORE_PROPERTIES }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SIGNED_KEYSTORE" || -z "$SIGNED_PROPERTIES" || -z "$RELEASE_KEY_PASSWORD" ]]; then
+            echo "::error::Configure KEYSTORE, KEYSTORE_PROPERTIES and KEYSTORE_PASSWORD secrets for THIS repository."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$SIGNED_KEYSTORE" > "$RUNNER_TEMP/release.keystore.asc"
+          printf '%s' "$SIGNED_PROPERTIES" > "$RUNNER_TEMP/keystore.properties.asc"
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$RELEASE_KEY_PASSWORD" \
+            --decrypt --output app/release.keystore "$RUNNER_TEMP/release.keystore.asc"
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$RELEASE_KEY_PASSWORD" \
+            --decrypt --output keystore.properties "$RUNNER_TEMP/keystore.properties.asc"
+          rm -f "$RUNNER_TEMP/release.keystore.asc" "$RUNNER_TEMP/keystore.properties.asc"
+          test -s app/release.keystore
+          test -s keystore.properties
 
-      - name: Publish APK artifact
+      - name: Build production-signed release APK
+        run: bash gradlew :app:validateCommentaryTokens :app:assembleRelease --no-daemon --console plain
+
+      - name: Verify signed release, version and native engine
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/release/app-release.apk"
+          test -s "$apk"
+          mkdir -p build-evidence
+          python3 - <<'PY'
+          import zipfile
+          apk = 'app/build/outputs/apk/release/app-release.apk'
+          with zipfile.ZipFile(apk) as archive:
+              corrupt = archive.testzip()
+              if corrupt:
+                  raise SystemExit('Corrupted APK entry: ' + corrupt)
+              so = 'lib/arm64-v8a/libfootball_match_engine.so'
+              if so not in archive.namelist():
+                  raise SystemExit('Missing optimized Rust native library: ' + so)
+              if not archive.read(so).startswith(b'\x7fELF'):
+                  raise SystemExit('Rust native library is not ELF')
+          PY
+          "$ANDROID_HOME/build-tools/35.0.1/apksigner" verify --verbose --print-certs "$apk" \
+            | tee build-evidence/signature.txt
+          badging="$("$ANDROID_HOME/build-tools/35.0.1/aapt" dump badging "$apk")"
+          printf '%s\n' "$badging" | head -n 1 | tee build-evidence/package.txt
+          printf '%s\n' "$badging" | grep -q "name='pl.mkrstudio.truefootball3'"
+          printf '%s\n' "$badging" | grep -q "versionCode='1'"
+          printf '%s\n' "$badging" | grep -q "versionName='1.0'"
+          sha256sum "$apk" | tee build-evidence/apk.sha256
+          git rev-parse HEAD | tee build-evidence/commit.txt
+          # Never accept an unsigned release or the standard debug alias.
+          grep -q 'Signer #1 certificate SHA-256 digest:' build-evidence/signature.txt
+
+      - name: Publish official release APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/release/app-release.apk"
+          tag="matchlab-v1.0-build-${{ github.run_number }}"
+          gh release create "$tag" "$apk" \
+            --target "${{ github.sha }}" \
+            --title "Football Match Lab 1.0 signed release (build ${{ github.run_number }})" \
+            --notes "Optimized Rust ARM64 + Kotlin release APK. versionName 1.0, versionCode 1. Signature, JNI and package validated in CI. Build ${{ github.run_number }}, commit ${{ github.sha }}. To upgrade an already installed app with versionCode 97, uninstall the previous application after backing up its settings." \
+            --latest=false
+
+      - name: Upload verified release APK and build evidence
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: football-match-lab-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: football-match-lab-v1.0-signed-release
+          path: |
+            app/build/outputs/apk/release/app-release.apk
+            build-evidence/*
           if-no-files-found: error
           retention-days: 30
