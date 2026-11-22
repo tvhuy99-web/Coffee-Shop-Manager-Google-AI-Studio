@@ -93,10 +93,12 @@ class MatchAudioManager(context: Context, enabled: Boolean) {
             var descriptor: AssetFileDescriptor? = null
             try {
                 id = if (source.isAsset) {
-                    descriptor = appContext.assets.openFd(source.assetPath)
+                    val assetPath = source.assetPath ?: return
+                    descriptor = appContext.assets.openFd(assetPath)
                     soundPool.load(descriptor, 1)
                 } else {
-                    soundPool.load(source.file.absolutePath, 1)
+                    val file = source.file ?: return
+                    soundPool.load(file.absolutePath, 1)
                 }
             } catch (_: IOException) {
                 return
@@ -330,10 +332,12 @@ class MatchAudioManager(context: Context, enabled: Boolean) {
                     .build()
             )
             if (source.isAsset) {
-                descriptor = appContext.assets.openFd(source.assetPath)
+                val assetPath = source.assetPath ?: return null
+                descriptor = appContext.assets.openFd(assetPath)
                 player.setDataSource(descriptor.fileDescriptor, descriptor.startOffset, descriptor.length)
             } else {
-                player.setDataSource(source.file.absolutePath)
+                val file = source.file ?: return null
+                player.setDataSource(file.absolutePath)
             }
             player.isLooping = looping
             val scaled = scaleVolume(volume)
