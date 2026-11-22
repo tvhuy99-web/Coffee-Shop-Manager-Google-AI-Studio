@@ -259,8 +259,13 @@ fn resolve_challenge(
             let inward = 6 + c.rng_mut().next_int(7);
             lateral_shift = if ar_x < 50 { inward } else { -inward };
         }
-        let nx = (ar_x + lateral_shift).clamp(2, 98);
-        let ny = (ar_y + dir * step).clamp(2, 98);
+        let (base_x, base_y) = c
+            .state()
+            .player(attacker_id)
+            .map(|player| (player.x, player.y))
+            .unwrap_or((ar_x, ar_y));
+        let nx = (base_x + lateral_shift).clamp(2, 98);
+        let ny = (base_y + dir * step).clamp(2, 98);
         if let Some(ar) = c.state_mut().player_mut(attacker_id) {
             ar.set_position(nx, ny);
         }
