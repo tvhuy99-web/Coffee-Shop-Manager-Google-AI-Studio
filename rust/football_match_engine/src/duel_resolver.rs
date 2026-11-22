@@ -189,6 +189,11 @@ fn resolve_challenge(
         .player(attacker_id)
         .map(|player| (player.x, player.y))
         .unwrap_or((ar_x, ar_y));
+    let (dr_x, dr_y) = c
+        .state()
+        .player(defender_id)
+        .map(|player| (player.x, player.y))
+        .unwrap_or((dr_x, dr_y));
 
     let mut aggr = c.state().team(defend).team_instructions.aggression;
     if let Some(dsi) = roster::slot_instructions(c.state(), defend, defender_id) {
