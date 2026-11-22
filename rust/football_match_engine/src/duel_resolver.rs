@@ -582,9 +582,14 @@ pub fn resolve_loose_ball(c: &mut dyn MatchRuntime) {
     let dt = 1 + c.rng_mut().next_int(3);
     c.advance_playing_time(dt);
 
-    let (winner_id, winner_side, wx, wy, _) = &candidates[0];
+    let (winner_id, winner_side, sampled_x, sampled_y, _) = &candidates[0];
     let previous = c.state().possession.controlling_team;
-    c.state_mut().ball.set_position(*wx, *wy);
+    let (winner_x, winner_y) = c
+        .state()
+        .player(winner_id)
+        .map(|player| (player.x, player.y))
+        .unwrap_or((*sampled_x, *sampled_y));
+    c.state_mut().ball.set_position(winner_x, winner_y);
     c.state_mut().ball.set_controlled(*winner_side, winner_id.clone());
     c.emit(
         EventType::SecondBallWon,
