@@ -3,3 +3,11 @@
 /**/build/
 *.iml
 /.idea/
+
+# Production signing material, always supplied through GitHub Secrets
+/keystore.properties
+/app/release.keystore
+/**/*.keystore.asc
+/*.jks
+/*.keystore
+
