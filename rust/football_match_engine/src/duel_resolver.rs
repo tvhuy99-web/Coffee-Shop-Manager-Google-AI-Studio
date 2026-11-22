@@ -232,19 +232,25 @@ fn resolve_challenge(
         && attacker_id == "H10"
         && defender_id == "A02"
     {
+        let debug_seed = c.input().seed;
+        let debug_second = c.state().clock.game_second;
+        let current_attacker = c.state().player(attacker_id).map(|p| (p.x, p.y));
+        let current_defender = c.state().player(defender_id).map(|p| (p.x, p.y));
         let current_defender_fatigue = c.state().player(defender_id).map(|p| p.acute_fatigue);
+        let rng_state = c.rng_mut().state();
         eprintln!(
-            "PARITY DEBUG seed={} sec={} dribble={} attack={:?} defend={:?} attacker=({}, {}) current_attacker=({:?}) current_defender=({}, {}) aggr={} pressing={} foul_chance={} foul_roll={} atk_score={:.3} def_score={:.3} attacker_energy={} defender_energy={} defender_acute_before={} defender_acute_now={:?} attr_tackle={} attr_temperament={} rng_state={}",
-            c.input().seed,
-            c.state().clock.game_second,
+            "PARITY DEBUG seed={} sec={} dribble={} attack={:?} defend={:?} attacker=({}, {}) current_attacker={:?} defender=({}, {}) current_defender={:?} aggr={} pressing={} foul_chance={} foul_roll={} atk_score={:.3} def_score={:.3} attacker_energy={} defender_energy={} defender_acute_before={} defender_acute_now={:?} attr_tackle={} attr_temperament={} rng_state={}",
+            debug_seed,
+            debug_second,
             dribble,
             attack,
             defend,
             ar_x,
             ar_y,
-            c.state().player(attacker_id).map(|p| (p.x, p.y)),
+            current_attacker,
             dr_x,
             dr_y,
+            current_defender,
             aggr,
             pressing,
             foul_chance,
@@ -257,7 +263,7 @@ fn resolve_challenge(
             current_defender_fatigue,
             dp.attributes.get(1),
             dp.attributes.get(19),
-            c.rng_mut().state()
+            rng_state
         );
     }
     if foul_roll < foul_chance {
