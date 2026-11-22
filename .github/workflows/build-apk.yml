@@ -41,8 +41,10 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
-      - name: Verify source and Rust parity fixtures
-        run: REQUIRE_RUST=1 bash tools/run_v2_parity.sh
+      - name: Verify source and saved parity fixtures
+        run: |
+          python3 tools/verify_lab_v2.py
+          python3 tools/verify_parity_fixtures.py
 
       - name: Build native Rust libraries
         env:
