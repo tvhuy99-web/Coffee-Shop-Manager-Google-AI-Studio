@@ -225,7 +225,42 @@ fn resolve_challenge(
     if geometry::in_attacking_penalty_area(attack, ar_x, ar_y) {
         foul_chance = (foul_chance / 12).max(1);
     }
-    if c.rng_mut().next_int(100) < foul_chance {
+    let foul_roll = c.rng_mut().next_int(100);
+    #[cfg(test)]
+    if c.input().seed == 123456789
+        && c.state().clock.game_second == 2962
+        && attacker_id == "H10"
+        && defender_id == "A02"
+    {
+        let current_defender_fatigue = c.state().player(defender_id).map(|p| p.acute_fatigue);
+        eprintln!(
+            "PARITY DEBUG seed={} sec={} dribble={} attack={:?} defend={:?} attacker=({}, {}) current_attacker=({:?}) current_defender=({}, {}) aggr={} pressing={} foul_chance={} foul_roll={} atk_score={:.3} def_score={:.3} attacker_energy={} defender_energy={} defender_acute_before={} defender_acute_now={:?} attr_tackle={} attr_temperament={} rng_state={}",
+            c.input().seed,
+            c.state().clock.game_second,
+            dribble,
+            attack,
+            defend,
+            ar_x,
+            ar_y,
+            c.state().player(attacker_id).map(|p| (p.x, p.y)),
+            dr_x,
+            dr_y,
+            aggr,
+            pressing,
+            foul_chance,
+            foul_roll,
+            atk,
+            def,
+            ar_energy,
+            dr_energy,
+            dr_acute,
+            current_defender_fatigue,
+            dp.attributes.get(1),
+            dp.attributes.get(19),
+            c.rng_mut().state()
+        );
+    }
+    if foul_roll < foul_chance {
         let advantage = dribble && c.rng_mut().next_int(100) < 18 && progress > 55;
         discipline::handle_foul(c, defender_id, attacker_id, advantage);
         if advantage {
