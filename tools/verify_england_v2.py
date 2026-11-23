@@ -81,6 +81,15 @@ def main():
         counts["synthetic_first_team"] += sum(p["synthetic_identity"] for p in doc["players"])
     for key, actual in counts.items():
         require(actual == manifest["counts"][key], f"manifest count mismatch {key}: {actual}")
+    operations = load("club_operations.json")["records"]
+    require(len(operations) == 232 and {r["club_id"] for r in operations} == club_ids,
+            "club management records missing")
+    for rec in operations:
+        require(rec["record_origin"] == "fictional_club_operation_defaults", "management provenance missing")
+        require(rec["stadium"]["verified_name"] is False, "invented official stadium name")
+        for key in ["finance", "sponsorship", "board", "training", "scouting", "academy",
+                    "medical", "contracts", "discipline", "infrastructure"]:
+            require(key in rec, f"missing club system {key}: {rec['club_id']}")
     rules = load("competition_rules.json")
     require(len(rules["cup_competitions"]) == 5, "cup structure missing")
     require(all(not c["official_fixture_records"] and not c["fixtures"] for c in rules["cup_competitions"]),
