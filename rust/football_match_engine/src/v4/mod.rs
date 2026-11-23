@@ -20,6 +20,8 @@ pub mod tactics;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod attribute_impact_tests;
 
 pub const ENGINE_VERSION_V4: &str = "v4.0.0";
 pub const JNI_BRIDGE_VERSION: i32 = 7;
