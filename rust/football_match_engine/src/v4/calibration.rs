@@ -27,6 +27,19 @@ pub struct MonteCarloReportV4 {
     pub avg_fouls_per_match: f32,
     pub avg_yellow_cards_per_match: f32,
     pub avg_red_cards_per_match: f32,
+    /// Phase 1 read-only attacking funnel diagnostics; exploratory, not realism gates.
+    pub avg_possessions_per_match: f32,
+    pub avg_final_third_possessions_per_match: f32,
+    pub avg_penalty_area_possessions_per_match: f32,
+    pub avg_penalty_area_without_shot_per_match: f32,
+    pub avg_shot_possessions_per_match: f32,
+    pub avg_shots_from_box_per_match: f32,
+    pub avg_pass_interceptions_per_match: f32,
+    pub avg_pass_misplacements_per_match: f32,
+    pub avg_pass_out_of_play_per_match: f32,
+    pub avg_first_touch_errors_per_match: f32,
+    pub avg_dribble_tackles_per_match: f32,
+    pub avg_unclassified_turnovers_per_match: f32,
     pub home_win_rate_pct: f32,
     pub draw_rate_pct: f32,
     pub away_win_rate_pct: f32,
@@ -55,6 +68,7 @@ pub fn run_monte_carlo_v4(inputs: Vec<MatchInputV4>) -> Result<MonteCarloReportV
     let mut total_fouls = 0u64;
     let mut total_yellows = 0u64;
     let mut total_reds = 0u64;
+    let mut possession_funnel = [0u64; 12];
     let mut home_wins = 0usize;
     let mut draws = 0usize;
     let mut away_wins = 0usize;
@@ -75,6 +89,24 @@ pub fn run_monte_carlo_v4(inputs: Vec<MatchInputV4>) -> Result<MonteCarloReportV
         total_fouls += (h.fouls + a.fouls) as u64;
         total_yellows += (h.yellow_cards + a.yellow_cards) as u64;
         total_reds += (h.red_cards + a.red_cards) as u64;
+        let diagnostic = res.diagnostics.as_ref().ok_or_else(|| {
+            V4Error::InvalidInput("V4 result missing Phase 1 diagnostics".into())
+        })?;
+        diagnostic.validate_basic().map_err(V4Error::InvalidInput)?;
+        for d in [&diagnostic.home, &diagnostic.away] {
+            possession_funnel[0] += d.possessions as u64;
+            possession_funnel[1] += d.final_third_possessions as u64;
+            possession_funnel[2] += d.penalty_area_possessions as u64;
+            possession_funnel[3] += d.penalty_area_without_shot as u64;
+            possession_funnel[4] += d.possessions_with_shot as u64;
+            possession_funnel[5] += d.shots_from_box as u64;
+            possession_funnel[6] += d.turnovers.pass_intercepted as u64;
+            possession_funnel[7] += d.turnovers.pass_misplaced as u64;
+            possession_funnel[8] += d.turnovers.pass_out_of_play as u64;
+            possession_funnel[9] += d.turnovers.first_touch_error as u64;
+            possession_funnel[10] += d.turnovers.dribble_tackled as u64;
+            possession_funnel[11] += d.turnovers.other_unclassified as u64;
+        }
         if h.goals > a.goals {
             home_wins += 1;
         } else if h.goals == a.goals {
@@ -100,6 +132,18 @@ pub fn run_monte_carlo_v4(inputs: Vec<MatchInputV4>) -> Result<MonteCarloReportV
         avg_fouls_per_match: total_fouls as f32 / n,
         avg_yellow_cards_per_match: total_yellows as f32 / n,
         avg_red_cards_per_match: total_reds as f32 / n,
+        avg_possessions_per_match: possession_funnel[0] as f32 / n,
+        avg_final_third_possessions_per_match: possession_funnel[1] as f32 / n,
+        avg_penalty_area_possessions_per_match: possession_funnel[2] as f32 / n,
+        avg_penalty_area_without_shot_per_match: possession_funnel[3] as f32 / n,
+        avg_shot_possessions_per_match: possession_funnel[4] as f32 / n,
+        avg_shots_from_box_per_match: possession_funnel[5] as f32 / n,
+        avg_pass_interceptions_per_match: possession_funnel[6] as f32 / n,
+        avg_pass_misplacements_per_match: possession_funnel[7] as f32 / n,
+        avg_pass_out_of_play_per_match: possession_funnel[8] as f32 / n,
+        avg_first_touch_errors_per_match: possession_funnel[9] as f32 / n,
+        avg_dribble_tackles_per_match: possession_funnel[10] as f32 / n,
+        avg_unclassified_turnovers_per_match: possession_funnel[11] as f32 / n,
         home_win_rate_pct: (home_wins as f32 / n) * 100.0,
         draw_rate_pct: (draws as f32 / n) * 100.0,
         away_win_rate_pct: (away_wins as f32 / n) * 100.0,
