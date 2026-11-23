@@ -9,7 +9,8 @@
     "attributes_54": "generated 1..20 estimates for simulation, NOT real scouts and NOT exact user V1",
     "staff": "fully fictional",
     "fixtures": "entirely generated round robin; NOT official 2025/26 fixtures",
-    "level7": "flat ENG_7 source club pool partitioned into four groups of 17 for testing; NOT official FA allocations"
+    "level7": "flat ENG_7 source club pool partitioned into four groups of 17 for testing; NOT official FA allocations",
+    "operations": "simulated management model with unknown real facts left null"
   },
   "counts": {
     "clubs": 232,
@@ -19,7 +20,9 @@
     "synthetic_first_team": 5091,
     "staff": 4640,
     "youth": 2784,
-    "fixtures": 4780
+    "fixtures": 4780,
+    "club_operation_records": 232,
+    "cup_competitions": 5
   },
   "divisions": [
     {
@@ -136,7 +139,9 @@
   "assets": {
     "club_index": "clubs.json",
     "division_prefix": "division_",
-    "division_suffix": ".json"
+    "division_suffix": ".json",
+    "club_operations": "club_operations.json",
+    "competitions": "competition_rules.json"
   },
   "status": {
     "schema_complete_for_development": true,
