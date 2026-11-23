@@ -417,4 +417,63 @@ mod tests {
         assert_eq!(d.home.passes_attempted, full.summary.home.passes_attempted as u32);
         assert_eq!(d.away.passes_attempted, full.summary.away.passes_attempted as u32);
     }
+
+    /// Produces a human-readable, per-match artifact alongside the 128-match
+    /// aggregate baseline. Deliberately ignored in the normal unit-test suite.
+    #[test]
+    #[ignore = "manual CI evidence export; 12 fixed synthetic league fixtures"]
+    fn export_attacking_diagnostics_sample() {
+        let mut matches = Vec::new();
+        for seed in 92_000i64..92_012 {
+            let result = simulate_v4(make_v4_input(seed, SimulationMode::FastBatch, RulesModeV4::League))
+                .expect("seeded diagnostic fixture must simulate");
+            let d = result.diagnostics.expect("FastBatch must include diagnostics");
+            d.validate_basic().expect("diagnostics must have consistent funnel");
+            matches.push(serde_json::json!({
+                "matchId": result.match_id,
+                "seed": seed,
+                "summary": {
+                    "home": {
+                        "goals": result.summary.home.goals,
+                        "shots": result.summary.home.shots,
+                        "passesAttempted": result.summary.home.passes_attempted,
+                        "passesCompleted": result.summary.home.passes_completed,
+                        "xg": result.summary.home.xg,
+                    },
+                    "away": {
+                        "goals": result.summary.away.goals,
+                        "shots": result.summary.away.shots,
+                        "passesAttempted": result.summary.away.passes_attempted,
+                        "passesCompleted": result.summary.away.passes_completed,
+                        "xg": result.summary.away.xg,
+                    }
+                },
+                "diagnostics": d,
+            }));
+        }
+        let report = serde_json::json!({
+            "schemaVersion": DIAGNOSTICS_SCHEMA_VERSION_V4,
+            "fixture": {
+                "description": "Synthetic, not real teams; uniform home 14 vs away 12 attributes",
+                "rules": "LEAGUE",
+                "simulationMode": "FAST_BATCH",
+                "seedStart": 92000,
+                "seedEndInclusive": 92011
+            },
+            "caveats": [
+                "Territorial entries are one per possession with controlled ball; not all visits.",
+                "Box possessions without a shot are a proxy, not measured clear chances.",
+                "No empirical realism pass/fail threshold is enforced.",
+                "A missing classified event produces an otherUnclassified loss."
+            ],
+            "matches": matches,
+        });
+        let json = serde_json::to_string_pretty(&report).expect("serialize report");
+        if let Ok(path) = std::env::var("V4_DIAGNOSTICS_REPORT_PATH") {
+            std::fs::write(&path, json).expect("write diagnostic artifact");
+            println!("Attacking diagnostics written to {path}");
+        } else {
+            println!("{json}");
+        }
+    }
 }
