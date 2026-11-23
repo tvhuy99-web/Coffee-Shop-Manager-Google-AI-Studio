@@ -12,6 +12,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.View
 import android.widget.ArrayAdapter
+import android.widget.AdapterView
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -26,6 +27,8 @@ import pl.mkrstudio.truefootball3.activities.TtsSettingsActivity
 class LabMainActivity : Activity() {
     private enum class Screen { MAIN, SETTINGS, TRIAL, LOGS }
 
+    private data class ClubChoice(val name: String, val leagueId: String)
+    private var clubChoices: List<ClubChoice> = emptyList()
     private var teamNames: List<String> = emptyList()
     private var currentScreen: Screen = Screen.MAIN
     private val batchExecutor = Executors.newSingleThreadExecutor()
@@ -36,9 +39,13 @@ class LabMainActivity : Activity() {
         super.onCreate(savedInstanceState)
         LabLogStore.init(this)
         teamNames = try {
-            val text = assets.open("match_lab/epl20_original.json").bufferedReader().use { it.readText() }
-            val teams = JSONObject(text).getJSONArray("teams")
-            (0 until teams.length()).map { teams.getJSONObject(it).getString("name") }.sorted()
+            val text = assets.open("england_v2/clubs.json").bufferedReader().use { it.readText() }
+            val clubs = JSONObject(text).getJSONArray("clubs")
+            clubChoices = (0 until clubs.length()).map {
+                val row = clubs.getJSONObject(it)
+                ClubChoice(row.getString("name"), row.getString("league_id"))
+            }
+            clubChoices.map { it.name }.sorted()
         } catch (_: Exception) {
             emptyList()
         }
@@ -207,9 +214,9 @@ class LabMainActivity : Activity() {
     private fun showTrial() {
         currentScreen = Screen.TRIAL
         val root = vertical("THỬ NGHIỆM TRẬN ĐẤU")
-        info(root, "Chọn 2 CLB Ngoại hạng Anh, sơ đồ & phong cách chiến thuật, động cơ mô phỏng (ưu tiên Rust) và luật thi đấu.")
-        if (teamNames.size != 20) {
-            info(root, "Lỗi dữ liệu: không tìm thấy đủ 20 đội ENG_1.")
+        info(root, "Chọn giải đấu Anh, hai đội bóng, sơ đồ và chiến thuật. Chỉ số 54 thuộc tính được chiếu tạm sang lõi trận 20 chỉ số Rust; chưa phải tích hợp native 54 thuộc tính.")
+        if (teamNames.size < 20 || clubChoices.none { it.leagueId == "ENG_1" }) {
+            info(root, "Lỗi dữ liệu giai đoạn 2: không tìm thấy đủ câu lạc bộ và giải đấu.")
             button(root, "Quay lại") { showMain() }
             return
         }
@@ -236,11 +243,42 @@ class LabMainActivity : Activity() {
         val formLabels = LabTacticalPresets.FORMATIONS.map { it.label }
         val styleLabels = LabTacticalPresets.STYLES.map { it.label }
 
-        val home = makeSpinner("Đội chủ nhà", teamNames, 0)
+        val leagues = listOf(
+            "ENG_1" to "Premier League",
+            "ENG_2" to "EFL Championship",
+            "ENG_3" to "EFL League One",
+            "ENG_4" to "EFL League Two",
+            "ENG_5" to "National League",
+            "ENG_6A" to "National League North",
+            "ENG_6B" to "National League South",
+            "ENG_7_1" to "Hạng 7 nhóm thử nghiệm 1",
+            "ENG_7_2" to "Hạng 7 nhóm thử nghiệm 2",
+            "ENG_7_3" to "Hạng 7 nhóm thử nghiệm 3",
+            "ENG_7_4" to "Hạng 7 nhóm thử nghiệm 4"
+        )
+        val leagueSpinner = makeSpinner("Giải đấu", leagues.map { it.second }, 0)
+        val initialTeams = clubChoices.filter { it.leagueId == "ENG_1" }.map { it.name }.sorted()
+        val home = makeSpinner("Đội chủ nhà", initialTeams, 0)
         val homeForm = makeSpinner("Sơ đồ chủ nhà", formLabels, 0)
         val homeStyle = makeSpinner("Chiến thuật chủ nhà", styleLabels, 0)
 
-        val away = makeSpinner("Đội khách", teamNames, 1)
+        val away = makeSpinner("Đội khách", initialTeams, 1)
+        leagueSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val selectedLeague = leagues[position].first
+                val clubs = clubChoices.filter { it.leagueId == selectedLeague }.map { it.name }.sorted()
+                val homeAdapter = ArrayAdapter(this@LabMainActivity, android.R.layout.simple_spinner_item, clubs).apply {
+                    setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+                }
+                val awayAdapter = ArrayAdapter(this@LabMainActivity, android.R.layout.simple_spinner_item, clubs).apply {
+                    setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+                }
+                home.adapter = homeAdapter
+                away.adapter = awayAdapter
+                if (clubs.size > 1) away.setSelection(1)
+            }
+        }
         val awayForm = makeSpinner("Sơ đồ đội khách", formLabels, 0)
         val awayStyle = makeSpinner("Chiến thuật đội khách", styleLabels, 0)
 
