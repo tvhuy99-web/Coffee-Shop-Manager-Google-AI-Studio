@@ -3,6 +3,16 @@ apply plugin: "org.jetbrains.kotlin.android"
 
 // The release key is a stable private keystore, decrypted by CI into
 // keystore.properties and app/release.keystore. Never commit either file.
+// Stable, repository-local signing is only for the isolated Debug application ID.
+// This public fixed key makes repeat Debug APKs updateable without GitHub Secrets.
+def stableDebugKeyFile = rootProject.file(".github/signing/stable-debug.keystore.b64")
+def stableDebugKeystore = rootProject.file(".gradle/stable-debug.keystore")
+if (!stableDebugKeyFile.isFile()) {
+    throw new GradleException("Missing stable Debug key: " + stableDebugKeyFile)
+}
+stableDebugKeystore.parentFile.mkdirs()
+stableDebugKeystore.bytes = java.util.Base64.getMimeDecoder().decode(stableDebugKeyFile.getText("UTF-8").trim())
+
 def signingFile = rootProject.file("keystore.properties")
 def releaseSigning = new Properties()
 if (signingFile.isFile()) {
@@ -31,6 +41,12 @@ android {
     }
 
     signingConfigs {
+        stableDebug {
+            storeFile stableDebugKeystore
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
         if (signingFile.isFile()) {
             release {
                 storeFile file(releaseSigning.getProperty("storeFile", "release.keystore"))
@@ -43,6 +59,9 @@ android {
 
     buildTypes {
         debug {
+            applicationIdSuffix ".debug"
+            versionNameSuffix "-debug"
+            signingConfig signingConfigs.stableDebug
             minifyEnabled false
         }
         release {

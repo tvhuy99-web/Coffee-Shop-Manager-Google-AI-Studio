@@ -100,14 +100,12 @@ Bản sửa này tập trung vào lỗi chặn build/kiểm thử, không thay �
 dữ liệu cầu thủ, các câu bình luận hoặc nội dung âm thanh.
 
 
-## Bản phát hành chính thức Android 1.0
+## APK Debug ký ổn định
 
-- `versionName = 1.0`, `versionCode = 1`. Mỗi lần cập nhật APK sau bản 1.0 cần tăng `versionCode` để Android chấp nhận nâng cấp.
-- GitHub Actions `.github/workflows/build-apk.yml` chỉ phát hành bản **release** đã ký, với Rust **ARM64 tối ưu `--release`**. Không phân phối APK debug để đo hiệu suất.
-- Ở **repository Football Match Lab**, cấu hình ba GitHub Actions secrets `KEYSTORE`, `KEYSTORE_PROPERTIES`, `KEYSTORE_PASSWORD`. Hai secret đầu là payload AES-256-GCM có xác thực, dẫn xuất khóa bằng PBKDF2-HMAC-SHA256 (600.000 vòng); secret cuối là mật khẩu giải mã. Workflow giải mã chỉ trên runner tạm thời vào `app/release.keystore` và `keystore.properties`, dùng Gradle release signing, rồi xóa payload tạm. Không commit khóa riêng.
-- Nội dung `keystore.properties` sau giải mã phải có `storeFile=release.keystore` (đường dẫn tính từ thư mục `app`), `storePassword`, `keyAlias`, `keyPassword`. Tuyệt đối không dùng alias `androiddebugkey`.
-- Secrets được giới hạn theo repository: cấu hình trên `Abcd-huy` không tự có ở repository Football Match Lab. Nếu thiếu một secret, build dừng và **không phát hành APK không ký**.
-- Chạy workflow khi push lên `main` hoặc qua `Actions → Build signed Football Match Lab Release → Run workflow`. Sau khi thành công, APK ở `Releases` của GitHub và mục artifact của Actions; cùng bằng chứng chữ ký và SHA-256.
-- Quy trình bắt buộc: kiểm tra dữ liệu và bình luận, chạy `cargo test`, biên dịch Rust ARM64 ở chế độ release, `assembleRelease`, kiểm tra `libfootball_match_engine.so`, `apksigner verify`, package ID và phiên bản, rồi mới upload.
-- Vì phiên bản cũ có `versionCode=97`, muốn cài bản mới `versionCode=1` cùng tên gói, cần sao lưu dữ liệu/cài đặt rồi gỡ bản cũ trước khi cài. Không thể cập nhật đè bản 97 bằng bản 1 theo cách thông thường.
-- APK release đã ký là build chính thức để **đo hiệu suất thực tế**; bản thân nó chưa chứng minh bình luận, TalkBack và mô phỏng đều không có lỗi. Cần tiếp tục kiểm tra trên thiết bị.
+- GitHub Actions chạy khi push lên `main` hoặc chọn **Actions → Build Football Match Lab stable debug APK → Run workflow**.
+- Workflow kiểm tra dữ liệu và fixture, chạy `cargo test --all-targets`, biên dịch Rust ARM64 ở chế độ tối ưu, build APK Debug, rồi kiểm tra APK, chữ ký, mã gói, phiên bản và thư viện native.
+- Khóa debug riêng của Football Match Lab được lưu Base64 trong `.github/signing/stable-debug.keystore.b64`. Khóa và mật khẩu debug được cố ý để trong repository theo cách của repo mẫu; vì vậy đây không phải bí mật và tuyệt đối không được dùng để ký bản phát hành chính thức.
+- Không cần tạo GitHub Actions Secrets cho quy trình Debug này. Các lần build sau dùng cùng khóa, nên APK mới có thể cập nhật trực tiếp APK Debug trước đó.
+- APK có `applicationId = pl.mkrstudio.truefootball3.debug`, `versionName = 1.0-debug`, `versionCode = 1`. Nó cài cạnh bản chính thức `pl.mkrstudio.truefootball3` như một ứng dụng riêng, với dữ liệu riêng.
+- APK và bằng chứng build được tải xuống từ artifact của GitHub Actions (lưu 30 ngày). Bản build này phù hợp để cài thử; không dùng để phát hành trên Google Play hoặc làm phép đo hiệu năng production.
+- Nếu sau này cần phát hành production, cần một khóa release riêng tư và phải tăng `versionCode` mỗi lần cập nhật. Không dùng khóa debug đã commit cho mục đích đó.

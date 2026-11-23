@@ -4,7 +4,7 @@
 *.iml
 /.idea/
 
-# Production signing material, always supplied through GitHub Secrets
+# Private production signing material; never commit these files
 /keystore.properties
 /app/release.keystore
 /**/*.keystore.asc
