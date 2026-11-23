@@ -351,6 +351,9 @@ pub struct MatchResultV4 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command_timeline: Vec<crate::v4::session::AppliedCommandV4>,
     pub summary: MatchSummaryV4,
+    /// Optional for backward-compatible JSON readers; always populated by V4.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<crate::v4::diagnostics::MatchDiagnosticsV4>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<MatchEventV4>,
 }
