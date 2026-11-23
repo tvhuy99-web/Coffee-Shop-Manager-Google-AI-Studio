@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 python3 "$ROOT/tools/verify_lab_v2.py"
+python3 "$ROOT/tools/verify_england_v2.py"
 python3 "$ROOT/tools/verify_parity_fixtures.py"
 
 if ! command -v cargo >/dev/null 2>&1; then
