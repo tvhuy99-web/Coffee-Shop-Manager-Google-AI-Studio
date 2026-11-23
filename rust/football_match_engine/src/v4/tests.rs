@@ -16,7 +16,7 @@ use crate::v4::spatial::{
 };
 use crate::v4::{ENGINE_PROTOCOL_VERSION_V4, ENGINE_VERSION_V4, REGULATION_SECONDS_V4};
 
-fn make_v4_team_with_attrs<F>(prefix: &str, team_id: &str, mut attr_fn: F) -> TeamMatchSnapshotV4
+pub(super) fn make_v4_team_with_attrs<F>(prefix: &str, team_id: &str, mut attr_fn: F) -> TeamMatchSnapshotV4
 where
     F: FnMut(usize) -> PlayerAttributes54,
 {
@@ -96,13 +96,13 @@ where
     }
 }
 
-fn make_v4_team(prefix: &str, team_id: &str, attr_level: u8) -> TeamMatchSnapshotV4 {
+pub(super) fn make_v4_team(prefix: &str, team_id: &str, attr_level: u8) -> TeamMatchSnapshotV4 {
     make_v4_team_with_attrs(prefix, team_id, |_| {
         PlayerAttributes54::uniform(attr_level).unwrap()
     })
 }
 
-fn make_v4_input_teams(
+pub(super) fn make_v4_input_teams(
     seed: i64,
     mode: SimulationMode,
     rules: RulesModeV4,
@@ -128,7 +128,7 @@ fn make_v4_input_teams(
     }
 }
 
-fn make_v4_input(seed: i64, mode: SimulationMode, rules: RulesModeV4) -> MatchInputV4 {
+pub(super) fn make_v4_input(seed: i64, mode: SimulationMode, rules: RulesModeV4) -> MatchInputV4 {
     make_v4_input_teams(
         seed,
         mode,
