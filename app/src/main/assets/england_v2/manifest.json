@@ -1,0 +1,146 @@
+{
+  "schema_version": "2.0-development",
+  "season": "2025/26_reference",
+  "scope": "English football league pyramid (cross-border Welsh clubs in English leagues included)",
+  "provenance": {
+    "club_names": "PingFootball 2025 source",
+    "premier_league_player_names": "PingFootball V97 original",
+    "lower_player_identities": "fictional generated placeholders (user V1 source lower player records need later import)",
+    "attributes_54": "generated 1..20 estimates for simulation, NOT real scouts and NOT exact user V1",
+    "staff": "fully fictional",
+    "fixtures": "entirely generated round robin; NOT official 2025/26 fixtures",
+    "level7": "flat ENG_7 source club pool partitioned into four groups of 17 for testing; NOT official FA allocations"
+  },
+  "counts": {
+    "clubs": 232,
+    "divisions": 11,
+    "players": 5640,
+    "source_named_players": 549,
+    "synthetic_first_team": 5091,
+    "staff": 4640,
+    "youth": 2784,
+    "fixtures": 4780
+  },
+  "divisions": [
+    {
+      "id": "ENG_1",
+      "name": "Premier League",
+      "tier": 1,
+      "team_count": 20,
+      "fixtures": 380,
+      "source_club_snapshot": "2025; not live",
+      "generated_level7": false,
+      "data_file": "division_ENG_1.json"
+    },
+    {
+      "id": "ENG_2",
+      "name": "EFL Championship",
+      "tier": 2,
+      "team_count": 24,
+      "fixtures": 552,
+      "source_club_snapshot": "2025; not live",
+      "generated_level7": false,
+      "data_file": "division_ENG_2.json"
+    },
+    {
+      "id": "ENG_3",
+      "name": "EFL League One",
+      "tier": 3,
+      "team_count": 24,
+      "fixtures": 552,
+      "source_club_snapshot": "2025; not live",
+      "generated_level7": false,
+      "data_file": "division_ENG_3.json"
+    },
+    {
+      "id": "ENG_4",
+      "name": "EFL League Two",
+      "tier": 4,
+      "team_count": 24,
+      "fixtures": 552,
+      "source_club_snapshot": "2025; not live",
+      "generated_level7": false,
+      "data_file": "division_ENG_4.json"
+    },
+    {
+      "id": "ENG_5",
+      "name": "National League",
+      "tier": 5,
+      "team_count": 24,
+      "fixtures": 552,
+      "source_club_snapshot": "2025; not live",
+      "generated_level7": false,
+      "data_file": "division_ENG_5.json"
+    },
+    {
+      "id": "ENG_6A",
+      "name": "National League North",
+      "tier": 6,
+      "team_count": 24,
+      "fixtures": 552,
+      "source_club_snapshot": "2025; not live",
+      "generated_level7": false,
+      "data_file": "division_ENG_6A.json"
+    },
+    {
+      "id": "ENG_6B",
+      "name": "National League South",
+      "tier": 6,
+      "team_count": 24,
+      "fixtures": 552,
+      "source_club_snapshot": "2025; not live",
+      "generated_level7": false,
+      "data_file": "division_ENG_6B.json"
+    },
+    {
+      "id": "ENG_7_1",
+      "name": "Level 7 development group 1",
+      "tier": 7,
+      "team_count": 17,
+      "fixtures": 272,
+      "source_club_snapshot": "2025; not live",
+      "generated_level7": true,
+      "data_file": "division_ENG_7_1.json"
+    },
+    {
+      "id": "ENG_7_2",
+      "name": "Level 7 development group 2",
+      "tier": 7,
+      "team_count": 17,
+      "fixtures": 272,
+      "source_club_snapshot": "2025; not live",
+      "generated_level7": true,
+      "data_file": "division_ENG_7_2.json"
+    },
+    {
+      "id": "ENG_7_3",
+      "name": "Level 7 development group 3",
+      "tier": 7,
+      "team_count": 17,
+      "fixtures": 272,
+      "source_club_snapshot": "2025; not live",
+      "generated_level7": true,
+      "data_file": "division_ENG_7_3.json"
+    },
+    {
+      "id": "ENG_7_4",
+      "name": "Level 7 development group 4",
+      "tier": 7,
+      "team_count": 17,
+      "fixtures": 272,
+      "source_club_snapshot": "2025; not live",
+      "generated_level7": true,
+      "data_file": "division_ENG_7_4.json"
+    }
+  ],
+  "assets": {
+    "club_index": "clubs.json",
+    "division_prefix": "division_",
+    "division_suffix": ".json"
+  },
+  "status": {
+    "schema_complete_for_development": true,
+    "official_2026_data": false,
+    "full_rust_54_attribute_integration": false
+  }
+}
