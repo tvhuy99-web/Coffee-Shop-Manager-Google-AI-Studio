@@ -83,6 +83,9 @@ fn record_event(home: &mut FromEvents, away: &mut FromEvents, ev: &MatchEventV4)
             ours.passes_attempted += 1; ours.passes_completed += 1;
         }
         EventTypeV4::PassFailed => ours.passes_attempted += 1,
+        // An offside offence is an attempted pass terminated by the restart;
+        // do not emit a fake PassFailed event, which would violate Law 11 tests.
+        EventTypeV4::Offside => ours.passes_attempted += 1,
         _ => {}
     }
 }
