@@ -7,6 +7,7 @@ use crate::rng::DeterministicRng;
 use crate::v4::ai_manager::{apply_manual_substitution_group, evaluate_ai_managers};
 use crate::v4::attributes::normalize_attr;
 use crate::v4::ball_play::{execute_dribble_duel, execute_pass_and_first_touch, EmittedPlayEvent};
+use crate::v4::diagnostics::MatchDiagnosticsCollectorV4;
 use crate::v4::error::V4Error;
 use crate::v4::events::{
     fingerprint_event_parts, EventMetadataV4, EventTypeV4, HighlightTier, MatchEventV4,
@@ -101,6 +102,7 @@ pub struct MatchSessionV4 {
     rng: DeterministicRng,
     retain_events: bool,
     events: Vec<MatchEventV4>,
+    diagnostics: MatchDiagnosticsCollectorV4,
     /// Last event delivered to an interactive client (commands also emit events).
     last_delivered_event_index: usize,
     event_count: u32,
@@ -146,6 +148,7 @@ impl MatchSessionV4 {
                 Vec::new()
             },
             event_count: 0,
+            diagnostics: MatchDiagnosticsCollectorV4::default(),
             last_delivered_event_index: 0,
             timeline_fingerprint: fingerprints::start(),
             went_to_extra_time: false,
@@ -455,6 +458,9 @@ impl MatchSessionV4 {
                 let c_pos = self.state.players[self.carrier_idx].pos;
                 self.state.ball.pos = Vec3::ground(c_pos.x, c_pos.y).clamp_to_pitch();
 
+                // Observe the controlled carrier BEFORE the action; shot event positions
+                // represent the goal or blocker and must not be treated as box entries.
+                self.diagnostics.observe_controlled_ball(self.possession_side, c_pos);
                 let prev_possession = self.possession_side;
                 let (next_side, next_carrier) = self.step_five_phase_cycle(self.carrier_idx);
                 self.possession_side = next_side;
@@ -1203,6 +1209,10 @@ impl MatchSessionV4 {
         );
         self.timeline_fingerprint = fingerprints::mix_i64(self.timeline_fingerprint, ev_fp as i64);
 
+        // Pure observation: identical diagnostics for FullEvent and FastBatch,
+        // without allocating retained events or drawing additional RNG values.
+        self.diagnostics.on_event(kind, side, ball_pos, &metadata);
+
         if self.retain_events {
             self.events.push(MatchEventV4 {
                 sequence: self.event_count,
@@ -1333,6 +1343,7 @@ impl MatchSessionV4 {
             event_count: self.event_count,
             command_timeline: self.command_timeline.clone(),
             summary,
+            diagnostics: Some(self.diagnostics.finish()),
             events: std::mem::take(&mut self.events),
         }
     }
