@@ -293,6 +293,22 @@ pub fn execute_pass_and_first_touch(
         let seq_id = state.next_highlight_sequence_id;
         state.next_highlight_sequence_id = state.next_highlight_sequence_id.saturating_add(1);
         let off_pos = Vec3::ground(target_pos.x, target_pos.y).clamp_to_pitch();
+        // Offside involvement ends the attempted pass; it is not completed.
+        events.push(EmittedPlayEvent {
+            kind: EventTypeV4::PassFailed,
+            tier: HighlightTier::None,
+            seq_id: Some(seq_id),
+            side: Some(att_side),
+            actor: Some(passer_id.clone()),
+            target: Some(target_id.clone()),
+            ball_pos: off_pos,
+            metadata: EventMetadataV4 {
+                pass_type: Some(kind.as_str().into()),
+                distance_m: Some(distance_m),
+                outcome: Some("OFFSIDE".into()),
+                ..EventMetadataV4::default()
+            },
+        });
         events.push(EmittedPlayEvent {
             kind: EventTypeV4::Offside,
             tier: HighlightTier::Extended,
