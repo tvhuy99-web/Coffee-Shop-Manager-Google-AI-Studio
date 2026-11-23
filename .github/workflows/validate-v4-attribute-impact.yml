@@ -1,36 +1,32 @@
-name: Validate V4 attribute impact and 90-minute realism
-
+name: Rust V4 Attribute Impact Regression
 on:
   push:
-    branches: ['integration/v4-attribute-impact-audit']
+    paths:
+      - 'rust/football_match_engine/**'
+      - 'tools/verify_v4_impact_report.py'
+      - '.github/workflows/validate-v4-attribute-impact.yml'
   pull_request:
     paths:
       - 'rust/football_match_engine/**'
       - 'tools/verify_v4_impact_report.py'
       - '.github/workflows/validate-v4-attribute-impact.yml'
-  workflow_dispatch:
-  schedule:
-    - cron: '13 2 * * 0'
-
 jobs:
-  test-impact:
+  test-v4-impact:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Run isolated directional tests
-        run: cargo test --manifest-path rust/football_match_engine/Cargo.toml --lib v4::attribute_impact_tests:: -- --nocapture
-      - name: Run 50 paired-seed attribute probes
+      - name: Run isolated V4 attribute impact regression
+        working-directory: rust/football_match_engine
+        run: cargo test --lib v4::attribute_impact_tests:: -- --nocapture
+      - name: Run 50 paired-seed probes and 90-minute report
+        working-directory: rust/football_match_engine
         run: |
-          mkdir -p build-evidence
-          V4_IMPACT_SEEDS=12 V4_IMPACT_REPORT_PATH=../../build-evidence/v4_attribute_impact.json cargo test --manifest-path rust/football_match_engine/Cargo.toml --lib v4::attribute_impact_tests::exhaustive_50_attribute_counterfactual_report -- --ignored --nocapture
-      - name: Measure 90-minute statistical baseline
-        run: |
-          V4_REALISM_MATCHES=128 V4_REALISM_REPORT_PATH=../../build-evidence/v4_realism_baseline.json cargo test --manifest-path rust/football_match_engine/Cargo.toml --lib v4::attribute_impact_tests::monte_carlo_realism_baseline_report -- --ignored --nocapture
-      - name: Validate evidence contents
+          V4_IMPACT_SEEDS=12 V4_IMPACT_REPORT_PATH=../../build-evidence/v4_attribute_impact.json cargo test --lib v4::attribute_impact_tests::exhaustive_50_attribute_counterfactual_report -- --ignored --nocapture
+          V4_REALISM_MATCHES=128 V4_REALISM_REPORT_PATH=../../build-evidence/v4_realism_baseline.json cargo test --lib v4::attribute_impact_tests::monte_carlo_realism_baseline_report -- --ignored --nocapture
+      - name: Validate machine-readable attribute evidence
         run: python3 tools/verify_v4_impact_report.py build-evidence/v4_attribute_impact.json build-evidence/v4_realism_baseline.json
-      - name: Upload audit and realism reports
+      - name: Upload machine-readable evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
