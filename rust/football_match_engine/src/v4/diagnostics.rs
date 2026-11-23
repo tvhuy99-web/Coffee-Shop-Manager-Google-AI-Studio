@@ -403,8 +403,8 @@ mod tests {
 
     #[test]
     fn fast_batch_and_full_event_diagnostics_match() {
-        let fast = simulate_v4(make_v4_input(90410, SimulationMode::FastBatch, RulesModeV4::League)).unwrap();
-        let full = simulate_v4(make_v4_input(90410, SimulationMode::FullEvent, RulesModeV4::League)).unwrap();
+        let fast = simulate_v4(make_v4_input(90410, SimulationMode::FastBatch, RulesModeV4::Standard)).unwrap();
+        let full = simulate_v4(make_v4_input(90410, SimulationMode::FullEvent, RulesModeV4::Standard)).unwrap();
         assert_eq!(fast.diagnostics, full.diagnostics);
         assert_eq!(fast.event_timeline_fingerprint, full.event_timeline_fingerprint);
         assert!(fast.events.is_empty());
@@ -425,7 +425,7 @@ mod tests {
     fn export_attacking_diagnostics_sample() {
         let mut matches = Vec::new();
         for seed in 92_000i64..92_012 {
-            let result = simulate_v4(make_v4_input(seed, SimulationMode::FastBatch, RulesModeV4::League))
+            let result = simulate_v4(make_v4_input(seed, SimulationMode::FastBatch, RulesModeV4::Standard))
                 .expect("seeded diagnostic fixture must simulate");
             let d = result.diagnostics.expect("FastBatch must include diagnostics");
             d.validate_basic().expect("diagnostics must have consistent funnel");
@@ -455,7 +455,7 @@ mod tests {
             "schemaVersion": DIAGNOSTICS_SCHEMA_VERSION_V4,
             "fixture": {
                 "description": "Synthetic, not real teams; uniform home 14 vs away 12 attributes",
-                "rules": "LEAGUE",
+                "rules": "STANDARD",
                 "simulationMode": "FAST_BATCH",
                 "seedStart": 92000,
                 "seedEndInclusive": 92011
