@@ -171,7 +171,9 @@ fn big_matches_activates_only_in_high_importance_fixtures() {
 
 #[test]
 fn paired_match_core_attribute_changes_real_event_stream_not_only_input_hash() {
-    for name in ["passing", "first_touch", "finishing", "dribbling", "reflexes"] {
+    // Reflexes are verified in an isolated shot-stopping test; ordinary matches may
+    // produce too few shots on target to detect that rarer outcome reliably.
+    for name in ["passing", "first_touch", "finishing", "dribbling"] {
         let mut actual_behavior_changes = 0;
         for index in 0..20i64 {
             let seed = 81001 + index * 109;
