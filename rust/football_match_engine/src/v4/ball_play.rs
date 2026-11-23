@@ -141,7 +141,7 @@ pub fn execute_pass_and_first_touch(
         - pitch_pen)
         .clamp(0.45, 0.98);
 
-    let ball_z = match kind {
+    let ball_z: f32 = match kind {
         PassKindV4::Short => 0.0,
         PassKindV4::Through => 0.15,
         PassKindV4::Cross => 2.1,
