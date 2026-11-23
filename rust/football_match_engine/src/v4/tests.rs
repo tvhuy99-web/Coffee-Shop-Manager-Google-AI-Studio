@@ -727,7 +727,7 @@ fn stage_f_monte_carlo_64_matches_and_seed_replay_parity() {
         .collect();
     let report = run_monte_carlo_v4(inputs).unwrap();
     assert_eq!(report.match_count, 64);
-    assert!(report.avg_shots_per_match > 5.0);
+    assert!(report.avg_shots_per_match > 5.0, "low shot generation, report={report:?}");
     assert!(report.pass_accuracy_pct > 55.0 && report.pass_accuracy_pct < 96.0);
 
     // 3. Stronger team (+5 attr delta across board) beats weaker team decisively
