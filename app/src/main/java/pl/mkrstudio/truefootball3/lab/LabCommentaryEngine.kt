@@ -58,11 +58,13 @@ class LabCommentaryEngine(
         homeGoals: Int,
         awayGoals: Int
     ): String? {
+        // The JSON bridge uses empty strings for absent names. Treat literal "null" as absent.
+        val safeActorName = actorName.trim().takeUnless { it.equals("null", true) }.orEmpty()
+        val safeTargetName = targetName.trim().takeUnless { it.equals("null", true) }.orEmpty()
         val gameSecond = ev.optInt("gameSecond", minute * 60)
         val tacticalPhase = ev.optString("tacticalPhase", "PROGRESSION")
         val ballX = ev.optInt("ballX", 50)
-        val prevBallX = tracker.lastBallX
-        val wasPressed = tracker.wasRecentlyPressed(gameSecond)
+        val lastKindBeforeEvent = tracker.lastEventKind
         val wasShotOrRebound = tracker.wasRecentShotOrRebound(gameSecond)
         val meta = ev.optJSONObject("metadata")
 
@@ -92,10 +94,15 @@ class LabCommentaryEngine(
                     else listOf("cv3_goal_generic", "cv3_goal_player")
                 }
             }
-            val base = pickAndFormat(prefixes, ev, kind, side, actorName, targetName, minute, homeGoals, awayGoals, meta)
-                ?: return null
+            val base = pickAndFormat(prefixes, ev, kind, side, safeActorName, safeTargetName, minute, homeGoals, awayGoals, meta)
+                ?: if (side != null) factualText("lab_commentary_goal_generic", mapOf(
+                    "TEAM" to teamName(side), "SCORE_AFTER" to "$homeGoals-$awayGoals"
+                )) else factualText("lab_commentary_goal_generic_unknown_side", mapOf(
+                    "SCORE_AFTER" to "$homeGoals-$awayGoals"
+                ))
+            if (base == null || base.isBlank()) return null
             val scoreClause = if (!base.contains("$homeGoals-$awayGoals") && !base.contains("$homeGoals – $awayGoals")) {
-                pickAndFormat(listOf("cv3_score", "cv2_score"), ev, kind, side, actorName, targetName, minute, homeGoals, awayGoals, meta, salt = 31L)
+                pickAndFormat(listOf("cv3_score", "cv2_score"), ev, kind, side, safeActorName, safeTargetName, minute, homeGoals, awayGoals, meta, salt = 31L)
             } else null
             return if (scoreClause != null) "$base $scoreClause" else base
         } else {
@@ -103,7 +110,6 @@ class LabCommentaryEngine(
         }
 
         val speak = tracker.shouldSpeak(kind, gameSecond, tacticalPhase)
-        val sustained = tracker.recordAttackMomentum(side, kind)
         tracker.recordContext(kind, side, ballX, gameSecond)
         if (!speak) return null
 
@@ -111,20 +117,24 @@ class LabCommentaryEngine(
             kind = kind,
             side = side,
             meta = meta,
-            tacticalPhase = tacticalPhase,
             minute = minute,
-            ballX = ballX,
-            prevBallX = prevBallX,
             homeGoals = homeGoals,
             awayGoals = awayGoals,
-            sustainedPressure = sustained,
-            wasPressed = wasPressed,
             wasShotOrRebound = wasShotOrRebound
         )
-        if (prefixes.isEmpty()) return null
+        // A goalkeeper claim followed by POSSESSION_STARTED is still goalkeeper
+        // possession, even if the Rust event exposes a generic field coordinate.
+        if (kind == LabEventType.POSSESSION_STARTED &&
+            lastKindBeforeEvent == LabEventType.GOALKEEPER_CLAIM && safeActorName.isNotBlank()
+        ) {
+            return factualText("lab_commentary_keeper_possession", mapOf(
+                "GOALKEEPER" to safeActorName, "TEAM" to teamName(side)
+            ))
+        }
+        if (prefixes.isEmpty()) return factualFallback(kind, side, safeActorName)
 
-        val mainLine = pickAndFormat(prefixes, ev, kind, side, actorName, targetName, minute, homeGoals, awayGoals, meta)
-            ?: return null
+        val mainLine = pickAndFormat(prefixes, ev, kind, side, safeActorName, safeTargetName, minute, homeGoals, awayGoals, meta)
+            ?: return factualFallback(kind, side, safeActorName)
 
         val extraClause = selectContextualFollowUp(
             kind = kind,
@@ -134,8 +144,8 @@ class LabCommentaryEngine(
             homeGoals = homeGoals,
             awayGoals = awayGoals,
             ev = ev,
-            actorName = actorName,
-            targetName = targetName,
+            actorName = safeActorName,
+            targetName = safeTargetName,
             meta = meta
         )
         return if (extraClause != null) "$mainLine $extraClause" else mainLine
@@ -145,19 +155,14 @@ class LabCommentaryEngine(
         kind: LabEventType,
         side: LabTeamSide?,
         meta: JSONObject?,
-        tacticalPhase: String,
         minute: Int,
-        ballX: Int,
-        prevBallX: Int,
         homeGoals: Int,
         awayGoals: Int,
-        sustainedPressure: Boolean,
-        wasPressed: Boolean,
         wasShotOrRebound: Boolean
     ): List<String> {
-        val ownLeading = isSideLeading(side, homeGoals, awayGoals)
-        val onFlank = ballX <= 28 || ballX >= 72
-        val isSwitchPlay = abs(ballX - prevBallX) >= 32 || meta?.optString("passType") == "SWITCH"
+        // A difference from the previous event's X is NOT proof of a switch
+        // of play; the original pass event must explicitly say so.
+        val isSwitchPlay = meta?.optString("passType") == "SWITCH"
 
         return when (kind) {
             LabEventType.MATCH_STARTED -> listOf("cv3_match_phase")
@@ -168,8 +173,8 @@ class LabCommentaryEngine(
             }
             LabEventType.TACTICAL_PHASE_CHANGED -> {
                 when {
-                    tracker.isTenMen(side) -> listOf("cv3_ten_men", "cv3_match_phase")
-                    tacticalPhase == "HIGH_PRESS" || tacticalPhase == "FINAL_THIRD" -> listOf("cv3_high_line", "cv3_match_phase")
+                    tracker.isTenMen(side) && meta?.optString("tenMen") == "true" -> listOf("cv3_ten_men", "cv3_match_phase")
+                    meta?.optString("highDefensiveLine") == "true" -> listOf("cv3_high_line", "cv3_match_phase")
                     else -> listOf("cv3_match_phase")
                 }
             }
@@ -177,51 +182,42 @@ class LabCommentaryEngine(
             LabEventType.PRESS -> {
                 if (minute >= 72) listOf("cv3_press", "cv3_fatigue") else listOf("cv3_press")
             }
-            LabEventType.TURNOVER -> listOf("cv3_transition", "cv2_counter")
-            LabEventType.TRANSITION_STARTED -> listOf("cv3_counter_attack", "cv2_counter")
+            // Winning possession alone doesn't prove a dangerous counterattack.
+            LabEventType.TURNOVER -> emptyList()
+            LabEventType.TRANSITION_STARTED -> listOf("cv3_transition")
             LabEventType.PASS_COMPLETED -> {
                 val gain = meta?.optString("progressGain")?.toIntOrNull() ?: 0
                 when {
-                    wasPressed -> listOf("cv3_escape_press", "cv3_progressive_pass")
-                    isSwitchPlay -> listOf("cv3_switch_play", "cv2_direction")
-                    sustainedPressure && onFlank -> listOf("cv3_overload", "cv3_sustained_pressure")
-                    sustainedPressure && tacticalPhase == "FINAL_THIRD" -> listOf("cv3_sustained_pressure")
-                    tacticalPhase == "BOX_ATTACK" -> listOf("cv3_box_attack", "cv2_box_attack")
+                    meta?.optString("escapedPressure") == "true" -> listOf("cv3_escape_press", "cv3_build_up", "cv2_build_up")
+                    isSwitchPlay -> listOf("cv3_switch_play")
+                    meta?.optString("overload") == "true" -> listOf("cv3_overload", "cv3_build_up")
+                    meta?.optString("sustainedPressure") == "true" -> listOf("cv3_sustained_pressure", "cv3_build_up")
                     gain >= 12 -> listOf("cv3_progressive_pass", "cv2_direction")
                     else -> listOf("cv3_build_up", "cv2_build_up")
                 }
             }
-            LabEventType.PASS_FAILED -> {
-                if (minute >= 74) listOf("cv3_ball_loss", "cv2_ball_loss", "cv3_fatigue")
-                else listOf("cv3_ball_loss", "cv2_ball_loss")
-            }
-            LabEventType.THROUGH_BALL -> listOf("cv3_through_ball", "cv3_high_line")
+            // An incomplete PASS doesn't establish a dribble, tackle or turnover.
+            LabEventType.PASS_FAILED -> emptyList()
+            LabEventType.THROUGH_BALL -> listOf("cv3_through_ball")
             LabEventType.FIRST_TOUCH -> {
-                if (wasPressed) listOf("cv3_escape_press", "cv3_first_touch") else listOf("cv3_first_touch")
+                listOf("cv3_first_touch")
             }
             LabEventType.CARRY, LabEventType.DRIBBLE_STARTED -> {
-                if (minute >= 76) listOf("cv3_dribble", "cv2_dribble", "cv3_fatigue")
-                else listOf("cv3_dribble", "cv2_dribble")
+                listOf("cv3_dribble", "cv2_dribble")
             }
             LabEventType.DRIBBLE_WON -> {
-                if (wasPressed) listOf("cv3_escape_press", "cv3_dribble")
-                else listOf("cv3_dribble", "cv2_dribble")
+                listOf("cv3_dribble", "cv2_dribble")
             }
             LabEventType.DRIBBLE_LOST -> listOf("cv3_ball_loss", "cv2_ball_loss")
             LabEventType.CROSS -> listOf("cv3_cross", "cv2_cross")
             LabEventType.TACKLE_ATTEMPTED, LabEventType.TACKLE_WON,
-            LabEventType.TACKLE_LOST -> {
-                if (tracker.isTenMen(side)) listOf("cv3_defensive_recovery", "cv3_ten_men")
-                else listOf("cv3_defensive_recovery")
-            }
+            LabEventType.TACKLE_LOST -> emptyList()
             LabEventType.INTERCEPTION -> listOf("cv3_interception", "cv2_interception")
             LabEventType.BLOCK -> listOf("cv3_block")
             LabEventType.CLEARANCE -> listOf("cv3_clearance")
             LabEventType.GROUND_DUEL, LabEventType.AERIAL_DUEL -> listOf("cv3_duel")
-            LabEventType.LOOSE_BALL, LabEventType.SECOND_BALL_WON -> {
-                if (tacticalPhase == "BOX_ATTACK") listOf("cv2_chaos", "cv3_loose_ball")
-                else listOf("cv3_loose_ball")
-            }
+            LabEventType.LOOSE_BALL -> listOf("cv3_loose_ball")
+            LabEventType.SECOND_BALL_WON -> emptyList()
             LabEventType.REBOUND -> {
                 if (wasShotOrRebound) listOf("cv2_second_shot", "cv3_rebound", "cv2_chaos")
                 else listOf("cv3_rebound", "cv2_chaos")
@@ -234,7 +230,7 @@ class LabCommentaryEngine(
                     dist >= 22.0 -> listOf("cv2_distance_shot", "cv3_shot")
                     meta?.optString("shotType") == "CURLED" || meta?.optString("finesse") == "true" ->
                         listOf("cv2_technical", "cv3_shot")
-                    else -> listOf("cv3_shot", "cv2_shot", "cv2_technical")
+                    else -> listOf("cv3_shot", "cv2_shot")
                 }
             }
             LabEventType.SHOT_ON_TARGET -> listOf("cv3_shot_on_target", "cv2_shot")
@@ -248,9 +244,8 @@ class LabCommentaryEngine(
             LabEventType.SAVE -> listOf("cv3_keeper_save", "cv2_keeper_save", "cv2_keeper_reflect")
             LabEventType.GOALKEEPER_PUNCH -> listOf("cv3_goalkeeper_punch", "cv2_keeper_reflect")
             LabEventType.GOALKEEPER_DISTRIBUTION -> listOf("cv3_goalkeeper_distribution")
-            LabEventType.GOALKEEPER_CLAIM, LabEventType.GOALKEEPER_RUSH,
-            LabEventType.GOALKEEPER_ASSIGNMENT_REQUIRED, LabEventType.GOALKEEPER_REASSIGNED ->
-                listOf("cv3_goalkeeper_action")
+            LabEventType.GOALKEEPER_CLAIM, LabEventType.GOALKEEPER_RUSH -> listOf("cv3_goalkeeper_action")
+            LabEventType.GOALKEEPER_ASSIGNMENT_REQUIRED, LabEventType.GOALKEEPER_REASSIGNED -> emptyList()
             LabEventType.FOUL -> listOf("cv3_foul")
             LabEventType.ADVANTAGE_PLAYED -> listOf("cv3_advantage")
             LabEventType.YELLOW_CARD -> listOf("cv3_yellow_card", "cv2_yellow_card")
@@ -258,20 +253,20 @@ class LabCommentaryEngine(
                 if (meta?.optString("secondYellow") == "true") listOf("cv3_second_yellow", "cv2_second_yellow")
                 else listOf("cv3_red_card", "cv2_red_card")
             }
-            LabEventType.OFFSIDE -> listOf("cv3_offside", "cv2_offside", "cv3_high_line")
+            LabEventType.OFFSIDE -> listOf("cv3_offside", "cv2_offside")
             LabEventType.INJURY -> listOf("cv3_injury", "cv2_injury")
             LabEventType.THROW_IN -> {
-                if (minute >= 78 && ownLeading) listOf("cv3_time_wasting", "cv3_throw_in")
+                if (meta?.optString("timeWasting") == "true") listOf("cv3_time_wasting", "cv3_throw_in")
                 else listOf("cv3_throw_in")
             }
             LabEventType.GOAL_KICK -> {
-                if (minute >= 78 && ownLeading) listOf("cv3_time_wasting", "cv3_goal_kick")
+                if (meta?.optString("timeWasting") == "true") listOf("cv3_time_wasting", "cv3_goal_kick")
                 else listOf("cv3_goal_kick")
             }
             LabEventType.CORNER -> listOf("cv3_corner", "cv2_corner")
             LabEventType.FREE_KICK -> {
-                if (minute >= 80 && ownLeading) listOf("cv3_time_wasting", "cv3_free_kick")
-                else listOf("cv3_free_kick", "cv2_free_kick", "cv2_free_kick_execution")
+                if (meta?.optString("timeWasting") == "true") listOf("cv3_time_wasting", "cv3_free_kick")
+                else listOf("cv3_free_kick", "cv2_free_kick")
             }
             LabEventType.PENALTY_AWARDED -> listOf("cv3_penalty_awarded")
             LabEventType.PENALTY_KICK -> listOf("cv3_penalty_kick")
@@ -311,40 +306,59 @@ class LabCommentaryEngine(
             kind == LabEventType.CARRY
         if (!isRoutineBeat) return null
 
-        if (tracker.shouldInjectStateFlavor(gameSecond)) {
-            val ownLeading = isSideLeading(side, homeGoals, awayGoals)
-            val ownTrailing = isSideTrailing(side, homeGoals, awayGoals)
-            val statePrefixes = when {
-                tracker.isTenMen(side) -> listOf("cv3_ten_men")
-                minute <= 12 && homeGoals == 0 && awayGoals == 0 -> listOf("cv2_early_state")
-                minute >= 75 && ownLeading -> listOf("cv2_late_leading")
-                minute >= 75 && ownTrailing -> listOf("cv2_late_trailing")
-                minute >= 75 && homeGoals == awayGoals -> listOf("cv2_late_level")
-                ownLeading -> listOf("cv2_control")
-                ownTrailing -> listOf("cv2_chasing")
-                else -> emptyList()
-            }
-            if (statePrefixes.isNotEmpty()) {
-                return pickAndFormat(statePrefixes, ev, kind, side, actorName, targetName, minute, homeGoals, awayGoals, meta, salt = 73L)
-            }
-        }
-
+        // Do not invent tactics, deliberate time-wasting or dominance from a
+        // routine possession/pass merely because the match clock advanced.
         if (minute >= 20 && tracker.shouldAppendScore(gameSecond)) {
             return pickAndFormat(listOf("cv3_score", "cv2_score"), ev, kind, side, actorName, targetName, minute, homeGoals, awayGoals, meta, salt = 97L)
         }
         return null
     }
 
-    private fun isSideLeading(side: LabTeamSide?, homeGoals: Int, awayGoals: Int): Boolean = when (side) {
-        LabTeamSide.HOME -> homeGoals > awayGoals
-        LabTeamSide.AWAY -> awayGoals > homeGoals
-        null -> false
+    /** Original catalogue text is retained. These fact-only fallback lines have their
+     * own Android locale resources, so no Vietnamese is injected into English TTS. */
+    private fun factualText(key: String, tokens: Map<String, String> = emptyMap()): String? {
+        val id = context.resources.getIdentifier(key, "string", context.packageName)
+        if (id == 0) return null
+        var line = context.getString(id)
+        for ((name, value) in tokens) {
+            if (value.isBlank()) return null
+            line = line.replace("{$name}", value)
+        }
+        return line.trim().takeIf { it.isNotBlank() && !it.contains('{') }
     }
 
-    private fun isSideTrailing(side: LabTeamSide?, homeGoals: Int, awayGoals: Int): Boolean = when (side) {
-        LabTeamSide.HOME -> homeGoals < awayGoals
-        LabTeamSide.AWAY -> awayGoals < homeGoals
-        null -> false
+    /** Exact-event fallback when the legacy catalogue has no proven variant. */
+    private fun factualFallback(kind: LabEventType, side: LabTeamSide?, actor: String): String? {
+        val team = teamName(side)
+        return when (kind) {
+            LabEventType.PASS_FAILED -> if (actor.isNotBlank()) factualText(
+                "lab_commentary_pass_failed_player", mapOf("PLAYER" to actor)
+            ) else factualText("lab_commentary_pass_failed_generic")
+            LabEventType.TURNOVER -> factualText("lab_commentary_turnover", mapOf("TEAM" to team))
+            LabEventType.SECOND_BALL_WON -> if (actor.isNotBlank()) factualText(
+                "lab_commentary_second_ball_player", mapOf("PLAYER" to actor, "TEAM" to team)
+            ) else factualText("lab_commentary_second_ball_team", mapOf("TEAM" to team))
+            LabEventType.TACKLE_ATTEMPTED -> factualText("lab_commentary_tackle_attempted", mapOf("PLAYER" to actor))
+            LabEventType.TACKLE_WON -> factualText("lab_commentary_tackle_won", mapOf("PLAYER" to actor))
+            LabEventType.TACKLE_LOST -> factualText("lab_commentary_tackle_lost", mapOf("PLAYER" to actor))
+            LabEventType.GOALKEEPER_ASSIGNMENT_REQUIRED -> factualText(
+                "lab_commentary_goalkeeper_assignment_required", mapOf("TEAM" to team)
+            )
+            LabEventType.GOALKEEPER_REASSIGNED -> factualText(
+                "lab_commentary_goalkeeper_reassigned", mapOf("TEAM" to team)
+            )
+            LabEventType.GOALKEEPER_DISTRIBUTION -> factualText(
+                "lab_commentary_goalkeeper_distribution", mapOf("PLAYER" to actor)
+            )
+            LabEventType.TRANSITION_STARTED -> factualText("lab_commentary_transition_started", mapOf("TEAM" to team))
+            else -> null
+        }
+    }
+
+    private fun teamName(side: LabTeamSide?): String = when (side) {
+        LabTeamSide.HOME -> homeTeam
+        LabTeamSide.AWAY -> awayTeam
+        null -> ""
     }
 
     private fun pickAndFormat(
@@ -363,7 +377,15 @@ class LabCommentaryEngine(
         // FIRST_TOUCH events place the receiver in actor, while PASS_COMPLETED uses target.
         // Never silently substitute the opposing team for a missing receiver.
         val receiverName = if (kind == LabEventType.FIRST_TOUCH) actorName else targetName
+        val shootoutForWinner = meta?.optString("shootout")?.split("-")
+        val shootoutHome = shootoutForWinner?.getOrNull(0)?.toIntOrNull()
+        val shootoutAway = shootoutForWinner?.getOrNull(1)?.toIntOrNull()
+        val winnerIsKnown = homeGoals != awayGoals ||
+            (shootoutHome != null && shootoutAway != null && shootoutHome != shootoutAway)
         val candidates = templatesForAny(prefixes).filter { (key, template) ->
+            val policyAllows = LabCommentaryTemplatePolicy.allows(
+                key, template, kind, minute, meta, actorName, targetName, receiverName, side
+            )
             val phaseLine = if (key.startsWith("cv3_match_phase_")) {
                 key.removePrefix("cv3_match_phase_").toIntOrNull()
             } else null
@@ -374,7 +396,8 @@ class LabCommentaryEngine(
                 kind == LabEventType.TACTICAL_PHASE_CHANGED -> phaseLine in 5..10
                 else -> false
             }
-            phaseValid && (!template.contains("{RECEIVER}") || receiverName.isNotBlank())
+            policyAllows && phaseValid && (!template.contains("{RECEIVER}") || receiverName.isNotBlank()) &&
+                (!template.contains("{WINNER}") && !template.contains("{LOSER}") || winnerIsKnown)
         }
         if (candidates.isEmpty()) return null
         val seq = ev.optLong("sequence", 0L)
@@ -410,13 +433,16 @@ class LabCommentaryEngine(
         val winner = when {
             homeGoals > awayGoals -> homeTeam
             awayGoals > homeGoals -> awayTeam
-            (penHome.toIntOrNull() ?: 0) >= (penAway.toIntOrNull() ?: 0) -> homeTeam
-            else -> awayTeam
+            meta?.has("shootout") == true && penHome.toIntOrNull() != penAway.toIntOrNull() ->
+                if ((penHome.toIntOrNull() ?: 0) > (penAway.toIntOrNull() ?: 0)) homeTeam else awayTeam
+            else -> ""
         }
-        val loser = if (winner == homeTeam) awayTeam else homeTeam
+        val loser = if (winner.isBlank()) "" else if (winner == homeTeam) awayTeam else homeTeam
 
-        val safeActor = actorName.ifBlank { teamName }
-        val safeTarget = targetName.ifBlank { opponentName }
+        // Never substitute the name of a club when the missing token expects
+        // an actual footballer (a key difference from the original Kotlin port).
+        val safeActor = actorName
+        val safeTarget = targetName
         val isDefensiveEvent = kind == LabEventType.BLOCK ||
             kind == LabEventType.CLEARANCE ||
             kind == LabEventType.INTERCEPTION ||
@@ -429,6 +455,11 @@ class LabCommentaryEngine(
         val attackingTeam = if (isDefensiveEvent) opponentName else teamName
         val defendingTeam = if (isDefensiveEvent) teamName else opponentName
 
+        val scored = meta?.optString("scored") == "true" ||
+            meta?.optString("outcome")?.equals("SCORED", ignoreCase = true) == true
+        val shootoutResult = if (kind == LabEventType.PENALTY_SHOOTOUT_KICK) {
+            if (scored) "ghi bàn" else "không thành công"
+        } else ""
         val values = mapOf(
             "PLAYER" to safeActor,
             "PASSER" to safeActor,
@@ -454,7 +485,7 @@ class LabCommentaryEngine(
             "SCORE_AFTER" to "$homeGoals-$awayGoals",
             "TO_ZONE" to zone,
             "FLANK" to zone,
-            "SHOOTOUT_RESULT" to shootout,
+            "SHOOTOUT_RESULT" to shootoutResult,
             "PENALTY_HOME_SCORE" to penHome,
             "PENALTY_AWAY_SCORE" to penAway
         )
