@@ -71,7 +71,13 @@ def check_realism(path: Path):
                 "avgShotsOffTargetPerMatch", "avgSavesPerMatch", "avgOwnGoalsPerMatch",
                 "passAccuracyPct", "avgFoulsPerMatch", "avgYellowCardsPerMatch",
                 "avgRedCardsPerMatch", "homeWinRatePct", "drawRatePct", "awayWinRatePct",
-                "matchesPerSec"):
+                "matchesPerSec",
+                "avgPossessionsPerMatch", "avgFinalThirdPossessionsPerMatch",
+                "avgPenaltyAreaPossessionsPerMatch", "avgPenaltyAreaWithoutShotPerMatch",
+                "avgShotPossessionsPerMatch", "avgShotsFromBoxPerMatch",
+                "avgPassInterceptionsPerMatch", "avgPassMisplacementsPerMatch",
+                "avgPassOutOfPlayPerMatch", "avgFirstTouchErrorsPerMatch",
+                "avgDribbleTacklesPerMatch", "avgUnclassifiedTurnoversPerMatch"):
         require(isinstance(metrics[key], (int, float)) and math.isfinite(metrics[key]) and metrics[key] >= 0,
                 f"invalid aggregate metric: {key}")
     outcomes = sum(metrics[key] for key in ("homeWinRatePct", "drawRatePct", "awayWinRatePct"))
@@ -79,9 +85,30 @@ def check_realism(path: Path):
     require(0 <= metrics["passAccuracyPct"] <= 100, "invalid pass accuracy percentage")
     require(metrics["avgShotsBlockedPerMatch"] + metrics["avgShotsOffTargetPerMatch"]
             <= metrics["avgShotsPerMatch"] + 1e-4, "shot breakdown impossible")
+    eps = 1e-4
+    require(metrics["avgFinalThirdPossessionsPerMatch"] <= metrics["avgPossessionsPerMatch"] + eps,
+            "final-third entries exceed total possessions")
+    require(metrics["avgPenaltyAreaPossessionsPerMatch"] <= metrics["avgFinalThirdPossessionsPerMatch"] + eps,
+            "penalty-area entries exceed final-third entries")
+    require(metrics["avgPenaltyAreaWithoutShotPerMatch"] <= metrics["avgPenaltyAreaPossessionsPerMatch"] + eps,
+            "box-without-shot exceeds box possessions")
+    require(metrics["avgShotPossessionsPerMatch"] <= metrics["avgPossessionsPerMatch"] + eps,
+            "shot possessions exceed total possessions")
+    require(metrics["avgShotsFromBoxPerMatch"] <= metrics["avgShotsPerMatch"] + eps,
+            "shots from box exceed total shots")
     print(f"V4 realism evidence valid: {sample['matches']} synthetic 90-minute fixtures; "
           f"mean goals {metrics['avgGoalsPerMatch']:.2f}, shots {metrics['avgShotsPerMatch']:.2f}, "
           f"pass accuracy {metrics['passAccuracyPct']:.1f}%. Advisory, not calibrated.")
+    print(f"V4 attack funnel/match: possessions {metrics['avgPossessionsPerMatch']:.2f}, "
+          f"final third {metrics['avgFinalThirdPossessionsPerMatch']:.2f}, "
+          f"box {metrics['avgPenaltyAreaPossessionsPerMatch']:.2f}, "
+          f"box-without-shot {metrics['avgPenaltyAreaWithoutShotPerMatch']:.2f}, "
+          f"shot possessions {metrics['avgShotPossessionsPerMatch']:.2f}.")
+    print(f"V4 possession losses/match: intercepted passes {metrics['avgPassInterceptionsPerMatch']:.2f}, "
+          f"misplaced passes {metrics['avgPassMisplacementsPerMatch']:.2f}, "
+          f"first touches {metrics['avgFirstTouchErrorsPerMatch']:.2f}, "
+          f"dribble tackles {metrics['avgDribbleTacklesPerMatch']:.2f}, "
+          f"unclassified {metrics['avgUnclassifiedTurnoversPerMatch']:.2f}.")
 
 
 def main():
