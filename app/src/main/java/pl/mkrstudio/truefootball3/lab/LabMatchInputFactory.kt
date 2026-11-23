@@ -4,9 +4,10 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-class LabMatchInputFactory(context: Context, assetPath: String = "match_lab/epl20_original.json") {
+class LabMatchInputFactory(context: Context, assetPath: String = "england_v2/clubs.json") {
+    private val appContext = context.applicationContext
     private val source: JSONObject = JSONObject(
-        context.assets.open(assetPath).bufferedReader(Charsets.UTF_8).use { it.readText() }
+        appContext.assets.open(assetPath).bufferedReader(Charsets.UTF_8).use { it.readText() }
     )
     private val playerNames = HashMap<String, String>()
 
@@ -54,11 +55,11 @@ class LabMatchInputFactory(context: Context, assetPath: String = "match_lab/epl2
         val homeId = findClubId(homeName)
         val awayId = findClubId(awayName)
         val root = JSONObject().apply {
-            put("matchId", "LAB-ENG1-$homeId-$awayId")
+            put("matchId", "LAB-ENG-V2-$homeId-$awayId")
             put("seed", seed)
             put("engineVersion", ENGINE_VERSION)
             put("neutralGround", false)
-            put("competitionContext", "ENG_1")
+            put("competitionContext", findClub(homeName).optString("league_id", "ENG_1"))
             put("simulatedActionMinutes", simulatedActionMinutes)
             put("rulesMode", if (knockout) "KNOCKOUT" else "STANDARD")
             put("aiHomeManager", aiHomeManager)
@@ -69,14 +70,16 @@ class LabMatchInputFactory(context: Context, assetPath: String = "match_lab/epl2
         return root.toString()
     }
 
-    private fun findClubId(teamName: String): String {
-        val teams = source.getJSONArray("teams")
+    private fun findClub(teamName: String): JSONObject {
+        val teams = source.getJSONArray("clubs")
         for (i in 0 until teams.length()) {
             val t = teams.getJSONObject(i)
-            if (teamName == t.optString("name")) return t.getString("id")
+            if (teamName == t.optString("name")) return t
         }
-        throw IllegalArgumentException("Unknown team: $teamName")
+        throw IllegalArgumentException("Unknown English-pyramid club: $teamName")
     }
+
+    private fun findClubId(teamName: String): String = findClub(teamName).getString("id")
 
     private fun serializeTeam(
         teamId: String,
@@ -174,31 +177,72 @@ class LabMatchInputFactory(context: Context, assetPath: String = "match_lab/epl2
             .put("secondaryPosition", p.secondaryPosition)
     }
 
+    /**
+     * Development bridge: the 54-item stage-2 schema is the source of truth in
+     * the database. The existing Rust JNI match engine still accepts the 20 V3
+     * fields. Only project for exhibition matches; NOT full native 54-attr parity.
+     */
+    private fun project54ForV3(row: JSONObject): LabPlayerAttributes {
+        val attr = row.getJSONObject("simulation").getJSONObject("attributes")
+        fun v(group: String, name: String): Int =
+            attr.getJSONObject(group).optInt(name, 10).coerceIn(1, 20)
+        fun scale(n: Int): Int = (1 + ((n.coerceIn(1, 20) - 1) * 98.0 / 19.0)).toInt().coerceIn(1, 99)
+        fun avg(vararg vals: Int) = vals.sum() / vals.size
+        return LabPlayerAttributes(
+            goalkeeping = scale(avg(v("goalkeeping", "reflexes"), v("goalkeeping", "handling"), v("goalkeeping", "one_on_ones"))),
+            tackling = scale(v("technical", "tackling")),
+            passing = scale(v("technical", "passing")),
+            crossing = scale(v("technical", "crossing")),
+            technique = scale(v("technical", "technique")),
+            dribbling = scale(v("technical", "dribbling")),
+            shooting = scale(avg(v("technical", "finishing"), v("technical", "long_shots"))),
+            heading = scale(v("technical", "heading")),
+            pace = scale(v("physical", "pace")),
+            agility = scale(v("physical", "agility")),
+            strength = scale(v("physical", "strength")),
+            stamina = scale(v("physical", "stamina")),
+            vision = scale(v("mental", "vision")),
+            decisions = scale(v("mental", "decisions")),
+            composure = scale(v("mental", "composure")),
+            offBallMovement = scale(v("mental", "off_the_ball")),
+            defensivePositioning = scale(v("mental", "positioning")),
+            workRate = scale(v("mental", "work_rate")),
+            charisma = scale(v("mental", "leadership")),
+            temperament = scale(v("hidden", "temperament"))
+        )
+    }
+
     private fun loadSquadSnapshots(teamName: String): List<LabPlayerSnapshot> {
+        val club = findClub(teamName)
+        val league = club.getString("league_id")
+        val idClub = club.getString("id")
+        val path = "england_v2/division_${league}.json"
+        val division = JSONObject(
+            appContext.assets.open(path).bufferedReader(Charsets.UTF_8).use { it.readText() }
+        )
         val roster = ArrayList<JSONObject>()
-        val players = source.getJSONArray("players")
+        val players = division.getJSONArray("players")
         for (i in 0 until players.length()) {
             val row = players.getJSONObject(i)
-            if (teamName == row.optString("team")) roster.add(row)
+            if (row.optString("club_id") == idClub) roster.add(row)
         }
-        check(roster.size >= 18) { "Less than 18 players: $teamName" }
-        roster.sortWith(compareByDescending<JSONObject> { it.optInt("skill") }.thenBy { it.optString("lab_player_id") })
+        check(roster.size >= 18) { "Fewer than 18 registered players: $teamName ($league)" }
+        roster.sortWith(compareByDescending<JSONObject> { it.optInt("skill") }.thenBy { it.optString("id") })
         return roster.map { row ->
-            val id = row.getString("lab_player_id")
-            val name = row.optString("name")
-            playerNames[id] = name
-            val pos = row.optString("position")
+            val id = row.getString("id")
+            val playerName = row.optString("name")
+            playerNames[id] = playerName
             LabPlayerSnapshot(
                 playerId = id,
-                displayName = name,
-                attributes = LabPlayerAttributes.generateDeterministic(id, row.optInt("skill", 50), pos),
+                displayName = playerName,
+                attributes = project54ForV3(row),
                 condition = 100,
                 morale = 65,
                 form = 55,
                 age = row.optInt("age", 24).coerceIn(1, 80),
                 isInjured = false,
                 isEligible = true,
-                primaryPosition = pos,
+                primaryPosition = row.optString("position"),
                 secondaryPosition = row.optString("second_position")
             )
         }
