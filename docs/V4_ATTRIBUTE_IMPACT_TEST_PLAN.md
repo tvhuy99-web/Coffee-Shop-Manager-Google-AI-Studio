@@ -19,6 +19,8 @@ Passing any lower level does not prove a higher one.
 - Kicking increases long distributions with throwing held constant.
 - Stamina reduces aerobic and anaerobic depletion from repeated sprints.
 - Big_matches activates on high-importance fixtures, not ordinary fixtures.
+- Tackling, marking and strength: controlled attacker/defender duels produce directional tackle-win changes.
+- Goalkeeper one_on_ones: controlled 1v1 shot-stopping reduces conceded goals.
 - Passing, first_touch, finishing and dribbling each change a true Rust event timeline in at least one of 20 paired-seed matches.
 - Existing V4 stage tests also gate passing completion, first-touch mistakes, goalkeeper reflexes, handling, finishing, consistency and natural fitness.
 
@@ -54,3 +56,21 @@ CI publishes the two machine-readable JSON files as an artifact in the existing 
 - Paired confidence intervals on a larger, stratified sample with holdout seeds, results across engine revisions.
 - Cross-CPU x86_64/ARM64 determinism, Android JNI stress, runtime throughput and battery tests.
 - No production match algorithm or commentary resources are changed in this iteration.
+
+
+## Initial baseline (GitHub Actions run 45174793834, 23 Nov 2026)
+
+- Rust CI: 63 passed and zero failed at the time of this baseline (before subsequent isolated duel additions).
+- Counterfactual 50 x 12 paired seeds: 41 attributes showed distinct event timelines; NINE did not: tackling, marking, corners, determination, leadership, strength, one_on_ones, consistency, big_matches.
+- Initial 128 synthetic 90-minute matches: mean goals 0.92, shots 8.23, completed pass rate 63.8%.
+- The synthetic sample is not the Premier League and cannot by itself prove a target range violation across all leagues. However, it is an important warning that passing buildup and shot volume likely need model diagnosis before calibration.
+- In response, additional controlled tackle, marking, strength and one-on-one keeper tests were introduced. Their passing outcome must be verified on the new CI commit.
+
+Source: https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45174793834
+
+### Diagnostic next steps
+
+1. Count actual opportunities and activations for free kicks, corners, shots on target, fouls, duels and pressure situations. Low exposure makes statistical tests powerless.
+2. For the unobserved fields, build named scenario fixtures rather than raising random fixture counts indefinitely.
+3. In an independent holdout population, separately measure attacking entries, pass loss locations, buildup sequences, shot propensity and xG. Investigate causes before modifying shot or pass probabilities.
+4. Keep release-mode ARM64 throughput measurements separate from debug Linux CI; never extrapolate device performance from a test-runner timing alone.
