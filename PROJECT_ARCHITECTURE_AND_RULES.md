@@ -1,3 +1,16 @@
+# Cập nhật giai đoạn 2: dữ liệu bóng đá Anh
+
+Đã đưa **English mini-world** lên `main`: 232 CLB, 11 giải/nhóm, 54 thuộc tính
+mô phỏng, 5.640 cầu thủ đội một, 2.784 cầu thủ trẻ, 4.640 nhân viên và
+4.780 lịch trận **giả lập**. File thử nghiệm cũ `epl20_original.json` đã bị xóa.
+
+Đọc [hướng dẫn dữ liệu Anh V2](docs/ENGLAND_MINIWORLD_V2.md) để phân biệt
+thông tin lấy từ bản nguồn PingFootball 2025 với thông tin mô phỏng. Đặc biệt:
+**các trận là lịch game, không phải lịch EFL chính thức; Rust chưa sử dụng trực tiếp
+54 thuộc tính, màn hình thử nghiệm hiện có cầu nối 54 → 20 chỉ số V3**.
+
+---
+
 # Kiến trúc chuẩn: Football Match Lab (giai đoạn chuyển đổi)
 
 ## Ranh giới trách nhiệm
