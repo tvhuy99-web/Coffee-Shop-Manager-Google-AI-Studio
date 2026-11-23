@@ -171,10 +171,8 @@ impl MatchDiagnosticsCollectorV4 {
         if self.active.as_ref().map(|p| p.side) == Some(side) {
             return;
         }
-        if let Some(old) = self.active.as_ref() {
-            if !old.had_shot {
-                self.team_mut(old.side).turnovers.other_unclassified += 1;
-            }
+        if let Some((old_side, false)) = self.active.as_ref().map(|p| (p.side, p.had_shot)) {
+            self.team_mut(old_side).turnovers.other_unclassified += 1;
         }
         self.close_active();
         self.team_mut(side).possessions += 1;
