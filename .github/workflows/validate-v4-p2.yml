@@ -4,11 +4,13 @@ on:
     paths:
       - 'rust/football_match_engine/**'
       - 'tools/verify_v4_p2.py'
+      - 'tools/verify_v4_impact_report.py'
       - '.github/workflows/validate-v4-p2.yml'
   pull_request:
     paths:
       - 'rust/football_match_engine/**'
       - 'tools/verify_v4_p2.py'
+      - 'tools/verify_v4_impact_report.py'
       - '.github/workflows/validate-v4-p2.yml'
 jobs:
   test-v4-p2:
@@ -21,3 +23,22 @@ jobs:
       - name: Compile and run Rust V3 + V4 regression suites
         working-directory: rust/football_match_engine
         run: cargo test --all-targets --verbose
+      - name: Report 50 counterfactual attribute probes
+        run: |
+          mkdir -p build-evidence
+          cd rust/football_match_engine
+          V4_IMPACT_SEEDS=12 V4_IMPACT_REPORT_PATH=../../build-evidence/v4_attribute_impact.json cargo test --lib v4::attribute_impact_tests::exhaustive_50_attribute_counterfactual_report -- --ignored --nocapture
+      - name: Report 90-minute synthetic Monte Carlo calibration baseline
+        run: |
+          cd rust/football_match_engine
+          V4_REALISM_MATCHES=128 V4_REALISM_REPORT_PATH=../../build-evidence/v4_realism_baseline.json cargo test --lib v4::attribute_impact_tests::monte_carlo_realism_baseline_report -- --ignored --nocapture
+      - name: Validate diagnostic evidence and make gaps visible
+        run: python3 tools/verify_v4_impact_report.py build-evidence/v4_attribute_impact.json build-evidence/v4_realism_baseline.json
+      - name: Upload attribute impact and realism reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-impact-and-realism-report
+          path: build-evidence/
+          if-no-files-found: warn
+          retention-days: 30
