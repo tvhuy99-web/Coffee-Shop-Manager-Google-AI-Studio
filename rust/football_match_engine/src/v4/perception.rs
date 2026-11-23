@@ -203,7 +203,10 @@ pub fn perceive_evaluate_and_decide(
             normalize_attr_elite(attrs.technical.long_shots)
         };
         let dist_appeal = ((28.5 - goal_dist) / 24.0).clamp(0.0, 1.18);
-        let shot_utility = (if in_box { 25.5 } else { 7.0 })
+        // V4 P2 calibration: unboosted shooting was selected only ~2 times per 90 min.
+        // Reward legitimate attempts inside the box while keeping distance, pressure,
+        // skill and shot opportunity costs active.
+        let shot_utility = (if in_box { 48.0 } else { 24.0 })
             + dist_appeal * 13.5
             + fin * 10.0
             + composure * 3.2
