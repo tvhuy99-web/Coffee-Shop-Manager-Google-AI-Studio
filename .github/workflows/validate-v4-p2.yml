@@ -1,0 +1,23 @@
+name: Rust V4 P2 own-goals and statistics regression
+on:
+  push:
+    paths:
+      - 'rust/football_match_engine/**'
+      - 'tools/verify_v4_p2.py'
+      - '.github/workflows/validate-v4-p2.yml'
+  pull_request:
+    paths:
+      - 'rust/football_match_engine/**'
+      - 'tools/verify_v4_p2.py'
+      - '.github/workflows/validate-v4-p2.yml'
+jobs:
+  test-v4-p2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Confirm P2 source/data contracts
+        run: python3 tools/verify_v4_p2.py
+      - name: Compile and run Rust V3 + V4 regression suites
+        working-directory: rust/football_match_engine
+        run: cargo test --all-targets --verbose
