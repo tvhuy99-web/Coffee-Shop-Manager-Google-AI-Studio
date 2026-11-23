@@ -41,15 +41,21 @@ assets = APP / "assets"
 check(not (assets / "competition_data_current").exists(), "no legacy competition_data_current")
 check(not (assets / "competition_data_2025").exists(), "no legacy competition_data_2025")
 
-teams_path = assets / "match_lab/epl20_original.json"
-check(teams_path.is_file(), "EPL20 source dataset present")
-if teams_path.is_file():
-    data = json.loads(teams_path.read_text(encoding="utf-8"))
-    clubs = data.get("teams", [])
-    players = data.get("players", [])
-    check(len(clubs) == 20, f"exactly 20 Premier League clubs ({len(clubs)})")
-    check(len(players) == 549, f"exactly 549 original player records ({len(players)})")
-    check(len({x.get('name') for x in clubs}) == 20, "unique club names")
+# Phase 2: 232 England-pyramid clubs, 11 development divisions, 54 fields.
+england_root = assets / "england_v2"
+check((england_root / "manifest.json").is_file(), "England V2 manifest present")
+check((england_root / "clubs.json").is_file(), "England V2 club catalogue present")
+check((england_root / "competition_rules.json").is_file(), "England V2 competitions and career rules present")
+check(not (assets / "match_lab/epl20_original.json").exists(), "obsolete EPL20 asset deleted")
+if (england_root / "manifest.json").is_file():
+    data = json.loads((england_root / "manifest.json").read_text(encoding="utf-8"))
+    count = data.get("counts", {})
+    check(count.get("clubs") == 232, "232 England-pyramid clubs")
+    check(count.get("divisions") == 11, "11 league and development groups")
+    check(count.get("players") == 5640, "5,640 first-team profiles")
+    check(count.get("fixtures") == 4780, "4,780 simulated fixtures")
+    check(count.get("staff") == 4640, "4,640 simulated staff profiles")
+    check(count.get("youth") == 2784, "2,784 youth-player profiles")
 
 manifest = ROOT / "AUDIO_SHA256_MANIFEST.txt"
 check(manifest.is_file(), "OGG checksum manifest present")
