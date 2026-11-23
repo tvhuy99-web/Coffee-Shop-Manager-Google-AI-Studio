@@ -1,0 +1,190 @@
+{
+  "schema_version": "2.0-development",
+  "season": "2025/26_reference",
+  "record_origin": "CONFIG_NOT_OFFICIAL_FIXTURES",
+  "cup_competitions": [
+    {
+      "id": "FA_CUP",
+      "name": "FA Cup",
+      "scope": "English pyramid; eligibility and qualifying rounds engine pending",
+      "round_structure": [
+        "qualifying",
+        "first",
+        "second",
+        "third",
+        "fourth",
+        "fifth",
+        "quarter_final",
+        "semi_final",
+        "final"
+      ],
+      "participants_policy": "eligible_clubs_by_entry_round",
+      "bracket_status": "generate_when_career_starts",
+      "fixtures": [],
+      "official_fixture_records": false
+    },
+    {
+      "id": "EFL_CUP",
+      "name": "EFL Cup",
+      "scope": "ENG_1..ENG_4",
+      "round_structure": [
+        "first",
+        "second",
+        "third",
+        "fourth",
+        "quarter_final",
+        "semi_final",
+        "final"
+      ],
+      "participants_policy": "EPL_and_EFL",
+      "bracket_status": "generate_when_career_starts",
+      "fixtures": [],
+      "official_fixture_records": false
+    },
+    {
+      "id": "EFL_TROPHY",
+      "name": "EFL Trophy",
+      "scope": "ENG_3, ENG_4 + youth invitations",
+      "participants_policy": "qualification_pending",
+      "bracket_status": "not_yet_generated",
+      "fixtures": [],
+      "official_fixture_records": false
+    },
+    {
+      "id": "FA_TROPHY",
+      "name": "FA Trophy",
+      "scope": "eligible_non_league_clubs",
+      "participants_policy": "qualification_pending",
+      "bracket_status": "not_yet_generated",
+      "fixtures": [],
+      "official_fixture_records": false
+    },
+    {
+      "id": "FA_VASE",
+      "name": "FA Vase",
+      "scope": "lower_non_league_eligibility_pending",
+      "participants_policy": "qualification_pending",
+      "bracket_status": "not_yet_generated",
+      "fixtures": [],
+      "official_fixture_records": false
+    }
+  ],
+  "season_config": {
+    "season_start": "2025-08-09",
+    "season_end": "2026-05-23",
+    "calendar_timezone": "Europe/London",
+    "fixture_source": "generated_balanced_double_round_robin",
+    "points": {
+      "win": 3,
+      "draw": 1,
+      "loss": 0
+    },
+    "table_tiebreakers": [
+      "points",
+      "goal_difference",
+      "goals_for",
+      "head_to_head"
+    ],
+    "players_registration": {
+      "squad_max": 30,
+      "required_goalkeepers": 2,
+      "status": "provisional_simulation_rule"
+    },
+    "transfer_windows": [
+      {
+        "start": "2025-07-01",
+        "end": "2025-09-01",
+        "type": "summer",
+        "official_dates_verified": false
+      },
+      {
+        "start": "2026-01-01",
+        "end": "2026-02-02",
+        "type": "winter",
+        "official_dates_verified": false
+      }
+    ]
+  },
+  "staff_roles": [
+    "chairperson",
+    "chief_executive",
+    "sporting_director",
+    "first_team_manager",
+    "assistant_manager",
+    "goalkeeping_coach",
+    "defensive_coach",
+    "attacking_coach",
+    "fitness_coach",
+    "head_of_youth_development",
+    "academy_coach",
+    "chief_scout",
+    "recruitment_analyst",
+    "performance_analyst",
+    "head_physio",
+    "club_doctor",
+    "sports_scientist",
+    "kit_manager",
+    "grounds_manager",
+    "finance_director"
+  ],
+  "career_systems": [
+    "squad_registration",
+    "contracts",
+    "transfers",
+    "finance",
+    "stadium",
+    "facilities",
+    "board",
+    "fans",
+    "medical",
+    "training",
+    "academy",
+    "scouting",
+    "staff",
+    "fixtures",
+    "standings",
+    "promotion_relegation",
+    "cups",
+    "discipline",
+    "injury",
+    "international_duty"
+  ],
+  "promotion_relegation": {
+    "status": "rules_engines_not_integrated",
+    "note": "2025/26 league divisions recorded; relegation allocation and play-offs require future rule implementation. Do not use invented results.",
+    "relationships": [
+      [
+        "ENG_1",
+        "ENG_2"
+      ],
+      [
+        "ENG_2",
+        "ENG_3"
+      ],
+      [
+        "ENG_3",
+        "ENG_4"
+      ],
+      [
+        "ENG_4",
+        "ENG_5"
+      ],
+      [
+        "ENG_5",
+        "ENG_6A"
+      ],
+      [
+        "ENG_5",
+        "ENG_6B"
+      ]
+    ]
+  },
+  "quality_notes": [
+    "Welsh clubs who participate in English competitions are included",
+    "2025 source membership is not verified current 2026-27",
+    "No invented real staff appointments",
+    "All staff identities are fictional simulated",
+    "No cup results or official fixtures are claimed",
+    "ENG_7 groups are non-official testing partitions"
+  ]
+}
