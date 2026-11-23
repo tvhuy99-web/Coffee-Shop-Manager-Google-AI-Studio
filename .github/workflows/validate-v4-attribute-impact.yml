@@ -1,0 +1,65 @@
+name: V4 attribute impact and 90-minute realism diagnostics
+
+on:
+  push:
+    branches: ['integration/v4-attribute-impact-audit']
+    paths:
+      - 'rust/football_match_engine/**'
+      - 'tools/verify_v4_impact_report.py'
+      - '.github/workflows/validate-v4-attribute-impact.yml'
+  pull_request:
+    paths:
+      - 'rust/football_match_engine/**'
+      - 'tools/verify_v4_impact_report.py'
+      - '.github/workflows/validate-v4-attribute-impact.yml'
+  workflow_dispatch:
+    inputs:
+      audit_seeds:
+        description: 'Paired seeds for each of 50 match attributes (4 to 96)'
+        required: false
+        default: '12'
+      realism_matches:
+        description: '90-minute FastBatch matches for baseline (16 to 3000)'
+        required: false
+        default: '128'
+  schedule:
+    - cron: '13 2 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v4-attribute-impact-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  controlled-impact-and-realism:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      V4_IMPACT_SEEDS: ${{ github.event_name == 'schedule' && '32' || github.event.inputs.audit_seeds || '12' }}
+      V4_REALISM_MATCHES: ${{ github.event_name == 'schedule' && '384' || github.event.inputs.realism_matches || '128' }}
+      V4_IMPACT_REPORT_PATH: ${{ github.workspace }}/build-evidence/v4_attribute_impact.json
+      V4_REALISM_REPORT_PATH: ${{ github.workspace }}/build-evidence/v4_realism_baseline.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run isolated directional skill and scenario tests
+        working-directory: rust/football_match_engine
+        run: cargo test --lib v4::attribute_impact_tests:: -- --nocapture
+      - name: Run all 50 paired-seed attribute probes (diagnostic, not a false 50/50 pass)
+        working-directory: rust/football_match_engine
+        run: cargo test --lib v4::attribute_impact_tests::exhaustive_50_attribute_counterfactual_report -- --ignored --nocapture
+      - name: Measure 90-minute population and throughput
+        working-directory: rust/football_match_engine
+        run: cargo test --lib v4::attribute_impact_tests::monte_carlo_realism_baseline_report -- --ignored --nocapture
+      - name: Validate report schemas, sample counts and arithmetic
+        run: python3 tools/verify_v4_impact_report.py build-evidence/v4_attribute_impact.json build-evidence/v4_realism_baseline.json
+      - name: Upload diagnostic evidence even if a test fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-attribute-impact-${{ github.run_id }}
+          path: build-evidence/*.json
+          if-no-files-found: warn
+          retention-days: 30
