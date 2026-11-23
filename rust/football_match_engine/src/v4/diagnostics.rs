@@ -100,6 +100,9 @@ pub struct MatchDiagnosticsV4 {
 
 impl MatchDiagnosticsV4 {
     pub fn validate_basic(&self) -> Result<(), String> {
+        if self.schema_version != DIAGNOSTICS_SCHEMA_VERSION_V4 {
+            return Err("unsupported attacking diagnostics schema version".into());
+        }
         for (side, team) in [("HOME", &self.home), ("AWAY", &self.away)] {
             if team.passes_completed > team.passes_attempted {
                 return Err(format!("{side}: completed passes exceed attempts"));
@@ -275,8 +278,10 @@ impl MatchDiagnosticsCollectorV4 {
                 self.observe_territory(side, ball_pos.xy());
             }
             EventTypeV4::PassCompleted | EventTypeV4::ThroughBall | EventTypeV4::Cross => {
+                // The receiver may immediately fumble the first touch.
+                // Only a clean first touch or a later controlled-carrier beat
+                // proves the ball was actually controlled at the destination.
                 self.record_pass(side, metadata, true);
-                self.observe_territory(side, ball_pos.xy());
             }
             EventTypeV4::PassFailed => {
                 self.record_pass(side, metadata, false);
