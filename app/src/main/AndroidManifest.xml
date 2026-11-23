@@ -40,6 +40,11 @@
             android:screenOrientation="portrait" />
 
         <activity
+            android:name="pl.mkrstudio.truefootball3.activities.SimulationSettingsActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
             android:name="pl.mkrstudio.truefootball3.activities.SoundSlotActivity"
             android:exported="false"
             android:screenOrientation="portrait" />

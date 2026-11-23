@@ -33,6 +33,7 @@ pub mod state;
 pub mod stats;
 pub mod tactical_models;
 pub mod tactics;
+pub mod v4;
 pub mod wire_json;
 
 #[cfg(test)]
@@ -42,12 +43,31 @@ mod parity_full_match;
 
 use std::ffi::c_void;
 
+/// Preserved V3 JNI port version for backward compatibility (`>= 4` check in Kotlin).
 #[no_mangle]
 pub extern "system" fn Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativePortVersion(
     _env: *mut c_void,
     _class: *mut c_void,
 ) -> i32 {
     4
+}
+
+/// Separate JNI bridge version so V4 capabilities do not collide with V3 `nativePortVersion() == 4`.
+#[no_mangle]
+pub extern "system" fn Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeBridgeVersion(
+    _env: *mut c_void,
+    _class: *mut c_void,
+) -> i32 {
+    v4::JNI_BRIDGE_VERSION
+}
+
+/// Highest supported Match Engine wire protocol version (`4` = V4.0 54-attribute 90-minute protocol).
+#[no_mangle]
+pub extern "system" fn Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeEngineProtocolVersion(
+    _env: *mut c_void,
+    _class: *mut c_void,
+) -> i32 {
+    v4::ENGINE_PROTOCOL_VERSION_V4
 }
 
 #[no_mangle]

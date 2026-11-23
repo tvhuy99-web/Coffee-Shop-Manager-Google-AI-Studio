@@ -75,6 +75,133 @@ enum class LabEventType {
     FULL_TIME
 }
 
+// --- V4.0 Protocol & Presentation Enums / Data Models ---
+
+enum class LabSimulationMode { FULL_EVENT, FAST_BATCH }
+
+enum class LabHighlightTier { NONE, EXTENDED, GOAL_KEY }
+
+/**
+ * Presentation modes selected in the independent "Cài đặt mô phỏng" menu.
+ * Filtering runs purely on Kotlin presentation using Rust's `highlightTier`
+ * without altering the 90-minute simulation outcome.
+ */
+enum class LabEngineVersion(val labelVi: String) {
+    V3("3.0"),
+    V4("4.0")
+}
+
+enum class LabViewingMode(val labelVi: String) {
+    FULL_MATCH("Full trận"),
+    EXTENDED_HIGHLIGHTS("Chi tiết"),
+    SHORT_HIGHLIGHTS("Ngắn gọn")
+}
+
+enum class LabPreferredFoot { RIGHT, LEFT, EITHER }
+
+enum class LabWeatherCondition { CLEAR, LIGHT_RAIN, HEAVY_RAIN, WINDY, HOT }
+
+enum class LabPitchQuality { EXCELLENT, GOOD, HEAVY, POOR }
+
+data class LabMatchEnvironment(
+    val weather: LabWeatherCondition = LabWeatherCondition.CLEAR,
+    val pitchQuality: LabPitchQuality = LabPitchQuality.GOOD,
+    val windStrength: Int = 15,
+    val homeCrowdIntensity: Int = 60,
+    val matchImportance: Int = 50
+)
+
+data class LabRefereeProfile(
+    val strictness: Int = 50,
+    val cardThreshold: Int = 50,
+    val advantageTendency: Int = 50
+)
+
+/**
+ * Full 54-attribute native V4 player profile on 1..20 scale,
+ * matching `england_v2` `simulation.attributes` schema directly.
+ */
+data class LabPlayerAttributes54(
+    // Technical (13)
+    val finishing: Int,
+    val passing: Int,
+    val dribbling: Int,
+    val technique: Int,
+    val firstTouch: Int,
+    val crossing: Int,
+    val heading: Int,
+    val longShots: Int,
+    val tackling: Int,
+    val marking: Int,
+    val freeKicks: Int,
+    val penalties: Int,
+    val corners: Int,
+    // Mental (14)
+    val vision: Int,
+    val decisions: Int,
+    val composure: Int,
+    val concentration: Int,
+    val offTheBall: Int,
+    val positioning: Int,
+    val anticipation: Int,
+    val teamwork: Int,
+    val determination: Int,
+    val workRate: Int,
+    val leadership: Int,
+    val flair: Int,
+    val aggression: Int,
+    val bravery: Int,
+    // Physical (8)
+    val pace: Int,
+    val acceleration: Int,
+    val strength: Int,
+    val stamina: Int,
+    val balance: Int,
+    val agility: Int,
+    val jumpingReach: Int,
+    val naturalFitness: Int,
+    // Goalkeeping (9)
+    val reflexes: Int,
+    val handling: Int,
+    val oneOnOnes: Int,
+    val commandOfArea: Int,
+    val aerialReach: Int,
+    val kicking: Int,
+    val throwing: Int,
+    val rushingOut: Int,
+    val punching: Int,
+    // Hidden (10: 6 in-match + 4 meta/career)
+    val professionalism: Int,
+    val ambition: Int,
+    val consistency: Int,
+    val bigMatches: Int,
+    val adaptability: Int,
+    val loyalty: Int,
+    val pressure: Int,
+    val injuryProneness: Int,
+    val temperament: Int,
+    val sportsmanship: Int
+)
+
+data class LabPlayerSnapshotV4(
+    val playerId: String,
+    val displayName: String,
+    val attributes: LabPlayerAttributes54,
+    val condition: Int = 100,
+    val morale: Int = 65,
+    val form: Int = 55,
+    val age: Int = 24,
+    val isInjured: Boolean = false,
+    val isEligible: Boolean = true,
+    val primaryPosition: String,
+    val secondaryPosition: String = "",
+    val preferredFoot: LabPreferredFoot = LabPreferredFoot.RIGHT,
+    val weakFoot: Int = 3,
+    val heightCm: Int = 180
+)
+
+// --- V3 Reference Models (preserved 100%) ---
+
 data class LabPlayerAttributes(
     val goalkeeping: Int,
     val tackling: Int,
