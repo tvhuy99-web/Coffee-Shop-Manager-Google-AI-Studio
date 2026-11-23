@@ -301,3 +301,86 @@ fn monte_carlo_realism_baseline_report() {
     println!("V4_REALISM_BASELINE {}", serde_json::to_string(&report).unwrap());
     write_json_report("V4_REALISM_REPORT_PATH", &report);
 }
+
+
+/// Micro-scenario: an attacker and defender start 0.8m apart, repeatedly
+/// reinitializing state and RNG so ONLY the named skill differs.
+fn tackles_won_in_dribble_duels(skill: &str, value: u8) -> u32 {
+    use crate::v4::ball_play::execute_dribble_duel;
+    use crate::v4::events::EventTypeV4;
+    use crate::v4::movement::LocalSpatialContext;
+    use crate::v4::spatial::Vec2;
+
+    let mut input = make_v4_input(30039, SimulationMode::FastBatch, RulesModeV4::Standard);
+    if skill == "strength" {
+        // Home striker versus unchanged away centre-back.
+        let base = input.home_team.lineup[10].attributes;
+        input.home_team.lineup[10].attributes = modify_one_field(base, skill, value);
+    } else {
+        // Away defender versus unchanged home striker.
+        let base = input.away_team.lineup[3].attributes;
+        input.away_team.lineup[3].attributes = modify_one_field(base, skill, value);
+    }
+    let state_base = MatchStateV4::from_input(&input);
+    let striker = state_base.players.iter().position(|p| p.player_id == "H10").unwrap();
+    let defender = state_base.players.iter().position(|p| p.player_id == "A03").unwrap();
+    let mut wins = 0;
+    for seed in 1..=600i64 {
+        let mut state = state_base.clone();
+        state.players[striker].pos = Vec2::new(73.0, 34.0);
+        state.players[defender].pos = Vec2::new(73.8, 34.0);
+        let context = LocalSpatialContext {
+            pressure: 65.0,
+            nearest_defender_idx: Some(defender),
+            nearest_defender_dist_m: 0.8,
+            overload: false,
+        };
+        let mut rng = DeterministicRng::new(seed * 97);
+        let result = execute_dribble_duel(
+            &mut state, &input, striker, Some(defender), context, &mut rng
+        );
+        if result.events.iter().any(|e| e.kind == EventTypeV4::TackleWon) {
+            wins += 1;
+        }
+    }
+    wins
+}
+
+#[test]
+fn defensive_tackling_marking_and_attacking_strength_affect_real_duels() {
+    for name in ["tackling", "marking"] {
+        let low = tackles_won_in_dribble_duels(name, 4);
+        let high = tackles_won_in_dribble_duels(name, 19);
+        assert!(high > low + 20,
+            "{name} did not improve tackle wins in isolated duels: low={low}, high={high}");
+    }
+    let weak = tackles_won_in_dribble_duels("strength", 4);
+    let strong = tackles_won_in_dribble_duels("strength", 19);
+    assert!(strong + 15 < weak,
+        "stronger attacker should lose fewer ground duels: weak={weak}, strong={strong}");
+}
+
+#[test]
+fn goalkeeper_one_on_ones_reduce_conceded_goals_in_isolated_duel() {
+    use crate::v4::goalkeeper::{resolve_gk_shot_reaction, GkShotOutcome};
+    let input = make_v4_input(30049, SimulationMode::FastBatch, RulesModeV4::Standard);
+    let base = PlayerAttributes54::uniform(12).unwrap();
+    let low = modify_one_field(base, "one_on_ones", 4);
+    let high = modify_one_field(base, "one_on_ones", 19);
+    let mut conceded_low = 0;
+    let mut conceded_high = 0;
+    for seed in 1..=800i64 {
+        let mut low_rng = DeterministicRng::new(seed * 191);
+        let mut high_rng = DeterministicRng::new(seed * 191);
+        if resolve_gk_shot_reaction(&low, 1.0, 95.0, 0.43, 10.0,
+            true, false, false, &input, &mut low_rng) == GkShotOutcome::GoalConceded {
+            conceded_low += 1;
+        }
+        if resolve_gk_shot_reaction(&high, 1.0, 95.0, 0.43, 10.0,
+            true, false, false, &input, &mut high_rng) == GkShotOutcome::GoalConceded {
+            conceded_high += 1;
+        }
+    }
+    assert!(conceded_low > conceded_high + 15,
+        "better one_on_ones must reduce goals in head-to-head goalkeeper scenarios: low={conceded_low}, high={conceded_high}");
+}
