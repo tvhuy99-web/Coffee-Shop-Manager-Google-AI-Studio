@@ -38,3 +38,15 @@ jobs:
         run: sdkmanager "platforms;android-35" "build-tools;35.0.1"
       - name: Verify commentary resource tokens (Kotlin formatter)
         run: bash gradlew :app:validateCommentaryTokens --no-daemon
+
+  commentary-regression:
+    name: Commentary evidence regressions (no Android SDK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Test 329 commentary cases against original Vietnamese and English XML
+        run: bash gradlew -p tests/commentary run --no-daemon

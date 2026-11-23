@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- New fact-only fallbacks. Original PingFootball cv2/cv3 XML is unmodified. -->
+    <string name="lab_commentary_pass_failed_player">{PLAYER} fails to complete the pass.</string>
+    <string name="lab_commentary_pass_failed_generic">The pass is unsuccessful.</string>
+    <string name="lab_commentary_turnover">{TEAM} regains possession.</string>
+    <string name="lab_commentary_second_ball_player">{PLAYER} wins the second ball for {TEAM}.</string>
+    <string name="lab_commentary_second_ball_team">{TEAM} wins the second ball.</string>
+    <string name="lab_commentary_tackle_attempted">{PLAYER} attempts a tackle.</string>
+    <string name="lab_commentary_tackle_won">{PLAYER} wins the tackle.</string>
+    <string name="lab_commentary_tackle_lost">{PLAYER} fails to win the tackle.</string>
+    <string name="lab_commentary_goalkeeper_assignment_required">{TEAM} needs to assign a goalkeeper.</string>
+    <string name="lab_commentary_goalkeeper_reassigned">{TEAM} has reassigned its goalkeeper.</string>
+    <string name="lab_commentary_goalkeeper_distribution">{PLAYER} distributes the ball.</string>
+    <string name="lab_commentary_transition_started">{TEAM} begins transitioning from defence to attack.</string>
+    <string name="lab_commentary_goal_generic">Goal! {TEAM} scores. The score is {SCORE_AFTER}.</string>
+    <string name="lab_commentary_goal_generic_unknown_side">Goal! The score is {SCORE_AFTER}.</string>
+    <string name="lab_commentary_keeper_possession">{GOALKEEPER} claims the ball and retains possession for {TEAM}.</string>
+</resources>

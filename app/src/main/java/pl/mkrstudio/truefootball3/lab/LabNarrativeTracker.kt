@@ -1,5 +1,7 @@
 package pl.mkrstudio.truefootball3.lab
 
+import java.util.ArrayDeque
+
 class LabNarrativeTracker {
     enum class GoalSituation {
         HAT_TRICK,

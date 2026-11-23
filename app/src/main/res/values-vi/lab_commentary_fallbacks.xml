@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- New fact-only fallbacks. Original PingFootball cv2/cv3 XML is unmodified. -->
+    <string name="lab_commentary_pass_failed_player">Đường chuyền của {PLAYER} không thành công.</string>
+    <string name="lab_commentary_pass_failed_generic">Đường chuyền không thành công.</string>
+    <string name="lab_commentary_turnover">{TEAM} giành lại quyền kiểm soát bóng.</string>
+    <string name="lab_commentary_second_ball_player">{PLAYER} giành được bóng hai cho {TEAM}.</string>
+    <string name="lab_commentary_second_ball_team">Bóng hai thuộc về {TEAM}.</string>
+    <string name="lab_commentary_tackle_attempted">{PLAYER} thực hiện pha tắc bóng.</string>
+    <string name="lab_commentary_tackle_won">{PLAYER} tắc bóng thành công.</string>
+    <string name="lab_commentary_tackle_lost">{PLAYER} không thành công trong pha tắc bóng.</string>
+    <string name="lab_commentary_goalkeeper_assignment_required">{TEAM} cần chỉ định một thủ môn.</string>
+    <string name="lab_commentary_goalkeeper_reassigned">{TEAM} đã thay đổi người trấn giữ khung thành.</string>
+    <string name="lab_commentary_goalkeeper_distribution">{PLAYER} đưa bóng trở lại cuộc chơi.</string>
+    <string name="lab_commentary_transition_started">{TEAM} bắt đầu chuyển từ phòng ngự sang tấn công.</string>
+    <string name="lab_commentary_goal_generic">Vào! {TEAM} ghi bàn. Tỷ số {SCORE_AFTER}.</string>
+    <string name="lab_commentary_goal_generic_unknown_side">Vào! Tỷ số {SCORE_AFTER}.</string>
+    <string name="lab_commentary_keeper_possession">{GOALKEEPER} đã bắt gọn bóng và đang giữ quyền kiểm soát cho {TEAM}.</string>
+</resources>

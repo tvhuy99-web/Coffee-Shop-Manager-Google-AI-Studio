@@ -1,0 +1,33 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm' version '1.9.25'
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+}
+
+// Compile exactly the production commentary files, with two tiny Android/JSON
+// stubs. The main Android application and native Rust library are not needed.
+sourceSets {
+    main {
+        kotlin {
+            srcDirs '.', 'stubs', '../../app/src/main/java/pl/mkrstudio/truefootball3/lab'
+            include '**/CommentaryRegression.kt'
+            include '**/LabEnums.kt'
+            include '**/Context.kt'
+            include '**/JSONObject.kt'
+            include '**/LabNarrativeTracker.kt'
+            include '**/LabCommentaryTemplatePolicy.kt'
+            include '**/LabCommentaryEngine.kt'
+        }
+    }
+}
+
+application {
+    mainClass = 'CommentaryRegressionKt'
+}
+
+tasks.named('run') {
+    args '../../app/src/main/res'
+}
