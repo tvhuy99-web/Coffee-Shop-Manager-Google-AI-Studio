@@ -2,6 +2,7 @@ pub mod ai_manager;
 pub mod attributes;
 pub mod ball_play;
 pub mod calibration;
+pub mod diagnostics;
 pub mod error;
 pub mod events;
 pub mod goalkeeper;
@@ -36,6 +37,7 @@ pub use attributes::{
     MentalAttributes, PhysicalAttributes, PlayerAttributes54, TechnicalAttributes,
 };
 pub use calibration::{run_monte_carlo_v4, verify_seed_replay_parity, MonteCarloReportV4};
+pub use diagnostics::{MatchDiagnosticsV4, PassBreakdownV4, TeamAttackDiagnosticsV4, TurnoverBreakdownV4, DIAGNOSTICS_SCHEMA_VERSION_V4};
 pub use error::V4Error;
 pub use events::{
     EventMetadataV4, EventTypeV4, HighlightTier, MatchEventV4, MatchResultV4, MatchSummaryV4,
