@@ -5,6 +5,8 @@ mod decision;
 mod goalkeeper;
 mod intent;
 mod off_ball;
+mod defensive;
+pub(crate) use defensive::{assign_defense, DefensiveRole, DefenderObservation, DefensiveIntent};
 mod support;
 pub(crate) use support::{ObservedPlayer, SupportObservation, select_coordinated_support_target, count_open_outlets};
 mod timing;

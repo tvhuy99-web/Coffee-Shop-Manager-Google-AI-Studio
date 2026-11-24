@@ -58,6 +58,7 @@ jobs:
               recovery = Counter()
               carry = Counter()
               outlets = Counter()
+              defense = Counter()
               valid = [r for r in report["matches"] if r["ok"] and r.get("diagnostics")]
               for row in valid:
                   des = row["diagnostics"]["des"]
@@ -65,6 +66,8 @@ jobs:
                       carry[field] += des.get(field,0)
                   for field in ("outletSamples","openOutletsTotal","noOpenOutletSamples","holdDecisionSamples","holdWithOpenOutletSamples"):
                       outlets[field] += des.get(field,0)
+                  for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM"):
+                      defense[field] += des.get(field,0)
                   for side in ("home", "away"):
                       d = row["diagnostics"][side]
                       losses.update(d["turnovers"])
@@ -92,6 +95,7 @@ jobs:
                   "holdDecisionSamplesPerMatch": outlets["holdDecisionSamples"]/n,
                   "holdWithOpenOutletPct": 100*outlets["holdWithOpenOutletSamples"]/max(1,outlets["holdDecisionSamples"])
               },sort_keys=True))
+              print("PI_DEFENSE_EVIDENCE",json.dumps({k:v/n for k,v in sorted(defense.items())},sort_keys=True))
               for row in report["matches"]:
                   if not row["ok"] or row.get("diagnosticError"):
                       print("FAILED SEED", row["seed"], row.get("error") or row.get("diagnosticError"))
@@ -196,6 +200,18 @@ jobs:
         run: |
           cargo test --lib pi_support_ -- --nocapture
           cargo test --lib des_offside_ -- --nocapture
+          cargo test --lib fast_batch_and_full_event_diagnostics_match -- --nocapture
+  pi_defense_regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify distinct defensive roles, engagement range and movement budget
+        working-directory: rust/football_match_engine
+        run: |
+          cargo test --lib pi_defense_ -- --nocapture
+          cargo test --lib pi_support_ -- --nocapture
           cargo test --lib fast_batch_and_full_event_diagnostics_match -- --nocapture
   attacking_sample:
     runs-on: ubuntu-latest

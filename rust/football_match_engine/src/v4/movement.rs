@@ -1,5 +1,5 @@
 use crate::rng::DeterministicRng;
-use crate::player_intelligence::{select_movement_target, MovementObservation, ObservedPlayer, SupportObservation, select_coordinated_support_target};
+use crate::player_intelligence::{select_movement_target, MovementObservation, ObservedPlayer, SupportObservation, select_coordinated_support_target, assign_defense, DefenderObservation, DefensiveIntent};
 use crate::v4::attributes::{normalize_attr, PlayerAttributes54};
 use crate::v4::ball_play::offside_reference_progress_m;
 use crate::v4::input::{MatchInputV4, TeamInstructionsV4};
@@ -172,6 +172,17 @@ pub fn advance_off_ball_movement(
     dt_sec: f32,
     rng: &mut DeterministicRng,
 ) {
+    let _=advance_off_ball_movement_with_report(state,input,possession_side,carrier_idx,dt_sec,rng);
+}
+
+pub(crate) fn advance_off_ball_movement_with_report(
+    state: &mut MatchStateV4,
+    input: &MatchInputV4,
+    possession_side: TeamSideV4,
+    carrier_idx: usize,
+    dt_sec: f32,
+    rng: &mut DeterministicRng,
+)->Vec<DefensiveIntent> {
     let dt = dt_sec.max(0.0);
     // Scale stochastic target jitter/lapses by sqrt(min(dt, 1.0)) so short DES substeps (< 1s)
     // do not cause players to oscillate or jitter unrealistically.
@@ -250,6 +261,27 @@ pub fn advance_off_ball_movement(
         reserved.push(target);
     }
 
+    // Assign defensive roles only against controlled possession. Pass/loose
+    // ball physical contact paths and in-flight movement remain independent.
+    let defense=if controlled {
+        let side=possession_side.opposite();
+        let ti=state.active_instructions(side);
+        let candidates:Vec<_>=state.players.iter().enumerate().filter(|(_,p)|
+            p.on_pitch && !p.sent_off && !p.is_goalkeeper && p.side==side)
+            .map(|(idx,p)|{
+                let attrs=player_attrs(state,p);
+                DefenderObservation{idx,id:p.player_id.as_str(),pos:p.pos,shape:targets[idx].unwrap_or(p.pos),
+                    speed:player_max_speed_mps(attrs,p),work:normalize_attr(attrs.mental.work_rate),
+                    reading:normalize_attr(attrs.mental.positioning)*0.45+normalize_attr(attrs.mental.anticipation)*0.35
+                        +normalize_attr(attrs.mental.teamwork)*0.20,
+                    energy:(p.fatigue.aerobic*0.6+p.fatigue.anaerobic*0.4)/100.0}
+            }).collect();
+        assign_defense(side,ball_xy,carrier_idx,&observed,&candidates,
+            ti.pressing_intensity as f32/100.0,
+            state.team_state(side).phase==crate::v4::state::TacticalPhaseV4::DefensiveTransition)
+    }else{Vec::new()};
+    for a in &defense {targets[a.idx]=Some(a.target);}
+
     // Integrate once, using the FINAL destination. Previously dist was
     // computed before support adjusted target, which could exceed speed
     // budget or step past the intended destination.
@@ -290,6 +322,7 @@ pub fn advance_off_ball_movement(
             state.players[idx].facing_rad = (new_pos.y - cur.y).atan2(new_pos.x - cur.x);
         }
     }
+    defense
 }
 
 /// Legacy fallback lookup of a player's 54 attributes from `MatchInputV4` (lineup + bench).

@@ -1463,6 +1463,7 @@ fn p2_50_match_attributes_have_explicit_runtime_wiring_and_4_are_career_hooks() 
         include_str!("../player_intelligence/utility.rs"),
         include_str!("../player_intelligence/on_ball.rs"),
         include_str!("../player_intelligence/support.rs"),
+        include_str!("../player_intelligence/defensive.rs"),
         include_str!("tactics.rs"), include_str!("psychology.rs"),
         include_str!("ai_manager.rs"), include_str!("session.rs"),
     ].join("
@@ -2645,7 +2646,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.6");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.7");
 }
 
 
@@ -2749,6 +2750,39 @@ fn pi_support_final_target_respects_speed_and_direction() {
                 assert!((moved+p.pos.distance(p.target_pos)-old.distance(p.target_pos)).abs()<0.004,
                     "{} stepped off final intended segment",p.player_id);
             }
+        }
+    }
+}
+
+
+#[test]
+fn pi_defense_actual_movement_respects_budget_and_approaches_ball() {
+    use crate::v4::state::{MatchStateV4,BallControlState};
+    use crate::v4::movement::{advance_off_ball_movement_with_report,player_attrs,player_max_speed_mps};
+    use crate::player_intelligence::DefensiveRole;
+    for side in [TeamSideV4::Home,TeamSideV4::Away] {
+        let mut home=make_v4_team("H","H",18);
+        let mut away=make_v4_team("A","A",18);
+        home.team_instructions.pressing_intensity=86;
+        away.team_instructions.pressing_intensity=86;
+        let input=make_v4_input_teams(19601,SimulationMode::FullEvent,RulesModeV4::Standard,home,away);
+        let mut state=MatchStateV4::from_input(&input);
+        let carrier=state.players.iter().position(|p|p.on_pitch && !p.is_goalkeeper && p.side==side).unwrap();
+        let ball=Vec2::new(52.5,34.0);
+        state.players[carrier].pos=ball;
+        state.ball.pos=Vec3::ground(ball.x,ball.y);
+        state.ball.control=BallControlState::Controlled;
+        let before:Vec<_>=state.players.iter().map(|p|(p.pos,player_max_speed_mps(player_attrs(&state,p),p))).collect();
+        let mut rng=DeterministicRng::new(19602);
+        let assignments=advance_off_ball_movement_with_report(&mut state,&input,side,carrier,0.2,&mut rng);
+        let press=assignments.iter().find(|a|a.role==DefensiveRole::Press).expect("nearby defender engages at high intensity");
+        assert!(state.players[press.idx].pos.distance(ball)<=before[press.idx].0.distance(ball)+0.002);
+        for a in &assignments {
+            let p=&state.players[a.idx];
+            assert_eq!(p.side,side.opposite());
+            assert!(!p.is_goalkeeper);
+            assert!(before[a.idx].0.distance(p.pos)<=before[a.idx].1*0.2+0.002);
+            assert_eq!(p.target_pos,a.target);
         }
     }
 }

@@ -25,7 +25,7 @@ use crate::v4::interaction::{
     contact_control_probability, blocked_ball_velocity, find_moving_ball_recovery,
     LooseBallResolution, BoundaryKind, EarlyInteractionHit, find_carry_contact,
 };
-use crate::v4::movement::{advance_off_ball_movement, evaluate_local_context, evaluate_passing_lane, lookup_attrs};
+use crate::v4::movement::{advance_off_ball_movement_with_report, evaluate_local_context, evaluate_passing_lane, lookup_attrs};
 use crate::player_intelligence::{perceive_evaluate_and_decide_des, DecisionPlanV4, CarryIntentV4, carry_target, PassKindV4, PlannedActionV4, PI_POLICY_ID};
 use crate::v4::psychology::{
     check_impact_injury, check_muscle_injury, compute_post_match_morale_delta,
@@ -1214,7 +1214,7 @@ impl MatchSessionV4 {
 
         if is_ball_in_play {
             let prev_positions: Vec<Vec2> = self.state.players.iter().map(|p| p.pos).collect();
-            advance_off_ball_movement(
+            let defense=advance_off_ball_movement_with_report(
                 &mut self.state,
                 &self.input,
                 self.possession_side,
@@ -1279,6 +1279,20 @@ impl MatchSessionV4 {
             for (idx, p) in self.state.players.iter_mut().enumerate() {
                 if let Some(prev) = prev_positions.get(idx) {
                     p.last_moved_m = prev.distance(p.pos);
+                }
+            }
+            // Measure the realized movement after physical contact path
+            // overrides, rather than the preliminary tactical displacement.
+            // A selected carry challenger is an independent physical race;
+            // exclude that player's interval from tactical-role distance.
+            for a in &defense {
+                let p=&self.state.players[a.idx];
+                let overridden=self.pending_carry.as_ref().and_then(|c|c.challenger.as_ref())
+                    .map_or(false,|c|c.candidate.player_id==p.player_id)
+                    || self.pending_flight.as_ref().and_then(|f|f.pass_contact_motion.as_ref())
+                    .map_or(false,|c|c.candidate.player_id==p.player_id);
+                if !overridden {
+                    self.diagnostics.record_defensive_interval(a.role,dt_ms,p.last_moved_m);
                 }
             }
         } else {

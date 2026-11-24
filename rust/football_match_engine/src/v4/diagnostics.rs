@@ -173,6 +173,18 @@ pub struct DesMatchDiagnosticsV4 {
     pub hold_decision_samples: u32,
     #[serde(default)]
     pub hold_with_open_outlet_samples: u32,
+    #[serde(default)]
+    pub press_player_ms: i64,
+    #[serde(default)]
+    pub screen_player_ms: i64,
+    #[serde(default)]
+    pub cover_player_ms: i64,
+    #[serde(default)]
+    pub press_distance_m: f32,
+    #[serde(default)]
+    pub screen_distance_m: f32,
+    #[serde(default)]
+    pub cover_distance_m: f32,
     pub dead_ball_distributions: DeadBallDistributionsV4,
     pub avg_player_distance_m: f32,
     pub tactical_commands_delayed: u32,
@@ -362,6 +374,18 @@ struct DesDiagnosticsAccumulator {
     hold_decision_samples: u32,
     #[serde(default)]
     hold_with_open_outlet_samples: u32,
+    #[serde(default)]
+    press_player_ms: i64,
+    #[serde(default)]
+    screen_player_ms: i64,
+    #[serde(default)]
+    cover_player_ms: i64,
+    #[serde(default)]
+    press_distance_m: f32,
+    #[serde(default)]
+    screen_distance_m: f32,
+    #[serde(default)]
+    cover_distance_m: f32,
     avg_player_distance_m: f32,
     tactical_commands_delayed: u32,
     goal_celebration_samples: Vec<i64>,
@@ -398,6 +422,12 @@ impl DesDiagnosticsAccumulator {
             no_open_outlet_samples: self.no_open_outlet_samples,
             hold_decision_samples: self.hold_decision_samples,
             hold_with_open_outlet_samples: self.hold_with_open_outlet_samples,
+            press_player_ms: self.press_player_ms,
+            screen_player_ms: self.screen_player_ms,
+            cover_player_ms: self.cover_player_ms,
+            press_distance_m: self.press_distance_m,
+            screen_distance_m: self.screen_distance_m,
+            cover_distance_m: self.cover_distance_m,
             dead_ball_distributions: DeadBallDistributionsV4 {
                 goal_celebration: DurationDistributionMs::from_samples(&mut self.goal_celebration_samples),
                 throw_in: DurationDistributionMs::from_samples(&mut self.throw_in_samples),
@@ -526,6 +556,17 @@ impl MatchDiagnosticsCollectorV4 {
             self.des.hold_decision_samples=self.des.hold_decision_samples.saturating_add(1);
             if open>0 {self.des.hold_with_open_outlet_samples=self.des.hold_with_open_outlet_samples.saturating_add(1);}
         }
+    }
+
+    pub(crate) fn record_defensive_interval(&mut self,role:crate::player_intelligence::DefensiveRole,dt_ms:i64,moved:f32) {
+        use crate::player_intelligence::DefensiveRole::*;
+        let (time,distance)=match role {
+            Press=>(&mut self.des.press_player_ms,&mut self.des.press_distance_m),
+            Screen=>(&mut self.des.screen_player_ms,&mut self.des.screen_distance_m),
+            Cover=>(&mut self.des.cover_player_ms,&mut self.des.cover_distance_m),
+        };
+        *time=time.saturating_add(dt_ms.max(0));
+        *distance+=moved.max(0.0);
     }
 
     pub fn record_carry_start(&mut self,is_hold:bool,shielding:bool,lateral:bool) {
