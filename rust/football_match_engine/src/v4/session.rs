@@ -1078,7 +1078,16 @@ impl MatchSessionV4 {
 
                     // CRITICAL-08: Centralized world integration BEFORE dispatching any event.
                     let interrupted_by_injury = self.advance_world_for_dt(dt_ms, is_ball_in_play)?;
-                    if interrupted_by_injury {
+                    // Injury invalidates live-play actions, but must never discard a
+                    // period boundary already popped from the scheduler. Losing the
+                    // announcement/end check can leave a half running until watchdog.
+                    if interrupted_by_injury
+                        && !matches!(
+                            &ev.payload,
+                            DesEventPayload::AnnounceAddedTime { .. }
+                                | DesEventPayload::CheckPeriodEnd { .. }
+                        )
+                    {
                         return Ok(());
                     }
                 }

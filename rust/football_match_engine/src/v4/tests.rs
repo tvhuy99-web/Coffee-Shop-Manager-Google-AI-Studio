@@ -2503,3 +2503,24 @@ fn des_calibration_population_evidence() {
     assert_eq!(succeeded + failed, count);
     assert_eq!(failed + invalid, 0, "See per-seed evidence in {}", output);
 }
+
+
+/// A previously failing seed from the 1000-match DES population run.
+/// Do not raise/disable the clock watchdog to pass this regression.
+#[test]
+fn des_population_watchdog_seed_1970781_finishes_both_halves() {
+    let result = simulate_v4(make_v4_input(
+        1_970_781,
+        SimulationMode::FullEvent,
+        RulesModeV4::Standard,
+    )).expect("previously failing population seed must finish");
+    assert!(result.summary.first_half_elapsed_seconds >= 2700);
+    assert!(result.summary.second_half_elapsed_seconds >= 2700);
+    assert_eq!(
+        result.events.iter().filter(|e| e.kind == EventTypeV4::HalfTime).count(),
+        1
+    );
+    assert!(result.summary.final_game_second >= 5400);
+    let d = result.diagnostics.expect("diagnostics");
+    d.validate_basic().expect("valid diagnostics");
+}
