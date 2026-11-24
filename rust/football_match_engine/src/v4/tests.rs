@@ -2646,7 +2646,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.7");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.8");
 }
 
 

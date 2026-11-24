@@ -173,6 +173,10 @@ pub struct PendingDecisionV4 {
     pub started_at_ms: i64,
     pub executes_at_ms: i64,
     pub plan: crate::player_intelligence::DecisionPlanV4,
+    /// Original planned release; the first event may be an earlier contest.
+    pub release_at_ms: i64,
+    #[serde(default)]
+    pub challenger: Option<crate::v4::interaction::PassContactMotion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,6 +222,9 @@ pub struct MatchSessionSnapshotV4 {
     pub pending_decision: Option<PendingDecisionV4>,
     #[serde(default)]
     pub pending_carry: Option<PendingCarryV4>,
+    /// Physical follow-through/recovery after a committed tackle.
+    #[serde(default)]
+    pub tackle_ready_at: std::collections::BTreeMap<String,i64>,
 }
 
 /// Self-verifying versioned DES v1.4 match checkpoint envelope.

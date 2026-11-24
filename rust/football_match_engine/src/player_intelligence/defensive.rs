@@ -54,7 +54,11 @@ pub(crate) fn assign_defense(def_side:TeamSideV4,ball:Vec2,carrier:usize,
     let dir=if def_side==TeamSideV4::Home{-1.0}else{1.0};
     let own_goal=Vec2::new(if def_side==TeamSideV4::Home{0.0}else{105.0},34.0);
     let mut result=Vec::with_capacity(3);
-    let press_target=toward(ball,own_goal,0.85);
+    // Jockeying is NOT a tackle. Keep a body/ball safety gap outside
+    // ordinary foot reach. A separate, committed contact path is required
+    // to enter tackling range. This is a geometric modeling assumption,
+    // not an adjustment based on match goals or foul counts.
+    let press_target=toward(ball,own_goal,2.0);
     let radius=5.0+17.0*press+if transition{3.0*press}else{0.0};
     let budget=6.0+18.0*press;
     if let Some(p)=choose(defenders,press_target,&result,radius,budget) {
@@ -114,7 +118,8 @@ mod tests {
         assert_eq!(a[0].role,DefensiveRole::Press);
         assert_eq!(a[1].role,DefensiveRole::Screen);
         assert_eq!(a[2].role,DefensiveRole::Cover);
-        assert!(a[0].target.distance(ball)<1.0);
+        assert!((a[0].target.distance(ball)-2.0).abs()<0.001,
+            "containment must stay outside ordinary tackle reach");
         assert!(a[2].target.x>ball.x);
         assert!(a.iter().all(|x|x.idx!=5));
         for i in 0..a.len(){for j in i+1..a.len(){assert_ne!(a[i].idx,a[j].idx);}}

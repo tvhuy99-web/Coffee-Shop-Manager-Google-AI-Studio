@@ -59,6 +59,7 @@ jobs:
               carry = Counter()
               outlets = Counter()
               defense = Counter()
+              outcomes = Counter()
               valid = [r for r in report["matches"] if r["ok"] and r.get("diagnostics")]
               for row in valid:
                   des = row["diagnostics"]["des"]
@@ -66,9 +67,13 @@ jobs:
                       carry[field] += des.get(field,0)
                   for field in ("outletSamples","openOutletsTotal","noOpenOutletSamples","holdDecisionSamples","holdWithOpenOutletSamples"):
                       outlets[field] += des.get(field,0)
-                  for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM"):
+                  for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM","preparationContacts","preparationTurnovers","preparationFouls","carryFouls"):
                       defense[field] += des.get(field,0)
+                  outcomes["penaltyPhases"] += des["deadBallDistributions"]["penalty"]["count"]
                   for side in ("home", "away"):
+                      summary = row["summary"][side]
+                      for field in ("goals","ownGoalsFor","fouls","yellowCards","redCards","xg","shotsOnTarget"):
+                          outcomes[field] += summary.get(field,0)
                       d = row["diagnostics"][side]
                       losses.update(d["turnovers"])
                       for field in ("passContactsLoose", "passLooseRegained", "passLooseLost",
@@ -96,6 +101,7 @@ jobs:
                   "holdWithOpenOutletPct": 100*outlets["holdWithOpenOutletSamples"]/max(1,outlets["holdDecisionSamples"])
               },sort_keys=True))
               print("PI_DEFENSE_EVIDENCE",json.dumps({k:v/n for k,v in sorted(defense.items())},sort_keys=True))
+              print("PI_CONTEST_OUTCOMES",json.dumps({k:v/n for k,v in sorted(outcomes.items())},sort_keys=True))
               for row in report["matches"]:
                   if not row["ok"] or row.get("diagnosticError"):
                       print("FAILED SEED", row["seed"], row.get("error") or row.get("diagnosticError"))

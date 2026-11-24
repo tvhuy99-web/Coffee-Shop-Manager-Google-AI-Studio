@@ -185,6 +185,14 @@ pub struct DesMatchDiagnosticsV4 {
     pub screen_distance_m: f32,
     #[serde(default)]
     pub cover_distance_m: f32,
+    #[serde(default)]
+    pub preparation_contacts: u32,
+    #[serde(default)]
+    pub preparation_turnovers: u32,
+    #[serde(default)]
+    pub preparation_fouls: u32,
+    #[serde(default)]
+    pub carry_fouls: u32,
     pub dead_ball_distributions: DeadBallDistributionsV4,
     pub avg_player_distance_m: f32,
     pub tactical_commands_delayed: u32,
@@ -386,6 +394,14 @@ struct DesDiagnosticsAccumulator {
     screen_distance_m: f32,
     #[serde(default)]
     cover_distance_m: f32,
+    #[serde(default)]
+    preparation_contacts: u32,
+    #[serde(default)]
+    preparation_turnovers: u32,
+    #[serde(default)]
+    preparation_fouls: u32,
+    #[serde(default)]
+    carry_fouls: u32,
     avg_player_distance_m: f32,
     tactical_commands_delayed: u32,
     goal_celebration_samples: Vec<i64>,
@@ -428,6 +444,10 @@ impl DesDiagnosticsAccumulator {
             press_distance_m: self.press_distance_m,
             screen_distance_m: self.screen_distance_m,
             cover_distance_m: self.cover_distance_m,
+            preparation_contacts: self.preparation_contacts,
+            preparation_turnovers: self.preparation_turnovers,
+            preparation_fouls: self.preparation_fouls,
+            carry_fouls: self.carry_fouls,
             dead_ball_distributions: DeadBallDistributionsV4 {
                 goal_celebration: DurationDistributionMs::from_samples(&mut self.goal_celebration_samples),
                 throw_in: DurationDistributionMs::from_samples(&mut self.throw_in_samples),
@@ -567,6 +587,15 @@ impl MatchDiagnosticsCollectorV4 {
         };
         *time=time.saturating_add(dt_ms.max(0));
         *distance+=moved.max(0.0);
+    }
+
+    pub fn record_preparation_contact(&mut self,lost:bool,foul:bool) {
+        self.des.preparation_contacts=self.des.preparation_contacts.saturating_add(1);
+        if lost {self.des.preparation_turnovers=self.des.preparation_turnovers.saturating_add(1);}
+        if foul {self.des.preparation_fouls=self.des.preparation_fouls.saturating_add(1);}
+    }
+    pub fn record_carry_foul(&mut self) {
+        self.des.carry_fouls=self.des.carry_fouls.saturating_add(1);
     }
 
     pub fn record_carry_start(&mut self,is_hold:bool,shielding:bool,lateral:bool) {
