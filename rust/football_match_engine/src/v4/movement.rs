@@ -1,11 +1,12 @@
 use crate::rng::DeterministicRng;
 use crate::v4::attributes::{normalize_attr, PlayerAttributes54};
+use crate::v4::ball_play::offside_reference_progress_m;
 use crate::v4::input::{MatchInputV4, TeamInstructionsV4};
 use crate::v4::spatial::{
     attacking_progress_m, point_to_segment_distance_m, TeamSideV4, Vec2, PITCH_LENGTH_M,
     PITCH_WIDTH_M,
 };
-use crate::v4::state::{MatchStateV4, PlayerRuntimeStateV4, TacticalPhaseV4};
+use crate::v4::state::{BallControlState, MatchStateV4, PlayerRuntimeStateV4, TacticalPhaseV4};
 use crate::v4::tactics::effective_press_multiplier;
 
 #[derive(Debug, Clone, Copy)]
@@ -176,6 +177,16 @@ pub fn advance_off_ball_movement(
     let noise_scale = dt.min(1.0).sqrt();
     let ball_xy = state.ball.pos.xy();
     let ball_progress_home = attacking_progress_m(TeamSideV4::Home, ball_xy) / PITCH_LENGTH_M;
+    // Read the opponent line once from the same world snapshot for every runner.
+    // Do not restrain a run after the pass has already been kicked.
+    let receiving_line = if state.ball.control == BallControlState::Controlled {
+        let launch_pos = state.players.get(carrier_idx)
+            .filter(|p| p.on_pitch && !p.sent_off && p.side == possession_side)
+            .map_or(ball_xy, |p| p.pos);
+        offside_reference_progress_m(state, possession_side, launch_pos)
+    } else {
+        None
+    };
 
     for idx in 0..state.players.len() {
         if !state.players[idx].on_pitch || state.players[idx].sent_off {
@@ -240,11 +251,31 @@ pub fn advance_off_ball_movement(
             let jitter_x = (rng.next_double() as f32 - 0.5) * (6.0 - otb * 3.0) * noise_scale;
             let jitter_y = (rng.next_double() as f32 - 0.5) * (7.0 - otb * 3.0) * noise_scale;
             let stretched_y = 34.0 + (anchor.y - 34.0) * width_factor + cut_in;
-            Vec2::new(
+            let mut target = Vec2::new(
                 anchor.x + shift_x + pocket_run + jitter_x,
                 stretched_y + jitter_y,
             )
-            .clamp_to_pitch()
+            .clamp_to_pitch();
+            if let Some(line) = receiving_line {
+                // Better off-ball movement, anticipation and decisions improve run timing.
+                // A weak reader can still overshoot; a defender stepping up can still trap
+                // anyone. Only the intended destination changes, never teleport the player.
+                let awareness = (otb * 0.50
+                    + normalize_attr(attrs.mental.anticipation) * 0.25
+                    + normalize_attr(attrs.mental.decisions) * 0.25)
+                    * state.players[idx].position_familiarity;
+                let awareness = awareness.clamp(0.0, 1.0);
+                let margin_m = 0.6 + 1.8 * awareness;
+                let timing_error_m = 3.0 * (1.0 - awareness);
+                let intended_limit = (line - margin_m + timing_error_m).clamp(0.0, PITCH_LENGTH_M);
+                if attacking_progress_m(side, target) > intended_limit {
+                    target.x = match side {
+                        TeamSideV4::Home => intended_limit,
+                        TeamSideV4::Away => PITCH_LENGTH_M - intended_limit,
+                    };
+                }
+            }
+            target
         } else {
             let pos_skill = normalize_attr(attrs.mental.positioning);
             let conc = normalize_attr(attrs.mental.concentration);

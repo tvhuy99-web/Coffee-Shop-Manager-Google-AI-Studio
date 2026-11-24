@@ -2524,3 +2524,87 @@ fn des_population_watchdog_seed_1970781_finishes_both_halves() {
     let d = result.diagnostics.expect("diagnostics");
     d.validate_basic().expect("valid diagnostics");
 }
+
+
+// Calibration stage 1: actual decision and movement functions, with a known
+// opponent line. The referee's existing Law 11 semantics stay independent.
+#[test]
+fn des_offside_awareness_avoids_clearly_illegal_pass_target() {
+    use crate::v4::state::MatchStateV4;
+    use crate::v4::movement::evaluate_local_context;
+    use crate::v4::perception::{perceive_evaluate_and_decide_des, PlannedActionV4};
+    use crate::v4::ball_play::is_receiver_offside;
+    let input = make_v4_input_teams(12345, SimulationMode::FullEvent, RulesModeV4::Standard,
+        make_v4_team("H", "H", 18), make_v4_team("A", "A", 13));
+    let mut state = MatchStateV4::from_input(&input);
+    let carrier = state.players.iter().position(|p| p.player_id == "H06").unwrap();
+    let legal = state.players.iter().position(|p| p.player_id == "H07").unwrap();
+    let illegal = state.players.iter().position(|p| p.player_id == "H10").unwrap();
+    for (i, p) in state.players.iter_mut().enumerate() {
+        if p.side == TeamSideV4::Home {
+            p.on_pitch = i == carrier || i == legal || i == illegal;
+            p.pos = if i == carrier { Vec2::new(60.0, 34.0) }
+                else if i == legal { Vec2::new(72.0, 34.0) }
+                else { Vec2::new(84.0, 34.0) };
+        } else {
+            p.pos = if p.is_goalkeeper { Vec2::new(100.0, 5.0) } else { Vec2::new(76.0, 5.0) };
+        }
+    }
+    assert!(!is_receiver_offside(&state, TeamSideV4::Home, state.players[carrier].pos, state.players[legal].pos));
+    assert!(is_receiver_offside(&state, TeamSideV4::Home, state.players[carrier].pos, state.players[illegal].pos));
+    let ctx = evaluate_local_context(&state, &input, TeamSideV4::Home, state.players[carrier].pos);
+    let mut legal_count = 0;
+    let mut illegal_count = 0;
+    for seed in 1..=128 {
+        let mut rng = DeterministicRng::new(seed * 7919);
+        let plan = perceive_evaluate_and_decide_des(&state, &input, &input.timing_model, carrier, ctx, &mut rng);
+        if let PlannedActionV4::Pass { target_idx, .. } = plan.action {
+            if target_idx == legal { legal_count += 1; }
+            if target_idx == illegal { illegal_count += 1; }
+        }
+    }
+    println!("OFFSIDE_DECISION legal={} illegal={}", legal_count, illegal_count);
+    assert!(legal_count >= 64, "clear legal option should be preferred");
+    assert!(illegal_count <= 8, "skilled player should rarely choose clearly offside runner");
+}
+
+#[test]
+fn des_offside_runner_corrects_target_without_teleporting_or_stopping_in_flight() {
+    use crate::v4::state::{MatchStateV4, BallControlState};
+    use crate::v4::movement::{advance_off_ball_movement, player_attrs, player_max_speed_mps};
+    use crate::v4::ball_play::offside_reference_progress_m;
+    for side in [TeamSideV4::Home, TeamSideV4::Away] {
+        let input = make_v4_input_teams(12346, SimulationMode::FullEvent, RulesModeV4::Standard,
+            make_v4_team("H", "H", 18), make_v4_team("A", "A", 18));
+        let mut state = MatchStateV4::from_input(&input);
+        let id_prefix = if side == TeamSideV4::Home { "H" } else { "A" };
+        let carrier = state.players.iter().position(|p| p.player_id == format!("{}06", id_prefix)).unwrap();
+        let runner = state.players.iter().position(|p| p.player_id == format!("{}10", id_prefix)).unwrap();
+        let x = |progress: f32| if side == TeamSideV4::Home { progress } else { PITCH_LENGTH_M - progress };
+        for p in &mut state.players {
+            if p.side != side {
+                p.pos = Vec2::new(x(if p.is_goalkeeper { 100.0 } else { 75.0 }), 5.0);
+            }
+        }
+        state.players[carrier].pos = Vec2::new(x(60.0), 34.0);
+        state.players[runner].pos = Vec2::new(x(85.0), 34.0);
+        state.ball.pos = Vec3::ground(x(60.0), 34.0);
+        state.ball.control = BallControlState::Controlled;
+        let line = offside_reference_progress_m(&state, side, state.players[carrier].pos).unwrap();
+        assert!((line - 75.0).abs() < 0.01);
+        let before = state.players[runner].pos;
+        let speed = player_max_speed_mps(player_attrs(&state, &state.players[runner]), &state.players[runner]);
+        let mut in_flight = state.clone();
+        in_flight.ball.control = BallControlState::InFlight;
+        let mut rng = DeterministicRng::new(12347);
+        let mut rng_flight = DeterministicRng::new(12347);
+        advance_off_ball_movement(&mut state, &input, side, carrier, 0.1, &mut rng);
+        advance_off_ball_movement(&mut in_flight, &input, side, carrier, 0.1, &mut rng_flight);
+        let p = &state.players[runner];
+        assert!(attacking_progress_m(side, p.target_pos) < line);
+        assert!(p.pos.distance(before) <= speed * 0.1 + 0.001, "run correction must respect movement budget");
+        assert!(attacking_progress_m(side, p.pos) > line, "runner cannot teleport back onside");
+        assert!(attacking_progress_m(side, in_flight.players[runner].target_pos) > line,
+            "after release, runner must be allowed to run beyond the launch line");
+    }
+}

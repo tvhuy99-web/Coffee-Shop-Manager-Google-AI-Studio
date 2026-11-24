@@ -52,6 +52,24 @@ jobs:
               report = json.loads(p.read_text())
               print(report["scenario"])
               print(json.dumps(report["headline"], indent=2))
+              from collections import defaultdict, Counter
+              passes = defaultdict(Counter)
+              losses = Counter()
+              valid = [r for r in report["matches"] if r["ok"] and r.get("diagnostics")]
+              for row in valid:
+                  for side in ("home", "away"):
+                      d = row["diagnostics"][side]
+                      losses.update(d["turnovers"])
+                      for kind, counts in d["passesByType"].items():
+                          passes[kind].update(counts)
+              n = max(1, len(valid))
+              print("DES_PASS_BREAKDOWN", json.dumps({
+                  "matches": len(valid),
+                  "types": {k: {**{f"{m}PerMatch": v/n for m,v in c.items()},
+                                 "accuracyPct": 100*c["completed"]/max(1,c["attempted"])}
+                            for k,c in sorted(passes.items())},
+                  "turnoversPerMatch": {k:v/n for k,v in sorted(losses.items())}
+              }, sort_keys=True))
               for row in report["matches"]:
                   if not row["ok"] or row.get("diagnosticError"):
                       print("FAILED SEED", row["seed"], row.get("error") or row.get("diagnosticError"))
@@ -64,6 +82,15 @@ jobs:
           name: des-population-${{ matrix.scenario }}
           path: build-evidence/
           if-no-files-found: error
+  offside_regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify offside decision and movement
+        working-directory: rust/football_match_engine
+        run: cargo test --lib des_offside_ -- --nocapture
   attacking_sample:
     runs-on: ubuntu-latest
     timeout-minutes: 20

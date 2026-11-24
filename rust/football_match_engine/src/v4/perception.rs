@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use crate::rng::DeterministicRng;
 use crate::v4::attributes::{normalize_attr, normalize_attr_elite, PlayerAttributes54};
+use crate::v4::ball_play::offside_reference_progress_m;
 use crate::v4::input::MatchInputV4;
 use crate::v4::movement::{
     evaluate_local_context, evaluate_passing_lane, player_attrs, LocalSpatialContext,
@@ -199,6 +200,10 @@ pub fn perceive_evaluate_and_decide_des(
     let time_waste_safe_boost = if ti.time_wasting >= 55 { 10.0 } else { 0.0 };
 
     let mut candidates: Vec<CandidateOption> = Vec::with_capacity(14);
+    let offside_line = offside_reference_progress_m(state, att_side, carrier.pos);
+    // Perception is fallible, especially under pressure; the Law 11 check remains exact.
+    let timing_awareness = (vision * 0.40 + decisions * 0.40 + concentration * 0.20)
+        * (1.0 - pressure_norm * 0.25);
 
     for (t_idx, mate) in state.players.iter().enumerate() {
         if t_idx == carrier_idx || !mate.on_pitch || mate.sent_off || mate.side != att_side {
@@ -275,8 +280,18 @@ pub fn perceive_evaluate_and_decide_des(
         };
         let risk = (lane_risk * 0.72 + (mate_ctx.pressure / 100.0) * 0.28).clamp(0.0, 1.0);
         let tempo_risk_tolerance = 0.65 + (ti.build_up_risk as f32 / 100.0) * 0.45;
+        // A runner already beyond both the ball and second-last opponent is a poor
+        // receiving option. Penalize obvious mistiming, not legal forward runs.
+        // Marginal errors and low-skill decisions remain possible.
+        let offside_penalty = offside_line.map_or(0.0, |line| {
+            let beyond_m = (mate_progress - line - 0.001).max(0.0);
+            if beyond_m <= 0.0 { 0.0 } else {
+                let clarity = 0.25 + 0.75 * (beyond_m / 3.0).min(1.0);
+                clarity * (12.0 + 54.0 * timing_awareness)
+            }
+        });
         let utility = base_reward + overload_bonus + teamwork_bonus + gk_penalty
-            - risk * (34.0 / tempo_risk_tolerance);
+            - risk * (34.0 / tempo_risk_tolerance) - offside_penalty;
 
         candidates.push(CandidateOption {
             action: PlannedActionV4::Pass {

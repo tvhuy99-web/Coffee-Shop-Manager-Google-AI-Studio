@@ -115,9 +115,42 @@ pub(crate) fn build_defender_candidates(
     out
 }
 
-/// Evaluates Law 11 (Offside) at the instant the teammate plays the ball:
-/// - Exempt if receiver is in own half (`<= 52.5m`) or behind the ball.
-/// - Offside if receiver is ahead of the ball AND ahead of the second-last opponent defender.
+/// Second-last active opponent, in the attacking side's coordinate system.
+/// Shared by perception, off-ball movement and the authoritative Law 11 check.
+/// Goalkeepers count as opponents; sent-off/off-pitch players do not.
+pub(crate) fn second_last_opponent_progress_m(
+    state: &MatchStateV4,
+    att_side: TeamSideV4,
+) -> Option<f32> {
+    let mut deepest = f32::NEG_INFINITY;
+    let mut second = f32::NEG_INFINITY;
+    let mut count = 0usize;
+    for p in state.players.iter().filter(|p| p.side == att_side.opposite() && p.on_pitch && !p.sent_off) {
+        let progress = attacking_progress_m(att_side, p.pos);
+        count += 1;
+        if progress >= deepest {
+            second = deepest;
+            deepest = progress;
+        } else if progress > second {
+            second = progress;
+        }
+    }
+    if count >= 2 { Some(second) } else { None }
+}
+
+/// Furthest legal receiving position at the instant of a teammate's pass.
+/// This is a geometric reference, not an offside offence.
+pub(crate) fn offside_reference_progress_m(
+    state: &MatchStateV4,
+    att_side: TeamSideV4,
+    ball_pos: Vec2,
+) -> Option<f32> {
+    second_last_opponent_progress_m(state, att_side)
+        .map(|line| line.max(attacking_progress_m(att_side, ball_pos)).max(PITCH_HALF_LENGTH_M))
+}
+
+/// Evaluates Law 11 position at the instant the teammate plays the ball.
+/// Actual involvement is adjudicated by the pass resolver, not by perception.
 pub fn is_receiver_offside(
     state: &MatchStateV4,
     att_side: TeamSideV4,
@@ -125,27 +158,13 @@ pub fn is_receiver_offside(
     receiver_pos: Vec2,
 ) -> bool {
     let recv_prog = attacking_progress_m(att_side, receiver_pos);
-    let ball_prog = attacking_progress_m(att_side, passer_pos);
-    // Law 11 exemptions: own half or behind the ball
-    if recv_prog <= PITCH_HALF_LENGTH_M || recv_prog <= ball_prog + 0.001 {
+    if recv_prog <= PITCH_HALF_LENGTH_M
+        || recv_prog <= attacking_progress_m(att_side, passer_pos) + 0.001
+    {
         return false;
     }
-
-    let def_side = att_side.opposite();
-    let mut def_progs: Vec<f32> = state
-        .players
-        .iter()
-        .filter(|p| p.side == def_side && p.on_pitch && !p.sent_off)
-        .map(|p| attacking_progress_m(att_side, p.pos))
-        .collect();
-    if def_progs.len() < 2 {
-        return false;
-    }
-    // Sort descending: largest attacking_progress_m is deepest defender (usually GK),
-    // index 1 is the second-last opponent (the official offside line).
-    def_progs.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    let offside_line = def_progs[1];
-    recv_prog > offside_line + 0.001
+    second_last_opponent_progress_m(state, att_side)
+        .map_or(false, |line| recv_prog > line + 0.001)
 }
 
 /// DES two-phase pass & first-touch resolver:
