@@ -12,6 +12,34 @@ use super::utility::{ActionValue, is_switch, possession_value, turnover_cost, sh
 use super::on_ball::{choose_carry, choose_hold};
 use super::pass_forecast::PassForecast;
 
+fn perception_quality(state:&MatchStateV4,idx:usize,pressure_norm:f32)->f32 {
+    let carrier=&state.players[idx];
+    let attrs=player_attrs(state,carrier);
+    let vision=normalize_attr(attrs.mental.vision);
+    let concentration=normalize_attr(attrs.mental.concentration);
+    let composure=normalize_attr(attrs.mental.composure);
+    (vision * 0.45
+        + normalize_attr(attrs.mental.anticipation) * 0.25
+        + concentration * 0.15
+        + carrier.position_familiarity * 0.15
+        - pressure_norm * (0.28 - composure * 0.14))
+        .clamp(0.18, 1.0)
+}
+
+/// Diagnostic-only forecast, using the same perception model as selection.
+/// No RNG, no outcome, no modification of the chosen intention.
+pub(crate) fn observe_pass_risk(state:&MatchStateV4,input:&MatchInputV4,idx:usize,
+    ctx:LocalSpatialContext,action:PlannedActionV4)->Option<f32> {
+    let PlannedActionV4::Pass{target_idx,kind,..}=action else{return None;};
+    let carrier=state.players.get(idx)?;
+    let target=state.players.get(target_idx)?;
+    if !target.on_pitch || target.sent_off || target.side!=carrier.side || target_idx==idx
+        || carrier.pos.distance(target.pos)<0.5 {return None;}
+    let awareness=perception_quality(state,idx,(ctx.pressure/100.0).clamp(0.0,1.0));
+    Some(PassForecast::new(state,carrier.side,awareness)
+        .lane_risk(state,input,&input.timing_model,carrier.pos,target_idx,kind))
+}
+
 /// DES entry point returning the chosen action along with `decision_delay_ms` and `is_one_touch`.
 pub fn perceive_evaluate_and_decide_des(
     state: &MatchStateV4,
@@ -37,12 +65,7 @@ pub fn perceive_evaluate_and_decide_des(
     let teamwork = normalize_attr(attrs.mental.teamwork);
     let pressure_norm = (carrier_ctx.pressure / 100.0).clamp(0.0, 1.0);
 
-    let perception_quality = (vision * 0.45
-        + normalize_attr(attrs.mental.anticipation) * 0.25
-        + concentration * 0.15
-        + carrier.position_familiarity * 0.15
-        - pressure_norm * (0.28 - composure * 0.14))
-        .clamp(0.18, 1.0);
+    let perception_quality = perception_quality(state,carrier_idx,pressure_norm);
 
     let max_vision_range_m = 22.0 + perception_quality * 40.0;
     let carrier_progress = attacking_progress_m(att_side, carrier.pos);

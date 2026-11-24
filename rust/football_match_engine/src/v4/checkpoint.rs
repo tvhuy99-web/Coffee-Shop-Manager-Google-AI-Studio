@@ -176,6 +176,8 @@ pub struct PendingDecisionV4 {
     /// Original planned release; the first event may be an earlier contest.
     pub release_at_ms: i64,
     #[serde(default)]
+    pub observed_pass_risk: Option<f32>,
+    #[serde(default)]
     pub challenger: Option<crate::v4::interaction::PassContactMotion>,
 }
 

@@ -1986,8 +1986,9 @@ impl MatchSessionV4 {
         self.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
             DesEventPayload::ActionExecute{player_id:id.clone(),side})
             .map_err(|e|V4Error::InvalidClock(e.into()))?;
+        let observed_pass_risk=crate::player_intelligence::observe_pass_risk(&self.state,&self.input,idx,ctx,plan.action);
         self.pending_decision=Some(PendingDecisionV4{player_id:id,side,started_at_ms:now,executes_at_ms:at,
-            plan,release_at_ms,challenger});
+            plan,release_at_ms,challenger,observed_pass_risk});
         Ok(())
     }
 
@@ -2141,6 +2142,14 @@ impl MatchSessionV4 {
                 *in_box=is_in_attacking_penalty_box(side,pos);
             }
             _=>{}
+        }
+        // Observe only a valid pass reaching its release event. A cancelled
+        // preparation never becomes a paired sample. No new decision or RNG.
+        if let Some(initial)=pending.observed_pass_risk {
+            let ctx=evaluate_local_context(&self.state,&self.input,side,pos);
+            if let Some(release)=crate::player_intelligence::observe_pass_risk(&self.state,&self.input,idx,ctx,plan.action) {
+                self.diagnostics.record_pass_risk_drift(initial,release);
+            }
         }
         let prev_possession = self.possession_side;
         let (next_side, next_carrier, entered_dead_ball, next_delay_ms) =
@@ -3871,7 +3880,7 @@ mod pi_defense_commitment_tests {
         let ctx=evaluate_local_context(&s.state,&s.input,side,s.state.players[car].pos);
         let plan=perceive_evaluate_and_decide_des(&s.state,&s.input,&s.input.timing_model,car,ctx,&mut s.rng);
         s.pending_decision=Some(PendingDecisionV4{player_id:id.clone(),side,started_at_ms:now,
-            executes_at_ms:at,plan,release_at_ms:release,challenger:chase});
+            executes_at_ms:at,plan,release_at_ms:release,challenger:chase,observed_pass_risk:None});
         s.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
             DesEventPayload::ActionExecute{player_id:id.clone(),side}).unwrap();
         let ck=s.export_checkpoint().unwrap();

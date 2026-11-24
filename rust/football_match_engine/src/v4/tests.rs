@@ -2648,7 +2648,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.11");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.12");
 }
 
 
@@ -2787,4 +2787,36 @@ fn pi_defense_actual_movement_respects_budget_and_approaches_ball() {
             assert_eq!(p.target_pos,a.target);
         }
     }
+}
+
+
+#[test]
+fn pi_checkpoint_float_diagnostics_preserve_exact_bits() {
+    // Accumulators sum f32 forecasts in f64. Verify full f64 JSON
+    // roundtrip rather than masking a checksum mismatch by rounding.
+    let mut total=0.0f64;
+    for i in 1..=4096 {
+        total+=f64::from((i as f32*0.0137).sin().abs());
+        let encoded=serde_json::to_string(&total).unwrap();
+        let decoded:f64=serde_json::from_str(&encoded).unwrap();
+        assert_eq!(total.to_bits(),decoded.to_bits());
+    }
+}
+
+#[test]
+fn pi_checkpoint_observed_pass_risk_accounting_roundtrip() {
+    let input=make_v4_input(14012,SimulationMode::FullEvent,RulesModeV4::Standard);
+    let mut s=MatchSessionV4::new(input).unwrap();
+    s.advance_until_ms(300_000,1500).unwrap();
+    let ck=s.export_checkpoint().unwrap();
+    let before=&ck.payload.diagnostics_summary.des;
+    assert!(before.pass_risk_pairs>0);
+    assert_eq!(before.pass_risk_pairs,before.pass_risk_increased+before.pass_risk_decreased+before.pass_risk_stable);
+    assert!(before.pass_risk_initial_sum<=f64::from(before.pass_risk_pairs));
+    assert!(before.pass_risk_release_sum<=f64::from(before.pass_risk_pairs));
+    let json=serde_json::to_string(&ck).unwrap();
+    let parsed=serde_json::from_str(&json).unwrap();
+    crate::v4::checkpoint::verify_checkpoint(&parsed).unwrap();
+    let restored=MatchSessionV4::from_checkpoint(parsed).unwrap().export_checkpoint().unwrap();
+    assert_eq!(ck.checksum_hex,restored.checksum_hex);
 }

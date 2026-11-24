@@ -78,7 +78,7 @@ class TtsSettingsStore(context: Context) {
 
     fun saveCalibratedBaseSpeechRate(voiceKey: String, speechRate: Float, measuredSyllablesPerSec: Float) {
         val safeKey = voiceKey.ifBlank { "default" }
-        prefs.edit()
+        preferences.edit()
             .putFloat("cal_rate_$safeKey", speechRate.coerceIn(0.65f, 1.65f))
             .putFloat("cal_syl_$safeKey", measuredSyllablesPerSec.coerceIn(1.5f, 10.0f))
             .apply()
@@ -87,7 +87,7 @@ class TtsSettingsStore(context: Context) {
     fun loadCalibratedBaseSpeechRate(voiceKey: String): Float? {
         val safeKey = voiceKey.ifBlank { "default" }
         val key = "cal_rate_$safeKey"
-        return if (prefs.contains(key)) prefs.getFloat(key, 1.0f).coerceIn(0.65f, 1.65f) else null
+        return if (preferences.contains(key)) preferences.getFloat(key, 1.0f).coerceIn(0.65f, 1.65f) else null
     }
 
     companion object {

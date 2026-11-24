@@ -60,6 +60,7 @@ jobs:
               outlets = Counter()
               defense = Counter()
               outcomes = Counter()
+              drift = Counter()
               valid = [r for r in report["matches"] if r["ok"] and r.get("diagnostics")]
               for row in valid:
                   des = row["diagnostics"]["des"]
@@ -69,6 +70,8 @@ jobs:
                       outlets[field] += des.get(field,0)
                   for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM","preparationContacts","preparationTurnovers","preparationFouls","carryFouls","tackleOpportunities","tackleCommitChoices","tackleContainChoices","tackleFrontOpportunities","tackleFrontCommits","tackleSideOpportunities","tackleSideCommits","tackleRearOpportunities","tackleRearCommits","tackleExpectedCleanSum","tackleExpectedFoulSum"):
                       defense[field] += des.get(field,0)
+                  for field in ("passRiskPairs","passRiskInitialSum","passRiskReleaseSum","passRiskAbsChangeSum","passRiskIncreased","passRiskDecreased","passRiskStable"):
+                      drift[field] += des.get(field,0)
                   outcomes["penaltyPhases"] += des["deadBallDistributions"]["penalty"]["count"]
                   for side in ("home", "away"):
                       summary = row["summary"][side]
@@ -110,6 +113,16 @@ jobs:
                   "perCommittedCandidateFoulPrior":defense["tackleExpectedFoulSum"]/max(1,defense["tackleCommitChoices"])
               },sort_keys=True))
               print("PI_CONTEST_OUTCOMES",json.dumps({k:v/n for k,v in sorted(outcomes.items())},sort_keys=True))
+              assert drift["passRiskPairs"] == drift["passRiskIncreased"]+drift["passRiskDecreased"]+drift["passRiskStable"]
+              print("PI_PASS_RISK_DRIFT",json.dumps({
+                  "pairsPerMatch":drift["passRiskPairs"]/n,
+                  "initialMean":drift["passRiskInitialSum"]/max(1,drift["passRiskPairs"]),
+                  "releaseMean":drift["passRiskReleaseSum"]/max(1,drift["passRiskPairs"]),
+                  "meanAbsoluteChange":drift["passRiskAbsChangeSum"]/max(1,drift["passRiskPairs"]),
+                  "increasedPct":100*drift["passRiskIncreased"]/max(1,drift["passRiskPairs"]),
+                  "decreasedPct":100*drift["passRiskDecreased"]/max(1,drift["passRiskPairs"]),
+                  "stablePct":100*drift["passRiskStable"]/max(1,drift["passRiskPairs"])
+              },sort_keys=True))
               for row in report["matches"]:
                   if not row["ok"] or row.get("diagnosticError"):
                       print("FAILED SEED", row["seed"], row.get("error") or row.get("diagnosticError"))
@@ -172,7 +185,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Verify timed PI intentions, carry accounting and cancellation
         working-directory: rust/football_match_engine
-        run: cargo test --lib pi_timing_ -- --nocapture
+        run: |
+          cargo test --lib pi_timing_ -- --nocapture
+          cargo test --lib pi_checkpoint_ -- --nocapture
+          cargo test --lib des_checkpoint_roundtrip_exact_continuation_all_states -- --nocapture
       - name: Verify actual full-event replay and batch parity
         working-directory: rust/football_match_engine
         run: cargo test --lib fast_batch_and_full_event_diagnostics_match -- --nocapture

@@ -215,6 +215,20 @@ pub struct DesMatchDiagnosticsV4 {
     pub tackle_expected_clean_sum: f64,
     #[serde(default)]
     pub tackle_expected_foul_sum: f64,
+    #[serde(default)]
+    pub pass_risk_pairs: u32,
+    #[serde(default)]
+    pub pass_risk_initial_sum: f64,
+    #[serde(default)]
+    pub pass_risk_release_sum: f64,
+    #[serde(default)]
+    pub pass_risk_abs_change_sum: f64,
+    #[serde(default)]
+    pub pass_risk_increased: u32,
+    #[serde(default)]
+    pub pass_risk_decreased: u32,
+    #[serde(default)]
+    pub pass_risk_stable: u32,
     pub dead_ball_distributions: DeadBallDistributionsV4,
     pub avg_player_distance_m: f32,
     pub tactical_commands_delayed: u32,
@@ -446,6 +460,20 @@ struct DesDiagnosticsAccumulator {
     tackle_expected_clean_sum: f64,
     #[serde(default)]
     tackle_expected_foul_sum: f64,
+    #[serde(default)]
+    pass_risk_pairs: u32,
+    #[serde(default)]
+    pass_risk_initial_sum: f64,
+    #[serde(default)]
+    pass_risk_release_sum: f64,
+    #[serde(default)]
+    pass_risk_abs_change_sum: f64,
+    #[serde(default)]
+    pass_risk_increased: u32,
+    #[serde(default)]
+    pass_risk_decreased: u32,
+    #[serde(default)]
+    pass_risk_stable: u32,
     avg_player_distance_m: f32,
     tactical_commands_delayed: u32,
     goal_celebration_samples: Vec<i64>,
@@ -503,6 +531,13 @@ impl DesDiagnosticsAccumulator {
             tackle_rear_commits: self.tackle_rear_commits,
             tackle_expected_clean_sum: self.tackle_expected_clean_sum,
             tackle_expected_foul_sum: self.tackle_expected_foul_sum,
+            pass_risk_pairs: self.pass_risk_pairs,
+            pass_risk_initial_sum: self.pass_risk_initial_sum,
+            pass_risk_release_sum: self.pass_risk_release_sum,
+            pass_risk_abs_change_sum: self.pass_risk_abs_change_sum,
+            pass_risk_increased: self.pass_risk_increased,
+            pass_risk_decreased: self.pass_risk_decreased,
+            pass_risk_stable: self.pass_risk_stable,
             dead_ball_distributions: DeadBallDistributionsV4 {
                 goal_celebration: DurationDistributionMs::from_samples(&mut self.goal_celebration_samples),
                 throw_in: DurationDistributionMs::from_samples(&mut self.throw_in_samples),
@@ -642,6 +677,19 @@ impl MatchDiagnosticsCollectorV4 {
         };
         *time=time.saturating_add(dt_ms.max(0));
         *distance+=moved.max(0.0);
+    }
+
+    pub(crate) fn record_pass_risk_drift(&mut self,initial:f32,release:f32) {
+        let a=f64::from(initial.clamp(0.0,1.0));
+        let b=f64::from(release.clamp(0.0,1.0));
+        self.des.pass_risk_pairs=self.des.pass_risk_pairs.saturating_add(1);
+        self.des.pass_risk_initial_sum+=a;
+        self.des.pass_risk_release_sum+=b;
+        self.des.pass_risk_abs_change_sum+=(b-a).abs();
+        // Reporting categories only. No policy threshold or action gate.
+        if b-a>0.20 {self.des.pass_risk_increased+=1;}
+        else if a-b>0.20 {self.des.pass_risk_decreased+=1;}
+        else {self.des.pass_risk_stable+=1;}
     }
 
     pub fn record_tackle_choice(&mut self,commits:bool,access:f32,clean:f32,foul:f32) {
