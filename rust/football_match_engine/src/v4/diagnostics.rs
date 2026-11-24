@@ -193,6 +193,12 @@ pub struct DesMatchDiagnosticsV4 {
     pub preparation_fouls: u32,
     #[serde(default)]
     pub carry_fouls: u32,
+    #[serde(default)]
+    pub tackle_opportunities: u32,
+    #[serde(default)]
+    pub tackle_commit_choices: u32,
+    #[serde(default)]
+    pub tackle_contain_choices: u32,
     pub dead_ball_distributions: DeadBallDistributionsV4,
     pub avg_player_distance_m: f32,
     pub tactical_commands_delayed: u32,
@@ -402,6 +408,12 @@ struct DesDiagnosticsAccumulator {
     preparation_fouls: u32,
     #[serde(default)]
     carry_fouls: u32,
+    #[serde(default)]
+    tackle_opportunities: u32,
+    #[serde(default)]
+    tackle_commit_choices: u32,
+    #[serde(default)]
+    tackle_contain_choices: u32,
     avg_player_distance_m: f32,
     tactical_commands_delayed: u32,
     goal_celebration_samples: Vec<i64>,
@@ -448,6 +460,9 @@ impl DesDiagnosticsAccumulator {
             preparation_turnovers: self.preparation_turnovers,
             preparation_fouls: self.preparation_fouls,
             carry_fouls: self.carry_fouls,
+            tackle_opportunities: self.tackle_opportunities,
+            tackle_commit_choices: self.tackle_commit_choices,
+            tackle_contain_choices: self.tackle_contain_choices,
             dead_ball_distributions: DeadBallDistributionsV4 {
                 goal_celebration: DurationDistributionMs::from_samples(&mut self.goal_celebration_samples),
                 throw_in: DurationDistributionMs::from_samples(&mut self.throw_in_samples),
@@ -589,6 +604,11 @@ impl MatchDiagnosticsCollectorV4 {
         *distance+=moved.max(0.0);
     }
 
+    pub fn record_tackle_choice(&mut self,commits:bool) {
+        self.des.tackle_opportunities=self.des.tackle_opportunities.saturating_add(1);
+        if commits {self.des.tackle_commit_choices=self.des.tackle_commit_choices.saturating_add(1);}
+        else {self.des.tackle_contain_choices=self.des.tackle_contain_choices.saturating_add(1);}
+    }
     pub fn record_preparation_contact(&mut self,lost:bool,foul:bool) {
         self.des.preparation_contacts=self.des.preparation_contacts.saturating_add(1);
         if lost {self.des.preparation_turnovers=self.des.preparation_turnovers.saturating_add(1);}

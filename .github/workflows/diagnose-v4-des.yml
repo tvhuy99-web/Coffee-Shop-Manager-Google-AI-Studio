@@ -67,7 +67,7 @@ jobs:
                       carry[field] += des.get(field,0)
                   for field in ("outletSamples","openOutletsTotal","noOpenOutletSamples","holdDecisionSamples","holdWithOpenOutletSamples"):
                       outlets[field] += des.get(field,0)
-                  for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM","preparationContacts","preparationTurnovers","preparationFouls","carryFouls"):
+                  for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM","preparationContacts","preparationTurnovers","preparationFouls","carryFouls","tackleOpportunities","tackleCommitChoices","tackleContainChoices"):
                       defense[field] += des.get(field,0)
                   outcomes["penaltyPhases"] += des["deadBallDistributions"]["penalty"]["count"]
                   for side in ("home", "away"):

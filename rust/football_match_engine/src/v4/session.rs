@@ -2020,16 +2020,38 @@ impl MatchSessionV4 {
         self.tackle_ready_at.insert(p.player_id.clone(),self.state.des_clock.sim_time_ms.saturating_add(duration));
     }
 
-    fn preparation_contest(&self,idx:usize,release:i64)->(i64,Option<PassContactMotion>) {
+    /// Reachable candidates first, then the PI's tackle-vs-contain
+    /// choice. Evaluate each defender independently; only committed
+    /// candidates compete for the earliest physical event.
+    fn choose_committed_tackle(&mut self,idx:usize,motion:&PassContactMotion,end:i64)
+        ->Option<(usize,i64,PassContactMotion)> {
+        let candidates=self.tackle_candidates(motion.candidate.side,end);
+        let mut best:Option<(usize,i64,PassContactMotion)>=None;
+        for candidate in &candidates {
+            let Some((_,at,chase))=find_carry_contact(motion,std::slice::from_ref(candidate),end) else {continue;};
+            let Some(def_idx)=self.state.players.iter().position(|p|p.player_id==candidate.player_id) else {continue;};
+            let elapsed=at.saturating_sub(motion.started_at_ms) as f32/1000.0;
+            let evaluation=crate::player_intelligence::evaluate_tackle(&self.state,idx,def_idx,elapsed);
+            let commits=evaluation.commits();
+            self.diagnostics.record_tackle_choice(commits);
+            if !commits {continue;}
+            if best.as_ref().map_or(true,|(_,old_time,old_motion)|
+                at<*old_time || (at==*old_time && candidate.player_id<old_motion.candidate.player_id)) {
+                best=Some((def_idx,at,chase));
+            }
+        }
+        best
+    }
+
+    fn preparation_contest(&mut self,idx:usize,release:i64)->(i64,Option<PassContactMotion>) {
         let now=self.state.des_clock.sim_time_ms;
         let mut carrier=pass_reach_candidate(&self.state,idx,false);
         carrier.speed_mps=0.0;
         carrier.reaction_ms=0;
         carrier.velocity=Vec2::default();
         let pos=carrier.pos;
-        let defenders=self.tackle_candidates(carrier.side,release);
         let motion=PassContactMotion{candidate:carrier,target:pos,started_at_ms:now};
-        match find_carry_contact(&motion,&defenders,release) {
+        match self.choose_committed_tackle(idx,&motion,release) {
             // Exact tie goes to the already prepared release.
             Some((_,at,chase)) if at<release=>(at,Some(chase)),
             _=>(release,None),
@@ -2674,8 +2696,7 @@ impl MatchSessionV4 {
         let id=candidate.player_id.clone();
         let start_pressure=evaluate_local_context(&self.state,&self.input,side,candidate.pos).pressure;
         let motion=PassContactMotion{candidate,target,started_at_ms:now};
-        let defenders=self.tackle_candidates(side,end);
-        let (at,challenger)=match find_carry_contact(&motion,&defenders,end) {
+        let (at,challenger)=match self.choose_committed_tackle(idx,&motion,end) {
             Some((_,at,chase))=>(at,Some(chase)),None=>(end,None),
         };
         self.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
@@ -3757,6 +3778,7 @@ mod pi_carry_lifecycle_tests {
         for p in &mut s.state.players {p.pos=Vec2::new(90.0,60.0);p.vel=Vec2::default();}
         s.state.players[idx].pos=Vec2::new(50.0,34.0);
         s.state.players[def].pos=Vec2::new(50.0,32.5);
+        s.state.players[idx].facing_rad=-std::f32::consts::FRAC_PI_2;
         s.state.ball.pos=Vec3::ground(50.0,34.0);
         let now=s.sim_time_ms();
         let dist=s.state.players[idx].fatigue.distance_m;
@@ -3793,6 +3815,7 @@ mod pi_defense_commitment_tests {
         for p in &mut s.state.players {p.pos=Vec2::new(95.0,5.0);p.vel=Vec2::default();}
         s.state.players[car].pos=Vec2::new(50.0,34.0);
         s.state.players[def].pos=Vec2::new(50.0,34.7);
+        s.state.players[car].facing_rad=std::f32::consts::FRAC_PI_2;
         s.state.ball.pos=Vec3::ground(50.0,34.0);
         (s,car,def)
     }
@@ -3811,6 +3834,20 @@ mod pi_defense_commitment_tests {
         let ck=s.export_checkpoint().unwrap();
         let r=MatchSessionV4::from_checkpoint(serde_json::from_str(&serde_json::to_string(&ck).unwrap()).unwrap()).unwrap();
         assert_eq!(s.tackle_ready_at,r.tackle_ready_at);
+    }
+    #[test]
+    fn pi_defense_reachable_but_protected_ball_is_contained() {
+        let (mut s,car,def)=fixture();
+        let now=s.sim_time_ms();
+        // Same reachable geometry, but approach from behind the carrier.
+        s.state.players[car].facing_rad=-std::f32::consts::FRAC_PI_2;
+        let mut carrier=pass_reach_candidate(&s.state,car,false);
+        carrier.speed_mps=0.0; carrier.reaction_ms=0; carrier.velocity=Vec2::default();
+        let motion=PassContactMotion{target:carrier.pos,candidate:carrier,started_at_ms:now};
+        let reachable=s.tackle_candidates(s.state.players[car].side,now+1200);
+        assert!(find_carry_contact(&motion,&reachable,now+1200).is_some());
+        assert!(!crate::player_intelligence::evaluate_tackle(&s.state,car,def,0.25).commits());
+        assert!(s.choose_committed_tackle(car,&motion,now+1200).is_none());
     }
     #[test]
     fn pi_defense_preparation_requires_reach_not_proximity() {
