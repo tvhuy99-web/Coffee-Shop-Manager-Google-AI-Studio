@@ -4,7 +4,8 @@
 //! duel, foul, cards and penalty outcomes belong to the physics/rules engine.
 use crate::v4::attributes::normalize_attr;
 use crate::v4::movement::player_attrs;
-use crate::v4::spatial::{attacking_progress_m,is_in_attacking_penalty_box,Vec2};
+use crate::v4::spatial::{attacking_progress_m,is_in_attacking_penalty_box};
+use crate::v4::interaction::GroundContactGeometry;
 use crate::v4::state::MatchStateV4;
 use super::utility::territory_value;
 
@@ -42,7 +43,7 @@ impl TackleEvaluation {
 fn evaluate(o:TackleObservation)->TackleEvaluation {
     let access=o.access.clamp(0.0,1.0);
     let skill=o.skill.clamp(0.0,1.0);
-    let speed=(o.relative_speed/7.0).clamp(0.0,1.0);
+    let geometry=GroundContactGeometry{access,relative_speed_mps:o.relative_speed};
     let cover=o.cover.clamp(0.0,1.0);
     let energy=o.energy.clamp(0.0,1.0);
     let threat=o.threat.clamp(0.0,1.0);
@@ -50,8 +51,8 @@ fn evaluate(o:TackleObservation)->TackleEvaluation {
     // A neutral opponent prior and observable ball access. Estimate the
     // chance of getting the better of the duel before judging legality.
     // This is a fallible PI forecast, not the engine's actual roll.
-    let duel_win=((0.50+0.65*(skill-0.55))*(0.18+0.82*access)
-        *(0.75+0.25*energy)*(1.0-0.24*speed)).clamp(0.02,0.82);
+    let duel_win=((0.50+0.65*(skill-0.55))*geometry.access_factor()
+        *(0.75+0.25*energy)*geometry.speed_factor()).clamp(0.02,0.82);
     // Execution tests the foul only on the defender-winning branch.
     // Use the same conditional structure and neutral priors for hidden
     // temperament/sportsmanship and referee strictness.
@@ -90,16 +91,10 @@ pub(crate) fn evaluate_tackle(state:&MatchStateV4,carrier_idx:usize,def_idx:usiz
     let carrier=&state.players[carrier_idx];
     let defender=&state.players[def_idx];
     let attrs=player_attrs(state,defender);
-    let dx=defender.pos.x-carrier.pos.x;
-    let dy=defender.pos.y-carrier.pos.y;
-    let distance=(dx*dx+dy*dy).sqrt();
-    let facing=Vec2::new(carrier.facing_rad.cos(),carrier.facing_rad.sin());
-    // Current facing is only a coarse proxy for ball exposure.
-    let front=if distance>0.05 {(dx*facing.x+dy*facing.y)/distance}else{0.0};
-    let access=((front+1.0)*0.5).clamp(0.0,1.0);
-    let rvx=defender.vel.x-carrier.vel.x;
-    let rvy=defender.vel.y-carrier.vel.y;
-    let relative_speed=(rvx*rvx+rvy*rvy).sqrt();
+    let geometry=GroundContactGeometry::observe(carrier.pos,carrier.vel,carrier.facing_rad,
+        defender.pos,defender.vel);
+    let access=geometry.access;
+    let relative_speed=geometry.relative_speed_mps;
     let progress=attacking_progress_m(carrier.side,carrier.pos);
     let central=(1.0-(carrier.pos.y-34.0).abs()/34.0).clamp(0.0,1.0);
     let threat=(progress/105.0).clamp(0.0,1.0).powi(2)*(0.5+0.5*central);

@@ -23,6 +23,50 @@ pub const MAX_INTERCEPTABLE_HEIGHT_M: f32 = 2.40;
 /// Standard downward gravitational acceleration (m/s^2).
 pub const DEFAULT_GRAVITY_Z_MPS2: f32 = 9.81;
 
+/// Observable ground-contact geometry shared by PI and execution.
+/// The ball is still co-located with the carrier in this engine.
+/// Facing is therefore a proxy for exposure, NOT a tracked foot or
+/// a literal line-of-contact with the ball. Relative speed is a proxy
+/// for the difficulty of synchronizing the challenge.
+#[derive(Debug,Clone,Copy)]
+pub(crate) struct GroundContactGeometry {
+    pub access:f32,
+    pub relative_speed_mps:f32,
+}
+
+impl GroundContactGeometry {
+    pub(crate) fn observe(carrier_pos:Vec2,carrier_vel:Vec2,carrier_facing_rad:f32,
+        defender_pos:Vec2,defender_vel:Vec2)->Self {
+        let dx=defender_pos.x-carrier_pos.x;
+        let dy=defender_pos.y-carrier_pos.y;
+        let distance=(dx*dx+dy*dy).sqrt();
+        let facing=Vec2::new(carrier_facing_rad.cos(),carrier_facing_rad.sin());
+        let front=if distance>0.05 {(dx*facing.x+dy*facing.y)/distance}else{0.0};
+        let rvx=defender_vel.x-carrier_vel.x;
+        let rvy=defender_vel.y-carrier_vel.y;
+        Self{access:((front+1.0)*0.5).clamp(0.0,1.0),
+            relative_speed_mps:(rvx*rvx+rvy*rvy).sqrt()}
+    }
+
+    // Existing PI exposure and relative-speed priors, now shared.
+    // Preserve the PI factors and arithmetic ordering. These are not
+    // empirically calibrated probabilities of a physical foot contact.
+    pub(crate) fn access_factor(self)->f32 {
+        0.18+0.82*self.access.clamp(0.0,1.0)
+    }
+    pub(crate) fn speed_factor(self)->f32 {
+        1.0-0.24*(self.relative_speed_mps/7.0).clamp(0.0,1.0)
+    }
+
+    /// Conditional chance of getting the better of the duel, given that
+    /// contact is reachable. A fully exposed, speed-matched ball leaves
+    /// the skill-based chance unchanged. No second reachability roll.
+    pub(crate) fn apply_to_duel(self,neutral_win:f32)->f32 {
+        (neutral_win.clamp(0.0,1.0)*self.access_factor()*self.speed_factor()).clamp(0.0,1.0)
+    }
+}
+
+
 /// Analytic 3D ball trajectory parameterized by start timestamp, initial kinematics,
 /// gravitational acceleration (`gravity_z >= 0.0`), and linear drag coefficient (`drag >= 0.0`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

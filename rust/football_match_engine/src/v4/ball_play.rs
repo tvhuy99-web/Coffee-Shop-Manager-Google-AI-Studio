@@ -834,9 +834,9 @@ pub(crate) fn resolve_carry_contact(
     execute_dribble_duel_impl(state,input,carrier_idx,defender_idx,carrier_ctx,0.0,shielding,rng).outcome
 }
 
-/// Authoritative conditional duel probabilities, extracted without
-/// changing arithmetic or random draw order. Geometry is currently
-/// used by reachability, not by these conditional execution formulas.
+/// Authoritative conditional duel probabilities for a reachable
+/// ground contact. Skill sets the exposed-ball baseline; the same
+/// observable geometry factors used by PI reduce access to the ball.
 pub(crate) fn carrier_duel_win_probability(
     state:&MatchStateV4,input:&MatchInputV4,carrier_idx:usize,def_idx:usize,shielding:bool
 )->f32 {
@@ -880,8 +880,15 @@ pub(crate) fn carrier_duel_win_probability(
         + normalize_attr(def_attrs.mental.bravery) * 0.10)
         * def_ana;
 
-    let win_prob = (0.50 + (att_score - def_score) * 0.65).clamp(0.18, 0.84);
-    win_prob
+    let neutral_carrier_win=(0.50 + (att_score - def_score) * 0.65).clamp(0.18,0.84);
+    let carrier=&state.players[carrier_idx];
+    let defender=&state.players[def_idx];
+    let geometry=crate::v4::interaction::GroundContactGeometry::observe(
+        carrier.pos,carrier.vel,carrier.facing_rad,defender.pos,defender.vel);
+    // Keep the existing attribute duel as the fully exposed baseline.
+    // Apply the same geometry factors used by PI to the defender branch.
+    // A failed ball challenge is still NOT automatically a foul.
+    1.0-geometry.apply_to_duel(1.0-neutral_carrier_win)
 }
 
 pub(crate) fn duel_foul_given_defender_win(input:&MatchInputV4,def_attrs:&crate::v4::attributes::PlayerAttributes54)->f32 {

@@ -2664,7 +2664,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.22");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.23");
 }
 
 
@@ -3490,7 +3490,7 @@ fn pi_psychology_momentum_recovery_and_checkpoint_context() {
 
 
 #[test]
-fn pi_defense_contact_audit_current_angle_mismatch() {
+fn pi_defense_contact_audit_shared_angle_and_speed() {
     use crate::v4::state::MatchStateV4;
     use crate::v4::ball_play::{duel_contact_probabilities,resolve_carry_contact};
     use crate::v4::movement::evaluate_local_context;
@@ -3512,26 +3512,35 @@ fn pi_defense_contact_audit_current_angle_mismatch() {
     let back=duel_contact_probabilities(&rear,&input,a,b,ctx,false);
     assert!(front_pi.access>rear_pi.access);
     assert!(front_pi.clean_win_probability>rear_pi.clean_win_probability);
-    // Deliberately record the known mismatch, not an assertion that this
-    // is realistic. When physics is improved, replace this evidence test.
-    assert_eq!(front,back);
-    let mut clean=0u32;let mut foul=0u32;let mut advantage=0u32;
+    // The same attribute and fatigue profile must now distinguish
+    // front and rear access in the actual resolver, as PI already did.
+    assert!(front.0>back.0);
+    let mut fast=state.clone();
+    fast.players[b].vel=Vec2::new(-6.0,0.0);
+    let fast_probs=duel_contact_probabilities(&fast,&input,a,b,ctx,false);
+    assert!(fast_probs.0<front.0);
+    let mut mirror=state.clone();
+    mirror.players[a].pos=Vec2::new(55.0,34.0);
+    mirror.players[b].pos=Vec2::new(54.0,34.0);
+    mirror.players[a].facing_rad=std::f32::consts::PI;
+    assert!((duel_contact_probabilities(&mirror,&input,a,b,ctx,false).0-front.0).abs()<1e-6);
+    let mut counts=[[0u32;3];3];
     for k in 0..4096i64 {
-        let mut x=state.clone();let mut y=rear.clone();
-        let mut rx=DeterministicRng::new(104729+k*7907);
-        let mut ry=DeterministicRng::new(104729+k*7907);
-        let ox=resolve_carry_contact(&mut x,&input,a,Some(b),ctx,false,&mut rx);
-        let oy=resolve_carry_contact(&mut y,&input,a,Some(b),ctx,false,&mut ry);
-        let kinds=|o:&crate::v4::ball_play::BallPlayOutcome|o.events.iter().map(|e|e.kind).collect::<Vec<_>>();
-        assert_eq!(kinds(&ox),kinds(&oy));
-        assert_eq!(rx.state(),ry.state());
-        clean+=u32::from(ox.events.iter().any(|e|e.kind==EventTypeV4::TackleWon));
-        foul+=u32::from(ox.events.iter().any(|e|e.kind==EventTypeV4::Foul));
-        advantage+=u32::from(ox.events.iter().any(|e|e.kind==EventTypeV4::AdvantagePlayed));
+        for (j,template) in [&state,&rear,&fast].into_iter().enumerate() {
+            let mut x=template.clone();
+            let mut rng=DeterministicRng::new(104729+k*7907);
+            let out=resolve_carry_contact(&mut x,&input,a,Some(b),ctx,false,&mut rng);
+            for (m,kind) in [EventTypeV4::TackleWon,EventTypeV4::Foul,EventTypeV4::AdvantagePlayed].into_iter().enumerate() {
+                counts[j][m]+=u32::from(out.events.iter().any(|e|e.kind==kind));
+            }
+        }
     }
-    for (observed,expected) in [(clean,front.0),(foul,front.1),(advantage,front.2)] {
-        assert!((observed as f32/4096.0-expected).abs()<0.04,"branch frequency vs exact resolver");
+    for (j,expected) in [front,back,fast_probs].into_iter().enumerate() {
+        for (observed,prob) in counts[j].into_iter().zip([expected.0,expected.1,expected.2]) {
+            assert!((observed as f32/4096.0-prob).abs()<0.04,"branch frequency vs exact resolver");
+        }
     }
-    println!("PI_TACKLE_ISOLATED front_pi_clean={} rear_pi_clean={} resolver={front:?} observed={clean}/{foul}/{advantage} n=4096",
+    assert!(counts[0][0]>counts[1][0]&&counts[0][0]>counts[2][0]);
+    println!("PI_TACKLE_SHARED_GEOMETRY front_pi={} rear_pi={} resolver_front={front:?} resolver_rear={back:?} resolver_fast={fast_probs:?} observed={counts:?} n=4096_per_context",
         front_pi.clean_win_probability,rear_pi.clean_win_probability);
 }
