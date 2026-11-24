@@ -8,7 +8,7 @@ use crate::v4::input::{
     RefereeProfile, RulesModeV4, SetPiecePlanV4, SimulationMode, SlotInstructionsV4,
     TacticalSlotV4, TeamCollectiveV4, TeamInstructionsV4, TeamMatchSnapshotV4, WeatherCondition,
 };
-use crate::v4::session::{simulate_batch_fast_v4, simulate_v4};
+use crate::v4::session::{simulate_batch_fast_v4, simulate_v4, MatchCommandV4, MatchSessionV4};
 use crate::v4::spatial::{
     attacking_progress_m, distance_to_attacking_goal, is_in_attacking_penalty_box,
     is_in_attacking_six_yard_box, point_to_segment_distance_m, TeamSideV4, Vec2, Vec3,
