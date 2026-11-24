@@ -1931,6 +1931,10 @@ impl MatchSessionV4 {
         self.state.ball.owner_player_id = Some(id.clone());
         self.possession_side = side;
         self.diagnostics.observe_controlled_ball(side,pos);
+        let observed:Vec<_>=self.state.players.iter().enumerate().filter(|(_,p)|p.on_pitch && !p.sent_off)
+            .map(|(idx,p)|crate::player_intelligence::ObservedPlayer{idx,side:p.side,pos:p.pos,is_gk:p.is_goalkeeper}).collect();
+        let receiving_line=crate::v4::ball_play::offside_reference_progress_m(&self.state,side,pos);
+        self.diagnostics.record_open_outlets(crate::player_intelligence::count_open_outlets(side,idx,pos,&observed,receiving_line));
         let ctx = evaluate_local_context(&self.state,&self.input,side,pos);
         let mut plan = perceive_evaluate_and_decide_des(&self.state,&self.input,
             &self.input.timing_model,idx,ctx,&mut self.rng);

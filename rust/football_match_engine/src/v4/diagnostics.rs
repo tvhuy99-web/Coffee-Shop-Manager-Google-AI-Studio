@@ -163,6 +163,12 @@ pub struct DesMatchDiagnosticsV4 {
     pub carry_ms: i64,
     #[serde(default)]
     pub hold_ms: i64,
+    #[serde(default)]
+    pub outlet_samples: u32,
+    #[serde(default)]
+    pub open_outlets_total: u32,
+    #[serde(default)]
+    pub no_open_outlet_samples: u32,
     pub dead_ball_distributions: DeadBallDistributionsV4,
     pub avg_player_distance_m: f32,
     pub tactical_commands_delayed: u32,
@@ -342,6 +348,12 @@ struct DesDiagnosticsAccumulator {
     carry_ms: i64,
     #[serde(default)]
     hold_ms: i64,
+    #[serde(default)]
+    outlet_samples: u32,
+    #[serde(default)]
+    open_outlets_total: u32,
+    #[serde(default)]
+    no_open_outlet_samples: u32,
     avg_player_distance_m: f32,
     tactical_commands_delayed: u32,
     goal_celebration_samples: Vec<i64>,
@@ -373,6 +385,9 @@ impl DesDiagnosticsAccumulator {
             carry_turnovers: self.carry_turnovers,
             carry_ms: self.carry_ms,
             hold_ms: self.hold_ms,
+            outlet_samples: self.outlet_samples,
+            open_outlets_total: self.open_outlets_total,
+            no_open_outlet_samples: self.no_open_outlet_samples,
             dead_ball_distributions: DeadBallDistributionsV4 {
                 goal_celebration: DurationDistributionMs::from_samples(&mut self.goal_celebration_samples),
                 throw_in: DurationDistributionMs::from_samples(&mut self.throw_in_samples),
@@ -490,6 +505,12 @@ impl MatchDiagnosticsCollectorV4 {
     }
 
     /// Increments the count of one-touch passes executed in DES live play.
+    pub fn record_open_outlets(&mut self,count:u32) {
+        self.des.outlet_samples=self.des.outlet_samples.saturating_add(1);
+        self.des.open_outlets_total=self.des.open_outlets_total.saturating_add(count);
+        if count==0 {self.des.no_open_outlet_samples=self.des.no_open_outlet_samples.saturating_add(1);}
+    }
+
     pub fn record_carry_start(&mut self,is_hold:bool,shielding:bool,lateral:bool) {
         if is_hold {self.des.hold_starts+=1;}else{self.des.carry_starts+=1;}
         if shielding {self.des.shield_starts+=1;}

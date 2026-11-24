@@ -1,5 +1,5 @@
 use crate::rng::DeterministicRng;
-use crate::player_intelligence::{select_movement_target, MovementObservation};
+use crate::player_intelligence::{select_movement_target, MovementObservation, ObservedPlayer, SupportObservation, select_support_target};
 use crate::v4::attributes::{normalize_attr, PlayerAttributes54};
 use crate::v4::ball_play::offside_reference_progress_m;
 use crate::v4::input::{MatchInputV4, TeamInstructionsV4};
@@ -189,6 +189,12 @@ pub fn advance_off_ball_movement(
         None
     };
 
+    // Snapshot every position before any player's movement is integrated.
+    // Support choices cannot see teammates' future positions just because
+    // they occur earlier in the storage order.
+    let controlled=state.ball.control==BallControlState::Controlled;
+    let observed:Vec<_>=state.players.iter().enumerate().filter(|(_,p)|p.on_pitch && !p.sent_off)
+        .map(|(idx,p)|ObservedPlayer{idx,side:p.side,pos:p.pos,is_gk:p.is_goalkeeper}).collect();
     for idx in 0..state.players.len() {
         if !state.players[idx].on_pitch || state.players[idx].sent_off {
             state.players[idx].last_moved_m = 0.0;
@@ -204,7 +210,7 @@ pub fn advance_off_ball_movement(
 
         let anchor = slot_anchor_m(state, input, &state.players[idx], in_poss);
 
-        let target = select_movement_target(MovementObservation {
+        let mut target = select_movement_target(MovementObservation {
             is_carrier: idx == carrier_idx,
             is_gk, in_poss, side, phase,
             attrs: &attrs, instructions: &ti, anchor, ball_xy, ball_progress_home,
@@ -217,6 +223,16 @@ pub fn advance_off_ball_movement(
         let cur = state.players[idx].pos;
         let dist = cur.distance(target);
         let max_speed_mps = player_max_speed_mps(&attrs, &state.players[idx]);
+        if controlled && in_poss && !is_gk && idx!=carrier_idx {
+            let p=&state.players[idx];
+            let awareness=(normalize_attr(attrs.mental.off_the_ball)*0.5
+                +normalize_attr(attrs.mental.anticipation)*0.25+normalize_attr(attrs.mental.decisions)*0.25)
+                *p.position_familiarity;
+            // Same intended legal margin as the original off-ball policy.
+            let legal_limit=receiving_line.map(|line|line-0.6-1.8*awareness+3.0*(1.0-awareness));
+            target=select_support_target(SupportObservation{idx,side,pos:cur,ball:ball_xy,shape:target,
+                players:&observed,awareness,reach_m:max_speed_mps*1.6,legal_limit});
+        }
         let max_step = max_speed_mps * dt;
         let new_pos = if dt <= 1e-4 {
             cur

@@ -5,6 +5,8 @@ mod decision;
 mod goalkeeper;
 mod intent;
 mod off_ball;
+mod support;
+pub(crate) use support::{ObservedPlayer, SupportObservation, select_support_target, count_open_outlets};
 mod timing;
 mod version;
 mod utility;
