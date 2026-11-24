@@ -26,7 +26,7 @@ use crate::v4::interaction::{
     LooseBallResolution, BoundaryKind, EarlyInteractionHit,
 };
 use crate::v4::movement::{advance_off_ball_movement, evaluate_local_context, lookup_attrs};
-use crate::v4::perception::{perceive_evaluate_and_decide, PassKindV4, PlannedActionV4};
+use crate::player_intelligence::{perceive_evaluate_and_decide, PassKindV4, PlannedActionV4};
 use crate::v4::psychology::{
     check_impact_injury, check_muscle_injury, compute_post_match_morale_delta,
     compute_prematch_form_multiplier, pressing_foul_hazard_prob, resolve_foul_discipline,

@@ -18,6 +18,7 @@ pub mod movement;
 pub mod pass_resolver;
 pub mod passing_lane;
 pub mod player_ratings;
+pub mod player_intelligence;
 pub mod possession_decision;
 pub mod pressure;
 pub mod resolver_support;

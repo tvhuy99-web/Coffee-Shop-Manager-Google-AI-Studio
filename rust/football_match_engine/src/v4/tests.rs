@@ -2612,3 +2612,29 @@ fn des_offside_runner_corrects_target_without_teleporting_or_stopping_in_flight(
             "after release, runner must be allowed to run beyond the launch line");
     }
 }
+
+// Shared fixture permits independently compiled pre-PI and PI policies to be compared.
+include!("pi_parity_fixture.rs");
+
+#[test]
+fn pi4_legacy_api_and_direct_policy_match() {
+    use crate::player_intelligence as pi;
+    use crate::v4::state::MatchStateV4;
+    use crate::v4::movement::evaluate_local_context;
+    let input = make_v4_input(123456, SimulationMode::FullEvent, RulesModeV4::Standard);
+    let state = MatchStateV4::from_input(&input);
+    let carrier = state.players.iter().position(|p| p.on_pitch && !p.is_goalkeeper).unwrap();
+    let p = &state.players[carrier];
+    let ctx = evaluate_local_context(&state, &input, p.side, p.pos);
+    for seed in 1..=64 {
+        let mut a = DeterministicRng::new(seed);
+        let mut b = a.clone();
+        let old = crate::v4::perception::perceive_evaluate_and_decide_des(
+            &state, &input, &input.timing_model, carrier, ctx, &mut a);
+        let new = pi::perceive_evaluate_and_decide_des(
+            &state, &input, &input.timing_model, carrier, ctx, &mut b);
+        assert_eq!(old, new);
+        assert_eq!(a.state(), b.state());
+    }
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.0");
+}
