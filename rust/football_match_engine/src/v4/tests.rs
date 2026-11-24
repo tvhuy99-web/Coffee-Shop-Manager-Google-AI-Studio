@@ -2664,7 +2664,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.19");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.20");
 }
 
 
@@ -3362,4 +3362,128 @@ fn pi_psychology_reserve_form_is_independent_of_entry_route_and_minute() {
     }
     assert!(distinct.len()>1,"reserve form cannot be a constant");
     println!("PI_PSYCHOLOGY reserve_form={expected} distinct_seed_forms={}",distinct.len());
+}
+
+
+#[test]
+fn pi_psychology_contextual_pressure_is_not_physical_pressing() {
+    use crate::v4::psychology::update_in_match_psychology;
+    use crate::player_intelligence::decision_uncertainty;
+    use crate::v4::state::MatchStateV4;
+    let mut input=make_v4_input(22701,SimulationMode::FullEvent,RulesModeV4::Standard);
+    input.match_environment.match_importance=95;
+    let template=MatchStateV4::from_input(&input);
+    let idx=template.players.iter().position(|p|p.side==TeamSideV4::Home&&!p.is_goalkeeper).unwrap();
+    let mut ahead=template.clone();
+    let mut behind=template.clone();
+    ahead.home.goals=1;
+    behind.away.goals=1;
+    for state in [&mut ahead,&mut behind] {
+        // Hold physical condition, match form, opponent proximity and
+        // clock fixed. Only the psychological context differs.
+        state.players[idx].fatigue.aerobic=90.0;
+        state.players[idx].psychology.match_form_multiplier=1.0;
+        update_in_match_psychology(state,&input,4900,0.0);
+    }
+    let a=ahead.players[idx].psychology;
+    let b=behind.players[idx].psychology;
+    assert_eq!(a.concentration_level,b.concentration_level);
+    assert!(b.pressure_load>a.pressure_load);
+    assert!(b.composure_delta<a.composure_delta);
+    for physical in [0.0,0.4,0.9] {
+        let calm=decision_uncertainty(&ahead,idx,physical);
+        let stressed=decision_uncertainty(&behind,idx,physical);
+        assert!(stressed>calm);
+        println!("PI_PSYCHOLOGY contextual physical_pressure={physical} ahead={calm} behind={stressed}");
+    }
+    let baseline=decision_uncertainty(&behind,idx,0.4);
+    // The load is already reflected in composure_delta. It must not
+    // be counted a second time by the policy.
+    behind.players[idx].psychology.pressure_load=1.0;
+    assert_eq!(baseline,decision_uncertainty(&behind,idx,0.4));
+    behind.players[idx].psychology.confidence=0.15;
+    assert_eq!(baseline,decision_uncertainty(&behind,idx,0.4));
+}
+
+#[test]
+fn pi_psychology_leadership_and_pressure_resistance_buffer_late_stress() {
+    use crate::v4::psychology::update_in_match_psychology;
+    use crate::player_intelligence::decision_uncertainty;
+    use crate::v4::state::MatchStateV4;
+    // Change leadership of the team, not the decision maker's other
+    // attributes. The existing aura uses the strongest active leader.
+    let mut low=pi_audit_input(22702,"mental","leadership",5);
+    let mut high=pi_audit_input(22702,"mental","leadership",18);
+    low.match_environment.match_importance=95;
+    high.match_environment.match_importance=95;
+    let mut a=MatchStateV4::from_input(&low);
+    let mut b=MatchStateV4::from_input(&high);
+    let idx=a.players.iter().position(|p|p.side==TeamSideV4::Home&&!p.is_goalkeeper).unwrap();
+    a.away.goals=1;
+    b.away.goals=1;
+    update_in_match_psychology(&mut a,&low,4900,0.0);
+    update_in_match_psychology(&mut b,&high,4900,0.0);
+    let weak=a.players[idx].psychology;
+    let strong=b.players[idx].psychology;
+    assert!(strong.pressure_load<weak.pressure_load);
+    assert!(strong.composure_delta>weak.composure_delta);
+    assert!(decision_uncertainty(&b,idx,0.4)<decision_uncertainty(&a,idx,0.4));
+    // Remove high leadership from the pitch: the aura must be derived
+    // only from active players, not the static bench or sent-off list.
+    for p in &mut b.players {
+        if p.side==TeamSideV4::Home && p.player_id!=a.players[idx].player_id {
+            p.sent_off=true;
+        }
+    }
+    // A single remaining high-leadership player still supplies the
+    // max aura. Verify that semantics explicitly.
+    update_in_match_psychology(&mut b,&high,4900,0.0);
+    assert_eq!(strong.pressure_load,b.players[idx].psychology.pressure_load);
+
+    let mut low_p=pi_audit_input(22703,"hidden","pressure",5);
+    let mut high_p=pi_audit_input(22703,"hidden","pressure",18);
+    low_p.match_environment.match_importance=95;
+    high_p.match_environment.match_importance=95;
+    let mut c=MatchStateV4::from_input(&low_p);
+    let mut d=MatchStateV4::from_input(&high_p);
+    c.away.goals=1;
+    d.away.goals=1;
+    update_in_match_psychology(&mut c,&low_p,4900,0.0);
+    update_in_match_psychology(&mut d,&high_p,4900,0.0);
+    // At zero local physical pressure the old static uncertainty term
+    // is identical. Difference comes from contextual pressure buffering.
+    assert!(d.players[idx].psychology.pressure_load<c.players[idx].psychology.pressure_load);
+    assert!(decision_uncertainty(&d,idx,0.0)<decision_uncertainty(&c,idx,0.0));
+}
+
+#[test]
+fn pi_psychology_momentum_recovery_and_checkpoint_context() {
+    use crate::v4::psychology::{shift_momentum,update_in_match_psychology};
+    use crate::player_intelligence::decision_uncertainty;
+    let input=make_v4_input(22704,SimulationMode::FullEvent,RulesModeV4::Standard);
+    let session=MatchSessionV4::new(input.clone()).unwrap();
+    let mut checkpoint=session.export_checkpoint().unwrap();
+    let state=&mut checkpoint.payload.state;
+    let idx=state.players.iter().position(|p|p.side==TeamSideV4::Home&&!p.is_goalkeeper).unwrap();
+    update_in_match_psychology(state,&input,1200,0.0);
+    let neutral=decision_uncertainty(state,idx,0.4);
+    shift_momentum(state,TeamSideV4::Home,0.35);
+    update_in_match_psychology(state,&input,1200,0.0);
+    let after=decision_uncertainty(state,idx,0.4);
+    assert!(after<neutral);
+    let mut split=state.clone();
+    update_in_match_psychology(state,&input,1320,120.0);
+    for second in 1201..=1320 {
+        update_in_match_psychology(&mut split,&input,second,1.0);
+    }
+    let recovered=decision_uncertainty(state,idx,0.4);
+    assert!(after<recovered && recovered<neutral);
+    assert!((state.home.momentum-split.home.momentum).abs()<1e-5);
+    assert!((recovered-decision_uncertainty(&split,idx,0.4)).abs()<1e-6);
+    // Roundtrip real psychology state separately from the existing
+    // full-session checksum/continuation tests (which remain enabled).
+    let restored:crate::v4::state::MatchStateV4=serde_json::from_str(&serde_json::to_string(state).unwrap()).unwrap();
+    assert_eq!(state.players[idx].psychology,restored.players[idx].psychology);
+    assert_eq!(recovered,decision_uncertainty(&restored,idx,0.4));
+    println!("PI_PSYCHOLOGY momentum neutral={neutral} after={after} recovered={recovered}");
 }

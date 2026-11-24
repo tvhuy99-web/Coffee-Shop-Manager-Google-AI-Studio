@@ -240,7 +240,14 @@ pub(crate) fn decision_uncertainty(state:&MatchStateV4,idx:usize,pressure_norm:f
     let fresh=0.74+0.26*normalize_attr(attrs.mental.concentration);
     let focus=(p.psychology.concentration_level/fresh).clamp(0.35,1.0);
     let form=p.psychology.match_form_multiplier.clamp(0.84,1.16);
-    (base/(form*focus)).clamp(0.002,0.04)
+    // The existing psychology model already combines score pressure,
+    // resistance, determination, leadership and decaying team momentum.
+    // Consume that single contextual delta once, rather than charging
+    // pressure_load again or treating it as extra physical pressing.
+    // Neutral delta preserves 4.0.19. Keep permanent composure in the
+    // base spatial-pressure term; no direct change to action success.
+    let contextual=1.0-p.psychology.composure_delta.clamp(-0.28,0.25);
+    (base*contextual/(form*focus)).clamp(0.002,0.04)
 }
 
 /// DES entry point returning the chosen action along with `decision_delay_ms` and `is_one_touch`.
@@ -369,8 +376,8 @@ pub fn perceive_evaluate_and_decide_des(
         risk: 1.0 - hold_success,
     });
 
-    // Same action-value scale, same correlated noise draws. Only the
-    // amplitude now reflects match-day form and current mental focus.
+    // Same action-value scale and correlated noise draws. Amplitude
+    // reflects match-day form, mental focus and contextual composure.
     let noise_amplitude=decision_uncertainty(state,carrier_idx,pressure_norm);
     // Shared category uncertainty avoids an automatic lottery advantage
     // from having ten passing options versus one carry or one shot.
