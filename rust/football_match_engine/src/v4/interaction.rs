@@ -493,7 +493,7 @@ pub(crate) fn find_pass_contact(
             let mut fine = prev.saturating_add(1);
             while fine < sample {
                 if let Some(earlier) = contact_at(fine) { return Some(earlier); }
-                fine = fine.saturating_add(5);
+                fine = fine.saturating_add((step / 20).max(5));
             }
             return Some(hit);
         }
@@ -692,7 +692,10 @@ mod pass_reach_tests {
     fn des_pass_reach_checks_end_of_long_flight_and_boundary() {
         let mut traj = trajectory();
         traj.initial_vel.x = 12.0;
-        let late = runner("D", TeamSideV4::Away, 92.0, 34.0);
+        // Stationary defender near the destination: the first playable
+        // contact cannot occur in the old detector's first 3.2 seconds.
+        let mut late = runner("D", TeamSideV4::Away, 92.0, 34.0);
+        late.speed_mps = 0.0;
         match find_pass_contact(&traj, &[late], None, 0, 4500) {
             Some(PassContact::Other(h)) => {
                 assert_eq!(h.kind, InteractionKind::PassInterception);
