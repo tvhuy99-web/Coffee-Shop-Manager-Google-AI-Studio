@@ -1,0 +1,85 @@
+name: DES V4 detailed simulation calibration
+on:
+  workflow_dispatch:
+  push:
+    branches: ['main']
+    paths:
+      - '.github/workflows/diagnose-v4-des.yml'
+      - 'rust/football_match_engine/**'
+permissions:
+  contents: read
+jobs:
+  population:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - scenario: baseline
+            matches: 1000
+          - scenario: balanced
+            matches: 128
+          - scenario: high_press
+            matches: 64
+          - scenario: low_block
+            matches: 64
+          - scenario: strong_home
+            matches: 64
+          - scenario: strong_away
+            matches: 64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Collect per-match simulation evidence
+        env:
+          DES_DIAG_SCENARIO: ${{ matrix.scenario }}
+          DES_DIAG_MATCHES: ${{ matrix.matches }}
+        run: |
+          set -o pipefail
+          mkdir -p build-evidence
+          git rev-parse HEAD > build-evidence/commit.txt
+          cd rust/football_match_engine
+          DES_DIAG_REPORT_PATH="../../build-evidence/population.json" cargo test --release --lib v4::tests::des_calibration_population_evidence -- --ignored --exact --nocapture 2>&1 | tee ../../build-evidence/population.log
+      - name: Summarize population in job log
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("build-evidence/population.json")
+          if p.exists():
+              report = json.loads(p.read_text())
+              print(report["scenario"])
+              print(json.dumps(report["headline"], indent=2))
+              for row in report["matches"]:
+                  if not row["ok"] or row.get("diagnosticError"):
+                      print("FAILED SEED", row["seed"], row.get("error") or row.get("diagnosticError"))
+          else:
+              print("Population report unavailable; inspect compilation/test log.")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: des-population-${{ matrix.scenario }}
+          path: build-evidence/
+          if-no-files-found: error
+  attacking_sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Export attacking chain diagnostic fixtures
+        run: |
+          set -o pipefail
+          mkdir -p build-evidence
+          git rev-parse HEAD > build-evidence/commit.txt
+          cd rust/football_match_engine
+          V4_DIAGNOSTICS_REPORT_PATH=../../build-evidence/attacking_sample.json cargo test --lib v4::diagnostics::tests::export_attacking_diagnostics_sample -- --ignored --exact --nocapture 2>&1 | tee ../../build-evidence/attacking_sample.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: des-attacking-sample
+          path: build-evidence/
+          if-no-files-found: error

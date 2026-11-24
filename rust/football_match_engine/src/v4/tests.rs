@@ -2392,3 +2392,114 @@ fn qa12_monte_carlo_1000_matches_benchmark() {
     assert!(report.matches_per_sec > 0.0);
     assert!(report.avg_ball_in_play_min > 0.0);
 }
+
+ 
+/// Diagnostic-only population export. Record failed seeds rather than discarding
+/// the entire sample on the first failed match. Never relax the existing gates.
+#[test]
+#[ignore = "Run explicitly for DES calibration evidence"]
+fn des_calibration_population_evidence() {
+    use serde_json::json;
+    use std::time::Instant;
+    let scenario = std::env::var("DES_DIAG_SCENARIO").unwrap_or_else(|_| "balanced".into());
+    let count = std::env::var("DES_DIAG_MATCHES").ok()
+        .and_then(|x| x.parse::<usize>().ok()).unwrap_or(128).clamp(1, 3000);
+    let mut seeds = Vec::with_capacity(count);
+    let mut inputs = Vec::with_capacity(count);
+    for i in 0..count {
+        let seed = 104729 + i as i64 * 7907;
+        seeds.push(seed);
+        let (hl, al) = match scenario.as_str() {
+            "baseline" => (14, 12),
+            "balanced" | "high_press" | "low_block" => (13, 13),
+            "strong_home" => (16, 9),
+            "strong_away" => (9, 16),
+            _ => panic!("Unknown diagnostic scenario {}", scenario),
+        };
+        let mut h = make_v4_team("H", "HOME", hl);
+        let a = make_v4_team("A", "AWAY", al);
+        if scenario == "high_press" {
+            h.team_instructions.pressing_intensity = 86;
+            h.team_instructions.line_height = 76;
+        } else if scenario == "low_block" {
+            h.team_instructions.pressing_intensity = 28;
+            h.team_instructions.line_height = 30;
+        }
+        let mut input = make_v4_input_teams(seed, SimulationMode::FastBatch, RulesModeV4::Standard, h, a);
+        // Match the original baseline's manager settings, isolate tactics in all other cohorts.
+        if scenario != "baseline" {
+            input.ai_home_manager = false;
+            input.ai_away_manager = false;
+            input.neutral_ground = true;
+        }
+        inputs.push(input);
+    }
+    let started = Instant::now();
+    let results = simulate_batch_fast_v4(inputs);
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let mut rows = Vec::with_capacity(count);
+    let mut succeeded = 0usize;
+    let mut invalid = 0usize;
+    let mut failed = 0usize;
+    let mut goals = 0u64;
+    let mut shots = 0u64;
+    let mut attempts = 0u64;
+    let mut completed = 0u64;
+    let mut live_ms = 0i128;
+    let mut dead_ms = 0i128;
+    let mut diagnosed = 0usize;
+    for (seed, outcome) in seeds.into_iter().zip(results) {
+        match outcome {
+            Ok(r) => {
+                succeeded += 1;
+                let h = &r.summary.home;
+                let a = &r.summary.away;
+                goals += h.goals as u64 + a.goals as u64;
+                shots += h.shots as u64 + a.shots as u64;
+                attempts += h.passes_attempted as u64 + a.passes_attempted as u64;
+                completed += h.passes_completed as u64 + a.passes_completed as u64;
+                let validation = match &r.diagnostics {
+                    Some(d) => {
+                        diagnosed += 1;
+                        live_ms += d.des.ball_in_play_ms as i128;
+                        dead_ms += d.des.ball_out_of_play_ms as i128;
+                        d.validate_basic().err()
+                    }
+                    None => Some("Missing diagnostics".into()),
+                };
+                if validation.is_some() { invalid += 1; }
+                rows.push(json!({
+                    "seed": seed, "ok": true, "diagnosticError": validation,
+                    "eventCount": r.event_count, "fingerprint": r.event_timeline_fingerprint,
+                    "summary": r.summary, "diagnostics": r.diagnostics
+                }));
+            }
+            Err(e) => {
+                failed += 1;
+                rows.push(json!({"seed": seed, "ok": false, "error": format!("{:?}", e)}));
+            }
+        }
+    }
+    let n = succeeded.max(1) as f64;
+    let dn = diagnosed.max(1) as f64;
+    let headline = json!({
+        "attemptedMatches": count, "completedMatches": succeeded, "failedMatches": failed,
+        "invalidDiagnostics": invalid, "matchesWithDiagnostics": diagnosed, "elapsedMs": elapsed_ms,
+        "goalsPerCompletedMatch": goals as f64 / n,
+        "shotsPerCompletedMatch": shots as f64 / n,
+        "passesAttemptedPerCompletedMatch": attempts as f64 / n,
+        "passAccuracyPct": 100.0 * completed as f64 / attempts.max(1) as f64,
+        "ballInPlayMinPerDiagnosedMatch": live_ms as f64 / 60000.0 / dn,
+        "ballOutOfPlayMinPerDiagnosedMatch": dead_ms as f64 / 60000.0 / dn
+    });
+    let report = json!({
+        "schemaVersion": 1, "scenario": scenario,
+        "note": "Synthetic fixtures. Averages describe completed matches only; failed seeds retained. No empirical realism pass/fail thresholds.",
+        "headline": headline, "matches": rows
+    });
+    let output = std::env::var("DES_DIAG_REPORT_PATH").expect("DES_DIAG_REPORT_PATH");
+    std::fs::write(&output, serde_json::to_string_pretty(&report).unwrap()).expect("write evidence");
+    println!("DES_POPULATION_EVIDENCE {}", serde_json::to_string(&report["headline"]).unwrap());
+    assert_eq!(succeeded + failed, count);
+    assert_eq!(failed + invalid, 0, "See per-seed evidence in {}", output);
+}
