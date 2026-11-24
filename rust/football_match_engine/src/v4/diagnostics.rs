@@ -147,6 +147,22 @@ pub struct DesMatchDiagnosticsV4 {
     pub des_steps_total: u64,
     pub early_interceptions_detected: u32,
     pub one_touch_passes: u32,
+    #[serde(default)]
+    pub carry_starts: u32,
+    #[serde(default)]
+    pub hold_starts: u32,
+    #[serde(default)]
+    pub shield_starts: u32,
+    #[serde(default)]
+    pub lateral_carry_starts: u32,
+    #[serde(default)]
+    pub carry_contacts: u32,
+    #[serde(default)]
+    pub carry_turnovers: u32,
+    #[serde(default)]
+    pub carry_ms: i64,
+    #[serde(default)]
+    pub hold_ms: i64,
     pub dead_ball_distributions: DeadBallDistributionsV4,
     pub avg_player_distance_m: f32,
     pub tactical_commands_delayed: u32,
@@ -310,6 +326,22 @@ struct DesDiagnosticsAccumulator {
     des_steps_total: u64,
     early_interceptions_detected: u32,
     one_touch_passes: u32,
+    #[serde(default)]
+    carry_starts: u32,
+    #[serde(default)]
+    hold_starts: u32,
+    #[serde(default)]
+    shield_starts: u32,
+    #[serde(default)]
+    lateral_carry_starts: u32,
+    #[serde(default)]
+    carry_contacts: u32,
+    #[serde(default)]
+    carry_turnovers: u32,
+    #[serde(default)]
+    carry_ms: i64,
+    #[serde(default)]
+    hold_ms: i64,
     avg_player_distance_m: f32,
     tactical_commands_delayed: u32,
     goal_celebration_samples: Vec<i64>,
@@ -333,6 +365,14 @@ impl DesDiagnosticsAccumulator {
             des_steps_total: self.des_steps_total,
             early_interceptions_detected: self.early_interceptions_detected,
             one_touch_passes: self.one_touch_passes,
+            carry_starts: self.carry_starts,
+            hold_starts: self.hold_starts,
+            shield_starts: self.shield_starts,
+            lateral_carry_starts: self.lateral_carry_starts,
+            carry_contacts: self.carry_contacts,
+            carry_turnovers: self.carry_turnovers,
+            carry_ms: self.carry_ms,
+            hold_ms: self.hold_ms,
             dead_ball_distributions: DeadBallDistributionsV4 {
                 goal_celebration: DurationDistributionMs::from_samples(&mut self.goal_celebration_samples),
                 throw_in: DurationDistributionMs::from_samples(&mut self.throw_in_samples),
@@ -450,6 +490,17 @@ impl MatchDiagnosticsCollectorV4 {
     }
 
     /// Increments the count of one-touch passes executed in DES live play.
+    pub fn record_carry_start(&mut self,is_hold:bool,shielding:bool,lateral:bool) {
+        if is_hold {self.des.hold_starts+=1;}else{self.des.carry_starts+=1;}
+        if shielding {self.des.shield_starts+=1;}
+        if lateral && !is_hold {self.des.lateral_carry_starts+=1;}
+    }
+    pub fn record_carry_interval(&mut self,dt_ms:i64,is_hold:bool) {
+        if is_hold {self.des.hold_ms+=dt_ms.max(0);}else{self.des.carry_ms+=dt_ms.max(0);}
+    }
+    pub fn record_carry_contact(&mut self) {self.des.carry_contacts+=1;}
+    pub fn record_carry_result(&mut self,lost:bool) {if lost{self.des.carry_turnovers+=1;}}
+
     pub fn record_one_touch_pass(&mut self) {
         self.des.one_touch_passes = self.des.one_touch_passes.saturating_add(1);
     }

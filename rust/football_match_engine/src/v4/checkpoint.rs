@@ -181,6 +181,14 @@ pub struct PendingCarryV4 {
     pub carrier_idx: usize,
     pub resolves_at_ms: i64,
     pub motion: crate::v4::interaction::PassContactMotion,
+    #[serde(default)]
+    pub shielding: bool,
+    #[serde(default)]
+    pub is_hold: bool,
+    #[serde(default)]
+    pub challenger: Option<crate::v4::interaction::PassContactMotion>,
+    #[serde(default)]
+    pub start_pressure: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

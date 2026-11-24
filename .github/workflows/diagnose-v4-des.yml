@@ -56,8 +56,12 @@ jobs:
               passes = defaultdict(Counter)
               losses = Counter()
               recovery = Counter()
+              carry = Counter()
               valid = [r for r in report["matches"] if r["ok"] and r.get("diagnostics")]
               for row in valid:
+                  des = row["diagnostics"]["des"]
+                  for field in ("carryStarts","holdStarts","shieldStarts","lateralCarryStarts","carryContacts","carryTurnovers","carryMs","holdMs"):
+                      carry[field] += des.get(field,0)
                   for side in ("home", "away"):
                       d = row["diagnostics"][side]
                       losses.update(d["turnovers"])
@@ -77,6 +81,7 @@ jobs:
                   "turnoversPerMatch": {k:v/n for k,v in sorted(losses.items())},
                   "loosePassRecoveryPerMatch": {k:v/n for k,v in sorted(recovery.items())}
               }, sort_keys=True))
+              print("PI_CARRY_EVIDENCE", json.dumps({k:v/n for k,v in sorted(carry.items())},sort_keys=True))
               for row in report["matches"]:
                   if not row["ok"] or row.get("diagnosticError"):
                       print("FAILED SEED", row["seed"], row.get("error") or row.get("diagnosticError"))
@@ -158,6 +163,18 @@ jobs:
           cargo test --lib pi4_legacy_api_and_direct_policy_match -- --nocapture
           cargo test --lib des_offside_ -- --nocapture
           cargo test --lib p2_50_match_attributes_have_explicit_runtime_wiring_and_4_are_career_hooks -- --nocapture
+  pi_carry_regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check directional movement, early contact and replay
+        working-directory: rust/football_match_engine
+        run: |
+          cargo test --lib pi_carry_ -- --nocapture
+          cargo test --lib pi_timing_ -- --nocapture
+          cargo test --lib fast_batch_and_full_event_diagnostics_match -- --nocapture
   attacking_sample:
     runs-on: ubuntu-latest
     timeout-minutes: 20

@@ -9,7 +9,7 @@ use crate::v4::state::{MatchStateV4, TacticalPhaseV4};
 use super::intent::{CandidateOption, DecisionPlanV4, PassKindV4, PlannedActionV4};
 use super::timing::evaluate_one_touch_intent;
 use super::utility::{ActionValue, is_switch, possession_value, turnover_cost, shot_goal_probability, shot_value};
-use crate::v4::spatial::Vec2;
+use super::on_ball::{choose_carry, choose_hold};
 
 /// DES entry point returning the chosen action along with `decision_delay_ms` and `is_one_touch`.
 pub fn perceive_evaluate_and_decide_des(
@@ -200,33 +200,12 @@ pub fn perceive_evaluate_and_decide_des(
         });
     }
 
-    if !carrier.is_goalkeeper {
-        let drib = normalize_attr(attrs.technical.dribbling);
-        let agility = normalize_attr(attrs.physical.agility);
-        let accel = normalize_attr(attrs.physical.acceleration);
-        // Evaluate the forward carry the current engine can actually execute.
-        // Do not award value for an imagined lateral dribble before 5.4B.
-        let dir = if att_side == crate::v4::spatial::TeamSideV4::Home {1.0} else {-1.0};
-        let reach = crate::v4::movement::player_max_speed_mps(attrs, carrier) * 0.88 * 1.6;
-        let target = Vec2::new(carrier.pos.x + dir * reach, carrier.pos.y).clamp_to_pitch();
-        let end_ctx = evaluate_local_context(state,input,att_side,target);
-        let (corridor_risk, _) = evaluate_passing_lane(state,input,att_side,carrier.pos,target,false);
-        let target_pressure = end_ctx.pressure / 100.0;
-        let progress = attacking_progress_m(att_side,target);
-        let destination = possession_value(progress,target.y,target_pressure);
-        let success = (0.70 + 0.20 * drib + 0.08 * agility + 0.05 * accel
-            - 0.40 * corridor_risk - 0.25 * pressure_norm - 0.15 * target_pressure
-            - 0.12 * (1.0-readiness)).clamp(0.06,0.98);
-        let drib_utility = ActionValue {
-            success, benefit: destination + counter * ((progress-carrier_progress)/12.0).clamp(0.0,1.0),
-            loss: (loss+turnover_cost(progress))*0.5, cost: urgency * 0.008 + 0.006*(1.0-readiness),
-        }.expected()-current_value;
+    let carry=if carrier.is_goalkeeper {None} else {
+        choose_carry(state,input,carrier_idx,carrier_ctx,loss,urgency,counter,readiness)
+    };
+    if let Some((_,utility,risk))=carry {
         candidates.push(CandidateOption {
-            action: PlannedActionV4::Dribble {
-                defender_idx: carrier_ctx.nearest_defender_idx,
-            },
-            utility: drib_utility,
-            risk: 1.0 - success,
+            action:PlannedActionV4::Dribble{defender_idx:carrier_ctx.nearest_defender_idx},utility,risk,
         });
     }
 
@@ -330,6 +309,11 @@ pub fn perceive_evaluate_and_decide_des(
         action: best_action,
         decision_delay_ms,
         is_one_touch,
+        carry: match best_action {
+            PlannedActionV4::Dribble{..}=>carry.map(|(intent,_,_)|intent),
+            PlannedActionV4::HoldAndRecycle=>Some(choose_hold(state,carrier_idx,carrier_ctx)),
+            _=>None,
+        },
     }
 }
 

@@ -883,3 +883,60 @@ mod moving_ball_tests {
         }
     }
 }
+
+
+/// Local contact search along an absolute-time carrier path. This is a
+/// bounded event prediction, not a global simulation tick. All eligible
+/// defenders have the same reach rules, independent of team side.
+pub(crate) fn find_carry_contact(
+    carrier:&PassContactMotion, defenders:&[PassReachCandidate], end_ms:i64,
+)->Option<(usize,i64,PassContactMotion)> {
+    let start=carrier.started_at_ms;
+    let horizon=(end_ms-start).max(0) as f32/1000.0;
+    let end=carrier.position_at(end_ms);
+    let eligible:Vec<_>=defenders.iter().enumerate().filter(|(_,p)|
+        crate::v4::spatial::point_to_segment_distance_m(p.pos,carrier.candidate.pos,end)
+            <=p.speed_mps*horizon+p.reach_m+0.01).collect();
+    let mut now=start.saturating_add(150).min(end_ms);
+    while now<=end_ms && now>start {
+        let pos=carrier.position_at(now);
+        let elapsed=now-start;
+        let mut best:Option<(usize,f32)>=None;
+        for &(idx,p) in &eligible {
+            if elapsed<p.reaction_ms {continue;}
+            let distance=p.position_toward(pos,elapsed).distance(pos);
+            if distance<=p.reach_m && best.map_or(true,|(old,d)|
+                distance<d-1e-4 || ((distance-d).abs()<=1e-4 && p.player_id<defenders[old].player_id)) {
+                best=Some((idx,distance));
+            }
+        }
+        if let Some((idx,_))=best {
+            return Some((idx,now,PassContactMotion{candidate:defenders[idx].clone(),target:pos,started_at_ms:start}));
+        }
+        if now==end_ms {break;}
+        now=now.saturating_add(50).min(end_ms);
+    }
+    None
+}
+
+#[cfg(test)]
+mod carry_contact_tests {
+    use super::*;
+    fn runner(id:&str,side:TeamSideV4,x:f32,y:f32)->PassReachCandidate {
+        PassReachCandidate{player_id:id.into(),side,pos:Vec2::new(x,y),velocity:Vec2::default(),
+            speed_mps:6.0,acceleration_mps2:4.0,agility:0.7,reaction_ms:200,
+            reach_m:1.0,playable_height_m:1.2}
+    }
+    #[test]
+    fn pi_carry_contact_requires_reach_and_precedes_endpoint() {
+        let motion=PassContactMotion{candidate:runner("H",TeamSideV4::Home,50.0,34.0),
+            target:Vec2::new(60.0,34.0),started_at_ms:1000};
+        let nearby=runner("A",TeamSideV4::Away,52.0,34.0);
+        let far=runner("F",TeamSideV4::Away,90.0,60.0);
+        assert!(find_carry_contact(&motion,&[far.clone()],2600).is_none());
+        let (idx,time,def)=find_carry_contact(&motion,&[far,nearby],2600).unwrap();
+        assert_eq!(idx,1);
+        assert!(time>=1200 && time<2600);
+        assert!(def.position_at(time).distance(motion.position_at(time))<=1.001);
+    }
+}

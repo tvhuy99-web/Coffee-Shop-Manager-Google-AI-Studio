@@ -819,6 +819,20 @@ pub fn execute_dribble_duel_des(
     dt_sec: f32,
     rng: &mut DeterministicRng,
 ) -> DesBallPlayOutcome {
+    execute_dribble_duel_impl(state,input,carrier_idx,defender_idx,carrier_ctx,dt_sec,false,rng)
+}
+
+pub(crate) fn resolve_carry_contact(
+    state:&mut MatchStateV4,input:&MatchInputV4,carrier_idx:usize,defender_idx:Option<usize>,
+    carrier_ctx:LocalSpatialContext,shielding:bool,rng:&mut DeterministicRng,
+)->BallPlayOutcome {
+    execute_dribble_duel_impl(state,input,carrier_idx,defender_idx,carrier_ctx,0.0,shielding,rng).outcome
+}
+
+fn execute_dribble_duel_impl(
+    state:&mut MatchStateV4,input:&MatchInputV4,carrier_idx:usize,defender_idx:Option<usize>,
+    carrier_ctx:LocalSpatialContext,dt_sec:f32,shielding:bool,rng:&mut DeterministicRng,
+)->DesBallPlayOutcome {
     let mut events = Vec::with_capacity(5);
     let dt = dt_sec.max(0.0);
     let elapsed_ms = (dt * 1000.0).round() as i64;
@@ -837,6 +851,11 @@ pub fn execute_dribble_duel_des(
     let Some(def_idx) = defender_idx
         .filter(|&i| state.players[i].pos.distance(state.players[carrier_idx].pos) <= 6.5)
     else {
+        if dt<=0.0 {
+            return DesBallPlayOutcome{trajectory:None,planned_flight_ms:0,
+                outcome:BallPlayOutcome{next_side:att_side,next_carrier_idx:carrier_idx,stoppage_seconds:0,events},
+                elapsed_ms,dead_ball_kind:None,restart_spot:None,early_interaction:None};
+        }
         let max_speed = player_max_speed_mps(&carrier_attrs, &state.players[carrier_idx]);
         // Dribbling with the ball is ~88% of top sprint speed.
         let carry_gain = (max_speed * 0.88 * dt).min(6.0 + normalize_attr(carrier_attrs.physical.pace) * 6.0);
@@ -891,7 +910,7 @@ pub fn execute_dribble_duel_des(
     let effective_def_anticipation =
         (normalize_attr(def_attrs.mental.anticipation) * (1.0 - flair_val * 0.28)).clamp(0.05, 1.0);
 
-    let att_score = (normalize_attr(carrier_attrs.technical.dribbling) * 0.30
+    let dribble_score = (normalize_attr(carrier_attrs.technical.dribbling) * 0.30
         + normalize_attr(carrier_attrs.physical.agility) * 0.18
         + normalize_attr(carrier_attrs.physical.acceleration) * 0.16
         + normalize_attr(carrier_attrs.physical.balance) * 0.14
@@ -901,6 +920,15 @@ pub fn execute_dribble_duel_des(
         - wet_pen * 0.5
         - pitch_pen * 0.5;
 
+    // Protecting the ball uses balance, strength and composure rather
+    // than the same agility/acceleration profile as a forward dribble.
+    let att_score=if shielding {
+        (normalize_attr(carrier_attrs.physical.balance)*0.30
+            +normalize_attr(carrier_attrs.physical.strength)*0.25
+            +normalize_attr(carrier_attrs.mental.composure)*0.20
+            +normalize_attr(carrier_attrs.technical.technique)*0.15
+            +normalize_attr(carrier_attrs.technical.dribbling)*0.10)*att_ana-wet_pen*0.5-pitch_pen*0.5
+    }else{dribble_score};
     let def_score = (normalize_attr(def_attrs.technical.tackling) * 0.30
         + normalize_attr(def_attrs.technical.marking) * 0.20
         + effective_def_anticipation * 0.18
@@ -920,19 +948,20 @@ pub fn execute_dribble_duel_des(
     if roll < win_prob {
         let accel = normalize_attr(carrier_attrs.physical.acceleration);
         let max_burst = (carrier_max_speed * 0.94 * dt).min(6.5 + accel * 5.5);
-        let new_xy = Vec2::new(
+        let new_xy = if dt>0.0 {Vec2::new(
             carrier_old_xy.x + dir * max_burst,
             carrier_old_xy.y + (rng.next_double() as f32 - 0.5) * 4.5 * noise_scale,
-        )
-        .clamp_to_pitch();
+        ).clamp_to_pitch()}else{carrier_old_xy};
         let carrier_moved_m = carrier_old_xy.distance(new_xy);
         let def_chase_m = def_old_xy
             .distance(carrier_old_xy)
             .min(def_max_speed * dt);
 
         state.players[carrier_idx].pos = new_xy;
-        state.players[carrier_idx].last_moved_m = carrier_moved_m;
-        state.players[def_idx].last_moved_m = def_chase_m;
+        if dt>0.0 {
+            state.players[carrier_idx].last_moved_m = carrier_moved_m;
+            state.players[def_idx].last_moved_m = def_chase_m;
+        }
         state.ball.pos = Vec3::ground(new_xy.x, new_xy.y);
         state.ball.vel = Vec3::default();
 
@@ -999,8 +1028,10 @@ pub fn execute_dribble_duel_des(
         .distance(carrier_old_xy)
         .min(def_max_speed * dt);
     let carrier_evade_m = (carrier_max_speed * 0.45 * dt).min(3.5);
-    state.players[carrier_idx].last_moved_m = carrier_evade_m;
-    state.players[def_idx].last_moved_m = def_close_m;
+    if dt>0.0 {
+        state.players[carrier_idx].last_moved_m = carrier_evade_m;
+        state.players[def_idx].last_moved_m = def_close_m;
+    }
 
     state.players[carrier_idx].fatigue.apply_interval(
         dt,

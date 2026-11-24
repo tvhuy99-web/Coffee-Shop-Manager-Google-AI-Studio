@@ -6,7 +6,7 @@ use crate::fingerprints;
 use crate::rng::DeterministicRng;
 use crate::v4::ai_manager::{apply_manual_substitution_group, evaluate_ai_managers};
 use crate::v4::attributes::normalize_attr;
-use crate::v4::ball_play::{execute_dribble_duel, execute_pass_and_first_touch_des, is_receiver_offside, pass_reach_candidate, EmittedPlayEvent};
+use crate::v4::ball_play::{resolve_carry_contact, execute_pass_and_first_touch_des, is_receiver_offside, pass_reach_candidate, EmittedPlayEvent};
 use crate::v4::checkpoint::{
     PendingFlightSnapshotV4, FlightActionV4, FlightCounterDeltaV4, PendingDecisionV4, PendingCarryV4,
     compute_checkpoint_checksum, verify_checkpoint, MatchCheckpointV4, MatchSessionSnapshotV4,
@@ -23,10 +23,10 @@ use crate::v4::input::{MatchInputV4, TeamInstructionsV4};
 use crate::v4::interaction::{
     InteractionKind, PassContactMotion, BallTrajectory,
     contact_control_probability, blocked_ball_velocity, find_moving_ball_recovery,
-    LooseBallResolution, BoundaryKind, EarlyInteractionHit,
+    LooseBallResolution, BoundaryKind, EarlyInteractionHit, find_carry_contact,
 };
 use crate::v4::movement::{advance_off_ball_movement, evaluate_local_context, evaluate_passing_lane, lookup_attrs};
-use crate::player_intelligence::{perceive_evaluate_and_decide_des, DecisionPlanV4, PassKindV4, PlannedActionV4, PI_POLICY_ID};
+use crate::player_intelligence::{perceive_evaluate_and_decide_des, DecisionPlanV4, CarryIntentV4, carry_target, PassKindV4, PlannedActionV4, PI_POLICY_ID};
 use crate::v4::psychology::{
     check_impact_injury, check_muscle_injury, compute_post_match_morale_delta,
     compute_prematch_form_multiplier, pressing_foul_hazard_prob, resolve_foul_discipline,
@@ -1241,6 +1241,7 @@ impl MatchSessionV4 {
             // A carry is a future, real movement interval, never an
             // additional displacement for an already integrated interval.
             if let Some(carry) = self.pending_carry.as_ref() {
+                self.diagnostics.record_carry_interval(dt_ms,carry.is_hold);
                 let idx = carry.carrier_idx;
                 let p = &mut self.state.players[idx];
                 if p.on_pitch && !p.sent_off && p.player_id == carry.motion.candidate.player_id {
@@ -1252,6 +1253,27 @@ impl MatchSessionV4 {
                     if old.distance(next)>0.05 { p.facing_rad=(next.y-old.y).atan2(next.x-old.x); }
                     self.state.ball.pos=Vec3::ground(next.x,next.y);
                     self.state.ball.vel=Vec3::new(p.vel.x,p.vel.y,0.0);
+                }
+                if let Some(chase)=carry.challenger.as_ref() {
+                    if let Some((di,def))=self.state.players.iter_mut().enumerate().find(|(_,p)|
+                        p.player_id==chase.candidate.player_id && p.on_pitch && !p.sent_off) {
+                        let old=prev_positions[di];
+                        let next=chase.position_at(self.state.des_clock.sim_time_ms.min(carry.resolves_at_ms));
+                        def.pos=next; def.target_pos=chase.target;
+                        def.vel=Vec2::new((next.x-old.x)/dt_sec,(next.y-old.y)/dt_sec);
+                        if old.distance(next)>0.05 {def.facing_rad=(next.y-old.y).atan2(next.x-old.x);}
+                    }
+                }
+                if carry.shielding {
+                    // Face away from the actual challenger so the body can
+                    // protect the ball; do not change the ball position here.
+                    if let Some(chase)=carry.challenger.as_ref() {
+                        if let Some(def)=self.state.players.iter().find(|p|p.player_id==chase.candidate.player_id) {
+                            let pos=self.state.players[idx].pos;
+                            let angle=(pos.y-def.pos.y).atan2(pos.x-def.pos.x);
+                            self.state.players[idx].facing_rad=angle;
+                        }
+                    }
                 }
             }
             for (idx, p) in self.state.players.iter_mut().enumerate() {
@@ -2500,7 +2522,8 @@ impl MatchSessionV4 {
                 Ok((att_side, carrier_idx, false, 0))
             }
             PlannedActionV4::Dribble { .. } => {
-                self.start_timed_dribble(carrier_idx)?;
+                let intent=plan.carry.ok_or_else(||V4Error::InvalidClock("PI dribble lacks carry intention".into()))?;
+                self.start_carry_intent(carrier_idx,intent,false)?;
                 Ok((att_side,carrier_idx,false,0))
             }
             PlannedActionV4::Shoot { .. } => {
@@ -2554,50 +2577,42 @@ impl MatchSessionV4 {
                 Ok((def_side, next_idx, false, flight_ms))
             }
             PlannedActionV4::HoldAndRecycle => {
-                let carrier_id = self.state.players[carrier_idx].player_id.clone();
-                let g_sec = self.state.des_clock.game_second();
-                let mut meta = EventMetadataV4 {
-                    pressure: Some(carrier_ctx.pressure.round() as u8),
-                    escaped_pressure: if carrier_ctx.pressure >= 45.0 {
-                        Some(true)
-                    } else {
-                        None
-                    },
-                    ..EventMetadataV4::default()
-                };
-                attach_tactical_flags(&mut meta, compute_tactical_flags(&self.state, att_side, g_sec));
-                self.emit(
-                    EventTypeV4::Carry,
-                    HighlightTier::None,
-                    None,
-                    Some(att_side),
-                    Some(carrier_id),
-                    None,
-                    meta,
-                );
-                let carry_ms = 1_100 + self.rng.next_int(1_600) as i64;
-                Ok((att_side, carrier_idx, false, carry_ms))
+                let intent=plan.carry.ok_or_else(||V4Error::InvalidClock("PI hold lacks carry intention".into()))?;
+                self.start_carry_intent(carrier_idx,intent,true)?;
+                Ok((att_side,carrier_idx,false,0))
             }
         }
     }
 
-    /// Start a new physical carry interval. Its target is deliberately the
-    /// existing forward-dribble policy; directional intelligence comes in 5.4.
-    fn start_timed_dribble(&mut self, idx: usize) -> Result<(), V4Error> {
+    #[cfg(test)]
+    fn start_timed_dribble(&mut self,idx:usize)->Result<(),V4Error>{
+        let dir=if self.state.players[idx].side==TeamSideV4::Home{1.0}else{-1.0};
+        self.start_carry_intent(idx,CarryIntentV4{direction:Vec2::new(dir,0.0),duration_ms:1600,shielding:false},false)
+    }
+
+    fn start_carry_intent(&mut self,idx:usize,intent:CarryIntentV4,is_hold:bool)->Result<(),V4Error>{
         let now=self.state.des_clock.sim_time_ms;
-        let duration=900+self.rng.next_int(1_400) as i64;
         let mut candidate=pass_reach_candidate(&self.state,idx,false);
-        candidate.speed_mps*=0.88;
+        candidate.speed_mps*=if intent.shielding{0.42}else{0.88};
         candidate.reaction_ms=0;
-        let dir=if candidate.side==TeamSideV4::Home {1.0} else {-1.0};
-        let pos=candidate.pos;
-        let target=Vec2::new(pos.x+dir*candidate.speed_mps*(duration as f32/1000.0),pos.y).clamp_to_pitch();
-        let at=now.saturating_add(duration);
+        let target=carry_target(candidate.pos,candidate.speed_mps,intent);
+        let duration=intent.duration_ms.max(150);
+        let end=now.saturating_add(duration);
+        let side=candidate.side;
+        let id=candidate.player_id.clone();
+        let start_pressure=evaluate_local_context(&self.state,&self.input,side,candidate.pos).pressure;
+        let motion=PassContactMotion{candidate,target,started_at_ms:now};
+        let defenders:Vec<_>=self.state.players.iter().enumerate().filter(|(_,p)|
+            p.on_pitch && !p.sent_off && p.side!=side && !p.is_goalkeeper)
+            .map(|(i,_)|pass_reach_candidate(&self.state,i,false)).collect();
+        let (at,challenger)=match find_carry_contact(&motion,&defenders,end) {
+            Some((_,at,chase))=>(at,Some(chase)),None=>(end,None),
+        };
         self.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
-            DesEventPayload::DribbleStep{carrier_id:candidate.player_id.clone(),side:candidate.side})
-            .map_err(|e|V4Error::InvalidClock(e.into()))?;
-        self.pending_carry=Some(PendingCarryV4{carrier_idx:idx,resolves_at_ms:at,
-            motion:PassContactMotion{candidate,target,started_at_ms:now}});
+            DesEventPayload::DribbleStep{carrier_id:id,side}).map_err(|e|V4Error::InvalidClock(e.into()))?;
+        self.diagnostics.record_carry_start(is_hold,intent.shielding,intent.direction.y.abs()>0.1);
+        self.pending_carry=Some(PendingCarryV4{carrier_idx:idx,resolves_at_ms:at,motion,shielding:intent.shielding,
+            is_hold,challenger,start_pressure});
         Ok(())
     }
 
@@ -2613,21 +2628,31 @@ impl MatchSessionV4 {
         }
         let pos=self.state.players[idx].pos;
         let moved=carry.motion.candidate.pos.distance(pos);
+        let gain=if side==TeamSideV4::Home{pos.x-carry.motion.candidate.pos.x}else{carry.motion.candidate.pos.x-pos.x};
         let ctx=evaluate_local_context(&self.state,&self.input,side,pos);
         // World integration has already accounted for the entire carry.
         // The existing duel resolver is used only for its contact outcome
         // with zero displacement/time, not a second movement interval.
-        let mut outcome=execute_dribble_duel(&mut self.state,&self.input,idx,
-            ctx.nearest_defender_idx,ctx,0.0,&mut self.rng);
+        let contact=carry.challenger.as_ref().and_then(|chase|
+            self.state.players.iter().position(|p|p.player_id==chase.candidate.player_id
+                && p.on_pitch && !p.sent_off && p.pos.distance(pos)<=chase.candidate.reach_m+0.01));
+        if contact.is_some(){self.diagnostics.record_carry_contact();}
+        let mut outcome=resolve_carry_contact(&mut self.state,&self.input,idx,contact,ctx,carry.shielding,&mut self.rng);
+        self.diagnostics.record_carry_result(outcome.next_side!=side);
         let had_foul=outcome.events.iter().any(|e|e.kind==EventTypeV4::Foul);
         let had_card=outcome.events.iter().any(|e|matches!(e.kind,EventTypeV4::YellowCard|EventTypeV4::RedCard));
         let had_injury=outcome.events.iter().any(|e|e.kind==EventTypeV4::Injury);
         for ev in &mut outcome.events {
-            if ev.kind==EventTypeV4::DribbleWon {ev.metadata.progress_gain=Some(moved.round() as i32);}
+            if ev.kind==EventTypeV4::DribbleWon {ev.metadata.progress_gain=Some(gain.round() as i32);}
+            ev.metadata.extra.insert("carryMode".into(),if carry.shielding{"SHIELD"}else if carry.is_hold{"HOLD"}else{"DRIBBLE"}.into());
+            ev.metadata.extra.insert("carryDistanceM".into(),format!("{moved:.3}"));
         }
         if outcome.events.is_empty() {
             self.emit(EventTypeV4::Carry,HighlightTier::None,None,Some(side),Some(player_id.into()),None,
-                EventMetadataV4{progress_gain:Some(moved.round() as i32),pressure:Some(ctx.pressure.round() as u8),
+                EventMetadataV4{progress_gain:Some(gain.round() as i32),pressure:Some(ctx.pressure.round() as u8),
+                    escaped_pressure:if carry.start_pressure>=45.0 && ctx.pressure<carry.start_pressure-15.0{Some(true)}else{None},
+                    extra: [("carryMode".into(),if carry.shielding{"SHIELD"}else if carry.is_hold{"HOLD"}else{"DRIBBLE"}.into()),
+                        ("carryDistanceM".into(),format!("{moved:.3}"))].into_iter().collect(),
                     ..EventMetadataV4::default()});
         }
         self.flush_play_events(outcome.events,side);
@@ -3630,5 +3655,41 @@ mod pi_timing_tests {
         assert!(s.pending_decision.is_some());
         s.open_dead_ball(DeadBallKind::ThrowIn,TeamSideV4::Away,Vec3::ground(40.0,0.0),false,false).unwrap();
         assert!(s.pending_decision.is_none() && s.pending_carry.is_none());
+    }
+}
+
+
+#[cfg(test)]
+mod pi_carry_lifecycle_tests {
+    use super::*;
+    use crate::v4::input::{SimulationMode,RulesModeV4};
+    use crate::v4::tests::make_v4_input;
+    #[test]
+    fn pi_carry_early_contact_and_checkpoint() {
+        let mut s=MatchSessionV4::new(make_v4_input(19401,SimulationMode::FullEvent,RulesModeV4::Standard)).unwrap();
+        s.step_one_des_event(true).unwrap();
+        s.scheduler.invalidate_live_play();
+        let idx=s.carrier_idx;
+        let def=s.state.players.iter().position(|p|p.on_pitch && !p.is_goalkeeper && p.side!=s.possession_side).unwrap();
+        for p in &mut s.state.players {p.pos=Vec2::new(90.0,60.0);p.vel=Vec2::default();}
+        s.state.players[idx].pos=Vec2::new(50.0,34.0);
+        s.state.players[def].pos=Vec2::new(50.0,32.5);
+        s.state.ball.pos=Vec3::ground(50.0,34.0);
+        let now=s.sim_time_ms();
+        let dist=s.state.players[idx].fatigue.distance_m;
+        s.start_carry_intent(idx,CarryIntentV4{direction:Vec2::new(0.0,-1.0),duration_ms:1600,shielding:false},false).unwrap();
+        let carry=s.pending_carry.clone().unwrap();
+        assert!(carry.challenger.is_some());
+        assert!(carry.resolves_at_ms>now && carry.resolves_at_ms<now+1600);
+        assert_eq!(s.state.players[idx].fatigue.distance_m,dist);
+        let ck=s.export_checkpoint().unwrap();
+        let mut r=MatchSessionV4::from_checkpoint(serde_json::from_str(&serde_json::to_string(&ck).unwrap()).unwrap()).unwrap();
+        for session in [&mut s,&mut r] {
+            session.step_one_des_event(true).unwrap();
+            assert_eq!(session.sim_time_ms(),carry.resolves_at_ms);
+            assert!(session.pending_carry.is_none());
+        }
+        assert_eq!(s.timeline_fingerprint,r.timeline_fingerprint);
+        assert_eq!(s.rng.state(),r.rng.state());
     }
 }
