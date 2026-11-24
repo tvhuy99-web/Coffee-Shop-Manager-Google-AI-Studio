@@ -1934,10 +1934,12 @@ impl MatchSessionV4 {
         let observed:Vec<_>=self.state.players.iter().enumerate().filter(|(_,p)|p.on_pitch && !p.sent_off)
             .map(|(idx,p)|crate::player_intelligence::ObservedPlayer{idx,side:p.side,pos:p.pos,is_gk:p.is_goalkeeper}).collect();
         let receiving_line=crate::v4::ball_play::offside_reference_progress_m(&self.state,side,pos);
-        self.diagnostics.record_open_outlets(crate::player_intelligence::count_open_outlets(side,idx,pos,&observed,receiving_line));
+        let open_outlets=crate::player_intelligence::count_open_outlets(side,idx,pos,&observed,receiving_line);
+        self.diagnostics.record_open_outlets(open_outlets);
         let ctx = evaluate_local_context(&self.state,&self.input,side,pos);
         let mut plan = perceive_evaluate_and_decide_des(&self.state,&self.input,
             &self.input.timing_model,idx,ctx,&mut self.rng);
+        self.diagnostics.record_outlet_choice(open_outlets,matches!(plan.action,PlannedActionV4::HoldAndRecycle));
         // A one-touch intention is a property of this receiver's action,
         // not of the passer who delivered the previous ball.
         if !fresh_receipt { plan.is_one_touch = false; }

@@ -68,16 +68,42 @@ fn value(o:SupportObservation<'_>,target:Vec2)->f32 {
 
 /// Find a nearby opening around the tactical destination, without every
 /// teammate chasing the same global optimum. Remote players retain shape.
+#[cfg(test)]
 pub(crate) fn select_support_target(o:SupportObservation<'_>)->Vec2 {
+    select_coordinated_support_target(o,&[])
+}
+
+/// A reservation is an intended teammate destination, not a future
+/// observed position. Penalize crowding and redundant receiving angles
+/// while keeping all of the individual shape and legality constraints.
+fn reservation_cost(ball:Vec2,target:Vec2,reserved:&[Vec2])->f32 {
+    let mut cost=0.0f32;
+    let ax=target.x-ball.x;
+    let ay=target.y-ball.y;
+    let al=ball.distance(target);
+    for r in reserved {
+        let close=(1.0-target.distance(*r)/7.0).clamp(0.0,1.0);
+        let bl=ball.distance(*r);
+        let alignment=if al>1.0 && bl>1.0 {
+            ((ax*(r.x-ball.x)+ay*(r.y-ball.y))/(al*bl)).clamp(-1.0,1.0)
+        }else{0.0};
+        let duplicate_angle=((alignment-0.94)/0.06).clamp(0.0,1.0);
+        let similar_depth=(1.0-(al-bl).abs()/12.0).clamp(0.0,1.0);
+        cost=cost.max(0.48*close*close+0.13*duplicate_angle*similar_depth);
+    }
+    cost
+}
+
+pub(crate) fn select_coordinated_support_target(o:SupportObservation<'_>,reserved:&[Vec2])->Vec2 {
     let shape=legalize(o.shape,o.side,o.legal_limit);
     if o.ball.distance(shape)>36.0 || o.awareness<0.10 {return shape;}
     let radius=3.0+5.0*o.awareness.clamp(0.0,1.0);
     let dir=if o.side==TeamSideV4::Home{1.0}else{-1.0};
     let mut best=shape;
-    let mut score=value(o,shape);
+    let mut score=value(o,shape)-reservation_cost(o.ball,shape,reserved);
     for (dx,dy) in [(1.0,0.0),(-1.0,0.0),(0.0,-1.0),(0.0,1.0),(-0.707,-0.707),(-0.707,0.707),(0.707,-0.707),(0.707,0.707)] {
         let p=legalize(Vec2::new(shape.x+dir*dx*radius,shape.y+dy*radius),o.side,o.legal_limit);
-        let s=value(o,p);
+        let s=value(o,p)-reservation_cost(o.ball,p,reserved);
         if s>score+1e-5 {best=p;score=s;}
     }
     best
@@ -110,6 +136,17 @@ mod tests {
         assert_eq!(count_open_outlets(o.side,0,o.ball,&players,Some(60.0)),0);
         let mut moved=players; moved[1].pos=p;
         assert_eq!(count_open_outlets(o.side,0,o.ball,&moved,Some(60.0)),1);
+    }
+    #[test]
+    fn pi_support_coordination_separates_duplicate_destinations() {
+        let players=[ObservedPlayer{idx:0,side:TeamSideV4::Home,pos:Vec2::new(45.0,34.0),is_gk:false}];
+        let o=SupportObservation{idx:1,side:TeamSideV4::Home,pos:Vec2::new(57.0,34.0),ball:players[0].pos,
+            shape:Vec2::new(57.0,34.0),players:&players,awareness:0.95,reach_m:9.0,legal_limit:Some(62.0)};
+        let first=select_coordinated_support_target(o,&[]);
+        let second=select_coordinated_support_target(SupportObservation{idx:2,..o},&[first]);
+        assert!(first.distance(second)>3.0,"identical independent intentions must not create a redundant outlet");
+        assert!(second.distance(o.shape)<=8.001 && second.x<=62.001);
+        assert!(reservation_cost(o.ball,first,&[first])>reservation_cost(o.ball,second,&[first]));
     }
     #[test]
     fn pi_support_mirrors_and_preserves_distant_shape() {

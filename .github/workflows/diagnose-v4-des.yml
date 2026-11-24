@@ -63,7 +63,7 @@ jobs:
                   des = row["diagnostics"]["des"]
                   for field in ("carryStarts","holdStarts","shieldStarts","lateralCarryStarts","carryContacts","carryTurnovers","carryMs","holdMs"):
                       carry[field] += des.get(field,0)
-                  for field in ("outletSamples","openOutletsTotal","noOpenOutletSamples"):
+                  for field in ("outletSamples","openOutletsTotal","noOpenOutletSamples","holdDecisionSamples","holdWithOpenOutletSamples"):
                       outlets[field] += des.get(field,0)
                   for side in ("home", "away"):
                       d = row["diagnostics"][side]
@@ -88,7 +88,9 @@ jobs:
               print("PI_SUPPORT_EVIDENCE", json.dumps({
                   "samplesPerMatch": outlets["outletSamples"]/n,
                   "openOutletsPerObservation": outlets["openOutletsTotal"]/max(1,outlets["outletSamples"]),
-                  "noOpenOutletPct": 100*outlets["noOpenOutletSamples"]/max(1,outlets["outletSamples"])
+                  "noOpenOutletPct": 100*outlets["noOpenOutletSamples"]/max(1,outlets["outletSamples"]),
+                  "holdDecisionSamplesPerMatch": outlets["holdDecisionSamples"]/n,
+                  "holdWithOpenOutletPct": 100*outlets["holdWithOpenOutletSamples"]/max(1,outlets["holdDecisionSamples"])
               },sort_keys=True))
               for row in report["matches"]:
                   if not row["ok"] or row.get("diagnosticError"):

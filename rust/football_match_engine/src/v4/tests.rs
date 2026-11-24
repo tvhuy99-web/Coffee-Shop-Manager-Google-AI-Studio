@@ -2645,7 +2645,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.5");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.6");
 }
 
 
@@ -2722,4 +2722,33 @@ fn pi_on_ball_shot_vs_continuation_scenario() {
     }
     println!("PI_SHOT_CHOICE speculative={} clear={}",bad_shots,close_shots);
     assert!(close_shots>64 && close_shots>bad_shots,"clear chance must be preferred over speculative shooting");
+}
+
+
+#[test]
+fn pi_support_final_target_respects_speed_and_direction() {
+    use crate::v4::state::{MatchStateV4,BallControlState};
+    use crate::v4::movement::{advance_off_ball_movement,player_attrs,player_max_speed_mps};
+    for side in [TeamSideV4::Home,TeamSideV4::Away] {
+        let input=make_v4_input_teams(19501,SimulationMode::FullEvent,RulesModeV4::Standard,
+            make_v4_team("H","H",18),make_v4_team("A","A",18));
+        let mut state=MatchStateV4::from_input(&input);
+        let idx=state.players.iter().position(|p|p.on_pitch && !p.is_goalkeeper && p.side==side).unwrap();
+        state.players[idx].pos=Vec2::new(52.5,34.0);
+        state.ball.pos=Vec3::ground(52.5,34.0);
+        state.ball.control=BallControlState::Controlled;
+        let mut rng=DeterministicRng::new(19502);
+        for dt in [0.01f32,0.05,0.2,0.7,1.6] {
+            let before:Vec<_>=state.players.iter().map(|p|(p.pos,player_max_speed_mps(player_attrs(&state,p),p))).collect();
+            advance_off_ball_movement(&mut state,&input,side,idx,dt,&mut rng);
+            for (i,p) in state.players.iter().enumerate().filter(|(_,p)|p.on_pitch && !p.sent_off) {
+                let (old,speed)=before[i];
+                let moved=old.distance(p.pos);
+                assert!(moved<=speed*dt+0.002,"{} exceeded final target speed budget",p.player_id);
+                assert!(p.pos.distance(p.target_pos)<=old.distance(p.target_pos)+0.002);
+                assert!((moved+p.pos.distance(p.target_pos)-old.distance(p.target_pos)).abs()<0.004,
+                    "{} stepped off final intended segment",p.player_id);
+            }
+        }
+    }
 }

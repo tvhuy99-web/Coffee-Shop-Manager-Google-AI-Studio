@@ -1,5 +1,5 @@
 use crate::rng::DeterministicRng;
-use crate::player_intelligence::{select_movement_target, MovementObservation, ObservedPlayer, SupportObservation, select_support_target};
+use crate::player_intelligence::{select_movement_target, MovementObservation, ObservedPlayer, SupportObservation, select_coordinated_support_target};
 use crate::v4::attributes::{normalize_attr, PlayerAttributes54};
 use crate::v4::ball_play::offside_reference_progress_m;
 use crate::v4::input::{MatchInputV4, TeamInstructionsV4};
@@ -195,10 +195,12 @@ pub fn advance_off_ball_movement(
     let controlled=state.ball.control==BallControlState::Controlled;
     let observed:Vec<_>=state.players.iter().enumerate().filter(|(_,p)|p.on_pitch && !p.sent_off)
         .map(|(idx,p)|ObservedPlayer{idx,side:p.side,pos:p.pos,is_gk:p.is_goalkeeper}).collect();
+    // First choose shape intentions without moving anybody. Keep the
+    // existing RNG draw order for the legacy shape policy.
+    let mut targets:Vec<Option<Vec2>>=vec![None;state.players.len()];
+    let mut support_order=Vec::new();
     for idx in 0..state.players.len() {
         if !state.players[idx].on_pitch || state.players[idx].sent_off {
-            state.players[idx].last_moved_m = 0.0;
-            state.players[idx].vel = Vec2::default();
             continue;
         }
         let side = state.players[idx].side;
@@ -210,7 +212,7 @@ pub fn advance_off_ball_movement(
 
         let anchor = slot_anchor_m(state, input, &state.players[idx], in_poss);
 
-        let mut target = select_movement_target(MovementObservation {
+        let target = select_movement_target(MovementObservation {
             is_carrier: idx == carrier_idx,
             is_gk, in_poss, side, phase,
             attrs: &attrs, instructions: &ti, anchor, ball_xy, ball_progress_home,
@@ -220,23 +222,51 @@ pub fn advance_off_ball_movement(
             aerobic: state.players[idx].fatigue.aerobic,
         }, rng);
 
-        let cur = state.players[idx].pos;
-        let dist = cur.distance(target);
-        let max_speed_mps = player_max_speed_mps(&attrs, &state.players[idx]);
+        targets[idx]=Some(target);
         if controlled && in_poss && !is_gk && idx!=carrier_idx {
-            let p=&state.players[idx];
-            let awareness=(normalize_attr(attrs.mental.off_the_ball)*0.5
-                +normalize_attr(attrs.mental.anticipation)*0.25+normalize_attr(attrs.mental.decisions)*0.25)
-                *p.position_familiarity;
-            // Same intended legal margin as the original off-ball policy.
-            let legal_limit=receiving_line.map(|line|line-0.6-1.8*awareness+3.0*(1.0-awareness));
-            target=select_support_target(SupportObservation{idx,side,pos:cur,ball:ball_xy,shape:target,
-                players:&observed,awareness,reach_m:max_speed_mps*1.6,legal_limit});
+            support_order.push(idx);
         }
+    }
+    // Nearest available support gets first choice; the stable player ID
+    // breaks ties rather than incidental storage order. Reservations are
+    // shared team intentions, never claimed future coordinates.
+    support_order.sort_by(|a,b|{
+        state.players[*a].pos.distance(ball_xy).total_cmp(&state.players[*b].pos.distance(ball_xy))
+            .then_with(||state.players[*a].player_id.cmp(&state.players[*b].player_id))
+    });
+    let mut reserved=Vec::with_capacity(support_order.len());
+    for idx in support_order {
+        let p=&state.players[idx];
+        let attrs=player_attrs(state,p);
+        let awareness=((normalize_attr(attrs.mental.off_the_ball)*0.5
+            +normalize_attr(attrs.mental.anticipation)*0.25+normalize_attr(attrs.mental.decisions)*0.25)
+            *p.position_familiarity).clamp(0.0,1.0);
+        let legal_limit=receiving_line.map(|line|line-0.6-1.8*awareness+3.0*(1.0-awareness));
+        let shape=targets[idx].expect("active support player has a shape");
+        let target=select_coordinated_support_target(SupportObservation{idx,side:p.side,pos:p.pos,
+            ball:ball_xy,shape,players:&observed,awareness,
+            reach_m:player_max_speed_mps(attrs,p)*1.6,legal_limit},&reserved);
+        targets[idx]=Some(target);
+        reserved.push(target);
+    }
+
+    // Integrate once, using the FINAL destination. Previously dist was
+    // computed before support adjusted target, which could exceed speed
+    // budget or step past the intended destination.
+    for (idx,target) in targets.into_iter().enumerate() {
+        let Some(target)=target else {
+            state.players[idx].last_moved_m=0.0;
+            state.players[idx].vel=Vec2::default();
+            continue;
+        };
+        let cur=state.players[idx].pos;
+        let dist=cur.distance(target);
+        let attrs=player_attrs(state,&state.players[idx]);
+        let max_speed_mps=player_max_speed_mps(attrs,&state.players[idx]);
         let max_step = max_speed_mps * dt;
         let new_pos = if dt <= 1e-4 {
             cur
-        } else if dist <= max_step || dist <= 0.05 {
+        } else if dist <= max_step {
             target
         } else {
             let t = max_step / dist;
