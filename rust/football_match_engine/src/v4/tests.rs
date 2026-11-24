@@ -2664,7 +2664,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.23");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.24");
 }
 
 
@@ -3543,4 +3543,68 @@ fn pi_defense_contact_audit_shared_angle_and_speed() {
     assert!(counts[0][0]>counts[1][0]&&counts[0][0]>counts[2][0]);
     println!("PI_TACKLE_SHARED_GEOMETRY front_pi={} rear_pi={} resolver_front={front:?} resolver_rear={back:?} resolver_fast={fast_probs:?} observed={counts:?} n=4096_per_context",
         front_pi.clean_win_probability,rear_pi.clean_win_probability);
+}
+
+
+#[test]
+fn pi_defense_body_contact_is_separate_from_ball_success() {
+    use crate::v4::interaction::missed_ball_body_overlap;
+    use crate::v4::ball_play::{duel_contact_probabilities,duel_missed_ball_foul_probability,resolve_carry_contact};
+    use crate::v4::state::MatchStateV4;
+    use crate::v4::movement::evaluate_local_context;
+    let c=Vec2::new(50.0,34.0);
+    let d=Vec2::new(51.0,34.0);
+    assert_eq!(missed_ball_body_overlap(c,0.0,d,1.0),0.0);
+    assert!(missed_ball_body_overlap(c,std::f32::consts::PI,d,1.0)>0.95);
+    assert_eq!(missed_ball_body_overlap(c,0.0,Vec2::new(47.0,34.0),1.0),0.0);
+    let mirrored=missed_ball_body_overlap(Vec2::new(55.0,34.0),0.0,Vec2::new(54.0,34.0),1.0);
+    assert!((mirrored-missed_ball_body_overlap(c,std::f32::consts::PI,d,1.0)).abs()<1e-5);
+    let input=make_v4_input(23001,SimulationMode::FullEvent,RulesModeV4::Standard);
+    let mut front=MatchStateV4::from_input(&input);
+    let a=front.players.iter().position(|p|p.side==TeamSideV4::Home&&!p.is_goalkeeper).unwrap();
+    let b=front.players.iter().position(|p|p.side==TeamSideV4::Away&&!p.is_goalkeeper).unwrap();
+    front.players[a].pos=c;
+    front.players[b].pos=d;
+    front.players[a].vel=Vec2::default();
+    front.players[b].vel=Vec2::default();
+    front.players[a].facing_rad=0.0;
+    let mut rear=front.clone();
+    rear.players[a].facing_rad=std::f32::consts::PI;
+    let mut ctx=evaluate_local_context(&front,&input,TeamSideV4::Home,c);
+    ctx.overload=false;
+    let f=duel_contact_probabilities(&front,&input,a,b,ctx,false);
+    let r=duel_contact_probabilities(&rear,&input,a,b,ctx,false);
+    assert_eq!(duel_missed_ball_foul_probability(&front,&input,a,b),0.0);
+    assert!(duel_missed_ball_foul_probability(&rear,&input,a,b)>0.0);
+    assert!(f.0>r.0&&r.1>f.1);
+    assert!(r.0+r.1+r.2<=1.0);
+    let mut counts=[[0u32;4];2];
+    for seed in 0..4096i64 {
+        for (j,template) in [&front,&rear].into_iter().enumerate() {
+            let mut state=template.clone();
+            let mut rng=DeterministicRng::new(104729+seed*7907);
+            let out=resolve_carry_contact(&mut state,&input,a,Some(b),ctx,false,&mut rng);
+            let clean=out.events.iter().any(|e|e.kind==EventTypeV4::TackleWon);
+            let foul=out.events.iter().any(|e|e.kind==EventTypeV4::Foul);
+            let body=out.events.iter().any(|e|e.kind==EventTypeV4::Foul&&e.metadata.extra.get("contactBranch").map(String::as_str)==Some("MISSED_BALL_BODY"));
+            assert!(!(clean&&foul));
+            if body {
+                assert!(foul);
+                assert_eq!(out.next_side,TeamSideV4::Home);
+                assert_eq!(state.ball.control,crate::v4::state::BallControlState::DeadBall);
+            }
+            counts[j][0]+=u32::from(clean);
+            counts[j][1]+=u32::from(foul);
+            counts[j][2]+=u32::from(body);
+            counts[j][3]+=u32::from(!clean&&!foul);
+        }
+    }
+    assert_eq!(counts[0][2],0);
+    assert!(counts[1][2]>0&&counts[1][1]>counts[0][1]);
+    assert_eq!(counts[1][0]+counts[1][1]+counts[1][3],4096);
+    for (j,p) in [f,r].into_iter().enumerate(){
+        assert!((counts[j][0] as f32/4096.0-p.0).abs()<0.04);
+        assert!((counts[j][1] as f32/4096.0-p.1).abs()<0.04);
+    }
+    println!("PI_TACKLE_BODY_CONTACT front={f:?} rear={r:?} counts_clean_foul_body_miss={counts:?}");
 }

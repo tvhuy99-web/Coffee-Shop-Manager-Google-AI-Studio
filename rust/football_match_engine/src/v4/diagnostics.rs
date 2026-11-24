@@ -228,6 +228,10 @@ pub struct DesMatchDiagnosticsV4 {
     #[serde(default)]
     pub tackle_audit_advantage: u32,
     #[serde(default)]
+    pub tackle_audit_missed_ball_fouls: u32,
+    #[serde(default)]
+    pub tackle_audit_missed_ball_advantage: u32,
+    #[serde(default)]
     pub tackle_audit_pi_clean_sum: f64,
     #[serde(default)]
     pub tackle_audit_pi_foul_sum: f64,
@@ -507,6 +511,10 @@ struct DesDiagnosticsAccumulator {
     #[serde(default)]
     tackle_audit_advantage: u32,
     #[serde(default)]
+    tackle_audit_missed_ball_fouls: u32,
+    #[serde(default)]
+    tackle_audit_missed_ball_advantage: u32,
+    #[serde(default)]
     tackle_audit_pi_clean_sum: f64,
     #[serde(default)]
     tackle_audit_pi_foul_sum: f64,
@@ -605,6 +613,8 @@ impl DesDiagnosticsAccumulator {
             tackle_audit_clean: self.tackle_audit_clean,
             tackle_audit_foul: self.tackle_audit_foul,
             tackle_audit_advantage: self.tackle_audit_advantage,
+            tackle_audit_missed_ball_fouls: self.tackle_audit_missed_ball_fouls,
+            tackle_audit_missed_ball_advantage: self.tackle_audit_missed_ball_advantage,
             tackle_audit_pi_clean_sum: self.tackle_audit_pi_clean_sum,
             tackle_audit_pi_foul_sum: self.tackle_audit_pi_foul_sum,
             tackle_audit_resolver_clean_sum: self.tackle_audit_resolver_clean_sum,
@@ -806,11 +816,13 @@ impl MatchDiagnosticsCollectorV4 {
     /// Actual contact denominator, separate from the repeated candidate
     /// evaluations. PI estimate is refreshed for audit only at contact.
     pub(crate) fn record_tackle_contact_audit(&mut self,pi_clean:f32,pi_foul:f32,
-        resolver:(f32,f32,f32),clean:bool,foul:bool,advantage:bool) {
+        resolver:(f32,f32,f32),clean:bool,foul:bool,advantage:bool,missed_ball_body:bool) {
         self.des.tackle_audit_contacts+=1;
         self.des.tackle_audit_clean+=u32::from(clean);
         self.des.tackle_audit_foul+=u32::from(foul);
         self.des.tackle_audit_advantage+=u32::from(advantage);
+        self.des.tackle_audit_missed_ball_fouls+=u32::from(missed_ball_body&&foul);
+        self.des.tackle_audit_missed_ball_advantage+=u32::from(missed_ball_body&&advantage);
         self.des.tackle_audit_pi_clean_sum+=f64::from(pi_clean);
         self.des.tackle_audit_pi_foul_sum+=f64::from(pi_foul);
         self.des.tackle_audit_resolver_clean_sum+=f64::from(resolver.0);

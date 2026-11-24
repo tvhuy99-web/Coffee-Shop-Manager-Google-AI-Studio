@@ -2776,8 +2776,10 @@ impl MatchSessionV4 {
         let out=resolve_carry_contact(&mut self.state,&self.input,idx,contact,ctx,shielding,&mut self.rng);
         if let Some((pi,resolver))=audit {
             let has=|kind|out.events.iter().any(|e|e.kind==kind);
+            let missed_ball_body=out.events.iter().any(|e|matches!(e.kind,EventTypeV4::Foul|EventTypeV4::AdvantagePlayed)
+                && e.metadata.extra.get("contactBranch").map(String::as_str)==Some("MISSED_BALL_BODY"));
             self.diagnostics.record_tackle_contact_audit(pi.clean_win_probability,pi.foul_probability,
-                resolver,has(EventTypeV4::TackleWon),has(EventTypeV4::Foul),has(EventTypeV4::AdvantagePlayed));
+                resolver,has(EventTypeV4::TackleWon),has(EventTypeV4::Foul),has(EventTypeV4::AdvantagePlayed),missed_ball_body);
         }
         out
     }

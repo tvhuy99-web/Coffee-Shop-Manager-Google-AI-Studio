@@ -67,6 +67,30 @@ impl GroundContactGeometry {
 }
 
 
+/// Local ground-challenge proxy: estimate the ball in front of the
+/// carrier and check whether a reach-limited challenge path crosses
+/// the carrier's leg/body envelope. The main ball state is unchanged.
+/// These dimensions are explicit geometric assumptions, not calibrated
+/// tracking data or a literal animation of two articulated players.
+pub(crate) fn missed_ball_body_overlap(
+    carrier:Vec2,facing_rad:f32,defender:Vec2,reach_m:f32
+)->f32 {
+    const CONTROLLED_BALL_OFFSET_M:f32=0.45;
+    const LEG_BODY_ENVELOPE_M:f32=0.35;
+    if reach_m<=0.0 || defender.distance(carrier)>reach_m+LEG_BODY_ENVELOPE_M {
+        return 0.0;
+    }
+    let ball=Vec2::new(carrier.x+facing_rad.cos()*CONTROLLED_BALL_OFFSET_M,
+        carrier.y+facing_rad.sin()*CONTROLLED_BALL_OFFSET_M);
+    let dx=ball.x-defender.x;
+    let dy=ball.y-defender.y;
+    let distance=(dx*dx+dy*dy).sqrt();
+    let scale=if distance>1e-6 {(reach_m/distance).min(1.0)}else{0.0};
+    let end=Vec2::new(defender.x+dx*scale,defender.y+dy*scale);
+    let clearance=crate::v4::spatial::point_to_segment_distance_m(carrier,defender,end);
+    (1.0-clearance/LEG_BODY_ENVELOPE_M).clamp(0.0,1.0)
+}
+
 /// Analytic 3D ball trajectory parameterized by start timestamp, initial kinematics,
 /// gravitational acceleration (`gravity_z >= 0.0`), and linear drag coefficient (`drag >= 0.0`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

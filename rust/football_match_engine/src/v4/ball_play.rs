@@ -904,6 +904,22 @@ pub(crate) fn duel_foul_given_defender_win(input:&MatchInputV4,def_attrs:&crate:
     foul_prob
 }
 
+/// Additional unsafe-body-contact opportunity on the branch where the
+/// defender fails to win the ball. Use the existing foot reach formula
+/// and existing technique/discipline/referee probability, not a new
+/// match-level foul-rate target.
+pub(crate) fn duel_missed_ball_foul_probability(
+    state:&MatchStateV4,input:&MatchInputV4,carrier_idx:usize,def_idx:usize
+)->f32 {
+    let carrier=&state.players[carrier_idx];
+    let defender=&state.players[def_idx];
+    let attrs=player_attrs(state,defender);
+    let reach_m=0.85+normalize_attr(attrs.physical.agility)*0.25;
+    let overlap=crate::v4::interaction::missed_ball_body_overlap(
+        carrier.pos,carrier.facing_rad,defender.pos,reach_m);
+    overlap*duel_foul_given_defender_win(input,attrs)
+}
+
 /// Exact conditional branch probabilities for a valid contact under the
 /// CURRENT resolver. These are audit data, never an input into PI policy.
 pub(crate) fn duel_contact_probabilities(
@@ -911,11 +927,13 @@ pub(crate) fn duel_contact_probabilities(
     carrier_ctx:LocalSpatialContext,shielding:bool
 )->(f32,f32,f32) {
     let defender_win=1.0-carrier_duel_win_probability(state,input,carrier_idx,def_idx,shielding);
-    let foul=defender_win*duel_foul_given_defender_win(input,player_attrs(state,&state.players[def_idx]));
+    let foul_after_ball_win=defender_win*duel_foul_given_defender_win(input,player_attrs(state,&state.players[def_idx]));
+    let foul_after_miss=(1.0-defender_win)*duel_missed_ball_foul_probability(state,input,carrier_idx,def_idx);
+    let foul=foul_after_ball_win+foul_after_miss;
     let advantage=if carrier_ctx.overload {
         foul*(0.12+input.referee_profile.advantage_tendency as f32/100.0*0.28)
     }else{0.0};
-    (defender_win-foul,foul-advantage,advantage)
+    (defender_win-foul_after_ball_win,foul-advantage,advantage)
 }
 
 fn execute_dribble_duel_impl(
@@ -990,13 +1008,21 @@ fn execute_dribble_duel_impl(
     let def_attrs = *player_attrs(state, &state.players[def_idx]);
     let win_prob=carrier_duel_win_probability(state,input,carrier_idx,def_idx,shielding);
     let roll = rng.next_double() as f32;
+    let attacker_wins=roll<win_prob;
+    // A missed ball challenge can still strike the opponent. This draw
+    // is conditional on geometric body overlap; an unobstructed miss
+    // remains the old successful-carrier branch with no extra draw.
+    let missed_ball_body_foul=if attacker_wins {
+        let p=duel_missed_ball_foul_probability(state,input,carrier_idx,def_idx);
+        p>0.0 && (rng.next_double() as f32)<p
+    }else{false};
 
     let carrier_old_xy = state.players[carrier_idx].pos;
     let def_old_xy = state.players[def_idx].pos;
     let carrier_max_speed = player_max_speed_mps(&carrier_attrs, &state.players[carrier_idx]);
     let def_max_speed = player_max_speed_mps(&def_attrs, &state.players[def_idx]);
 
-    if roll < win_prob {
+    if attacker_wins && !missed_ball_body_foul {
         let accel = normalize_attr(carrier_attrs.physical.acceleration);
         let max_burst = (carrier_max_speed * 0.94 * dt).min(6.5 + accel * 5.5);
         let new_xy = if dt>0.0 {Vec2::new(
@@ -1104,7 +1130,8 @@ fn execute_dribble_duel_impl(
     let foul_prob=duel_foul_given_defender_win(input,&def_attrs);
 
     let duel_pos = Vec3::ground(carrier_old_xy.x, carrier_old_xy.y).clamp_to_pitch();
-    if (rng.next_double() as f32) < foul_prob {
+    if missed_ball_body_foul || (rng.next_double() as f32) < foul_prob {
+        let contact_branch=if missed_ball_body_foul {"MISSED_BALL_BODY"}else{"BALL_WIN_UNSAFE"};
         // Advantage Law: referee may let play continue if attacking team retains momentum
         let adv_tend = input.referee_profile.advantage_tendency as f32 / 100.0;
         if carrier_ctx.overload && (rng.next_double() as f32) < (0.12 + adv_tend * 0.28) {
@@ -1118,6 +1145,7 @@ fn execute_dribble_duel_impl(
                 ball_pos: duel_pos,
                 metadata: EventMetadataV4 {
                     outcome: Some("ADVANTAGE".into()),
+                    extra:[("contactBranch".into(),contact_branch.into())].into_iter().collect(),
                     ..EventMetadataV4::default()
                 },
             });
@@ -1150,6 +1178,7 @@ fn execute_dribble_duel_impl(
             ball_pos: duel_pos,
             metadata: EventMetadataV4 {
                 cause: Some("TACKLE_FOUL".into()),
+                extra:[("contactBranch".into(),contact_branch.into())].into_iter().collect(),
                 ..EventMetadataV4::default()
             },
         });
