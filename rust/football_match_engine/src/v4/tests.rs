@@ -2664,7 +2664,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.18");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.19");
 }
 
 
@@ -3299,4 +3299,67 @@ fn pi_psychology_contextual_form_changes_actual_policy_choices() {
     }
     println!("PI_PSYCHOLOGY paired_action_changes={different}/512");
     assert!(different>0,"match-day form must reach actual policy selection in a fixed observation");
+}
+
+
+#[test]
+fn pi_psychology_reserve_form_is_independent_of_entry_route_and_minute() {
+    use crate::v4::ai_manager::{apply_manual_substitution_group,evaluate_ai_managers};
+    use crate::v4::psychology::{sample_prematch_form,substitute_psychology};
+    use crate::v4::state::MatchStateV4;
+    let mut input=make_v4_input(22601,SimulationMode::FullEvent,RulesModeV4::Standard);
+    input.match_environment.match_importance=95;
+    input.ai_home_manager=true;
+    input.ai_away_manager=false;
+    let mut reserve=input.home_team.lineup[8].clone();
+    reserve.player_id="H_RES_FORM".into();
+    reserve.display_name="Reserve form fixture".into();
+    reserve.eligible=true;
+    reserve.injured=false;
+    reserve.attributes.hidden.consistency=5;
+    reserve.attributes.hidden.big_matches=18;
+    input.home_team.bench=vec![reserve.clone()];
+    let channel=format!("pi4-matchday-reserve:{:?}:{}",TeamSideV4::Home,reserve.player_id);
+    let mut independent=DeterministicRng::new(input.seed).fork(&channel);
+    let (expected,_)=sample_prematch_form(&reserve.attributes,95,&mut independent);
+    let mut manual=MatchStateV4::from_input(&input);
+    let mut automatic=manual.clone();
+    manual.clock.game_second=900;
+    let out=input.home_team.lineup[8].player_id.clone();
+    apply_manual_substitution_group(&mut manual,&input,TeamSideV4::Home,
+        &[(out.clone(),reserve.player_id.clone())],false).unwrap();
+    automatic.clock.game_second=4000;
+    for player in &mut automatic.players {
+        if player.side==TeamSideV4::Home {
+            player.fatigue.aerobic=if player.player_id==out{40.0}else{98.0};
+        }
+    }
+    let events=evaluate_ai_managers(&mut automatic,&input);
+    assert!(events.iter().any(|e|e.kind==EventTypeV4::Substitution));
+    let entered=|state:&MatchStateV4|state.players.iter()
+        .find(|p|p.player_id==reserve.player_id && p.on_pitch).unwrap().psychology;
+    let m=entered(&manual);
+    let a=entered(&automatic);
+    assert_eq!(m.match_form_multiplier.to_bits(),expected.to_bits());
+    assert_eq!(a.match_form_multiplier.to_bits(),expected.to_bits());
+    assert_eq!(m,a,"entry mechanism and minute must not change initial psychology");
+    assert_eq!(manual.home.substitutions_used,1);
+    assert_eq!(automatic.home.substitutions_used,1);
+    let restored:MatchStateV4=serde_json::from_str(&serde_json::to_string(&automatic).unwrap()).unwrap();
+    assert_eq!(entered(&restored),a);
+    // Seed and identity are relevant, career readiness is not a direct
+    // input into the football form component.
+    let mut distinct=std::collections::BTreeSet::new();
+    for seed in 22601..22633i64 {
+        input.seed=seed;
+        let f=substitute_psychology(&input,TeamSideV4::Home,&reserve);
+        let mut changed=reserve.clone();
+        changed.attributes.hidden.professionalism=5;
+        changed.attributes.hidden.adaptability=18;
+        let g=substitute_psychology(&input,TeamSideV4::Home,&changed);
+        assert_eq!(f.match_form_multiplier.to_bits(),g.match_form_multiplier.to_bits());
+        distinct.insert(f.match_form_multiplier.to_bits());
+    }
+    assert!(distinct.len()>1,"reserve form cannot be a constant");
+    println!("PI_PSYCHOLOGY reserve_form={expected} distinct_seed_forms={}",distinct.len());
 }

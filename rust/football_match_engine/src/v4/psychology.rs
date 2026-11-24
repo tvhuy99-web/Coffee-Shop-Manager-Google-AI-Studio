@@ -2,10 +2,10 @@ use crate::rng::DeterministicRng;
 use crate::v4::attributes::{normalize_attr, PlayerAttributes54};
 use crate::v4::ball_play::EmittedPlayEvent;
 use crate::v4::events::{EventMetadataV4, EventTypeV4, HighlightTier};
-use crate::v4::input::{MatchInputV4, PitchQuality};
+use crate::v4::input::{MatchInputV4, PitchQuality, PlayerMatchSnapshotV4};
 use crate::v4::movement::lookup_attrs;
 use crate::v4::spatial::{TeamSideV4, Vec3};
-use crate::v4::state::{InjuryKind, MatchStateV4};
+use crate::v4::state::{InjuryKind, MatchStateV4, PlayerPsychologyState};
 
 /// Continuous-time exponential decay rate for team momentum (s^-1).
 /// Calibrated so `(-MOMENTUM_DECAY_RATE_PER_SEC * 11.0).exp() ≈ 0.94`,
@@ -52,6 +52,25 @@ pub(crate) fn sample_prematch_form(
     let match_only=(1.0+variance+big_delta).clamp(0.84,1.16);
     let legacy=(1.0+variance+big_delta+career_stability).clamp(0.84,1.16);
     (match_only,legacy)
+}
+
+/// A reserve has a match-day form just like a starter. Sample it from
+/// a named independent stream so the value is fixed for this match and
+/// player, regardless of the entry minute, substitution order or match RNG
+/// consumption. Keep the original starting-XI stream unchanged.
+pub(crate) fn substitute_psychology(
+    input:&MatchInputV4,side:TeamSideV4,player:&PlayerMatchSnapshotV4
+)->PlayerPsychologyState {
+    let mut psychology=PlayerPsychologyState::from_snapshot(player);
+    let channel=format!("pi4-matchday-reserve:{side:?}:{}",player.player_id);
+    let mut form_rng=DeterministicRng::new(input.seed).fork(&channel);
+    let (form,legacy_confidence_factor)=sample_prematch_form(
+        &player.attributes,input.match_environment.match_importance,&mut form_rng);
+    psychology.match_form_multiplier=form;
+    // Same initialization as for starters. Career-linked confidence is
+    // still not consumed by the decision uncertainty policy.
+    psychology.confidence=(psychology.confidence*legacy_confidence_factor).clamp(0.15,1.0);
+    psychology
 }
 
 /// Updates dynamic in-match psychology (`concentration_level`, `pressure_load`, `composure_delta`)

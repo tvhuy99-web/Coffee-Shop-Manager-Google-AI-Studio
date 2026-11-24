@@ -2,8 +2,9 @@ use crate::v4::ball_play::EmittedPlayEvent;
 use crate::v4::events::{EventMetadataV4, EventTypeV4, HighlightTier};
 use crate::v4::input::{MatchInputV4, PlayerMatchSnapshotV4, TeamMatchSnapshotV4};
 use crate::v4::spatial::{TeamSideV4, Vec2, Vec3};
+use crate::v4::psychology::substitute_psychology;
 use crate::v4::state::{
-    compute_position_familiarity, MatchStateV4, PlayerPsychologyState, PlayerRuntimeStateV4,
+    compute_position_familiarity, MatchStateV4, PlayerRuntimeStateV4,
     PlayerStaticProfile, TwoPoolFatigueState,
 };
 
@@ -119,7 +120,7 @@ fn apply_manual_substitution_single(
         injury: None,
         position_familiarity: fam,
         fatigue: TwoPoolFatigueState::from_condition(bench_snap.condition),
-        psychology: PlayerPsychologyState::from_snapshot(bench_snap),
+        psychology: substitute_psychology(input,side,bench_snap),
         goals: 0,
         own_goals: 0,
         assists: 0,
@@ -297,14 +298,14 @@ fn evaluate_side(
 
     if subs_used < MAX_SUBSTITUTIONS && windows_used < MAX_SUBSTITUTION_WINDOWS {
         if let Some(inj_sub) =
-            try_make_substitution(state, team_snap, bench_profile_base, side, game_sec, true)
+            try_make_substitution(state, input, team_snap, bench_profile_base, side, game_sec, true)
         {
             events.push(inj_sub);
             return events;
         }
         if game_sec >= 3360 {
             if let Some(sub_ev) =
-                try_make_substitution(state, team_snap, bench_profile_base, side, game_sec, false)
+                try_make_substitution(state, input, team_snap, bench_profile_base, side, game_sec, false)
             {
                 events.push(sub_ev);
             }
@@ -316,6 +317,7 @@ fn evaluate_side(
 
 fn try_make_substitution(
     state: &mut MatchStateV4,
+    input: &MatchInputV4,
     team_snap: &TeamMatchSnapshotV4,
     bench_profile_base: usize,
     side: TeamSideV4,
@@ -407,7 +409,7 @@ fn try_make_substitution(
         injury: None,
         position_familiarity: fam,
         fatigue: TwoPoolFatigueState::from_condition(bench_snap.condition),
-        psychology: PlayerPsychologyState::from_snapshot(bench_snap),
+        psychology: substitute_psychology(input,side,bench_snap),
         goals: 0,
         own_goals: 0,
         assists: 0,
