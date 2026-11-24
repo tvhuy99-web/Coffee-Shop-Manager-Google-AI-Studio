@@ -1465,6 +1465,7 @@ fn p2_50_match_attributes_have_explicit_runtime_wiring_and_4_are_career_hooks() 
         include_str!("../player_intelligence/support.rs"),
         include_str!("../player_intelligence/defensive.rs"),
         include_str!("../player_intelligence/tackle.rs"),
+        include_str!("../player_intelligence/pass_forecast.rs"),
         include_str!("tactics.rs"), include_str!("psychology.rs"),
         include_str!("ai_manager.rs"), include_str!("session.rs"),
     ].join("
@@ -2647,7 +2648,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.10");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.11");
 }
 
 

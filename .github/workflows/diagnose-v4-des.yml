@@ -184,7 +184,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Check shared utility, field value and actual decisions
         working-directory: rust/football_match_engine
-        run: cargo test --lib pi_on_ball_ -- --nocapture
+        run: |
+          cargo test --lib pi_on_ball_ -- --nocapture
+          cargo test --lib pi_pass_forecast_ -- --nocapture
       - name: Check old interface and offside awareness
         working-directory: rust/football_match_engine
         run: |

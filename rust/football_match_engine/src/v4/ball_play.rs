@@ -196,6 +196,42 @@ pub fn is_receiver_offside(
         .map_or(false, |line| recv_prog > line + 0.001)
 }
 
+/// Shared analytic geometry for a real kick and a nominal PI forecast.
+pub(crate) fn build_pass_trajectory(kind:PassKindV4,passer_pos:Vec2,aim_pos:Vec2,
+    t_now_ms:i64,flight_ms:i64)->BallTrajectory {
+    let ball_z: f32 = match kind {
+        PassKindV4::Short => 0.0,
+        PassKindV4::Through => 0.15,
+        PassKindV4::Cross => 2.1,
+        PassKindV4::Long | PassKindV4::Switch => 3.2,
+    };
+    let flight_sec = (flight_ms as f32 / 1000.0).max(0.05);
+    let drag = if kind.is_aerial() { 0.08f32 } else { 0.16f32 };
+    let drag_integral = if drag > 1e-5 {
+        (1.0 - (-drag * flight_sec).exp()) / drag
+    } else {
+        flight_sec
+    };
+    let vx = (aim_pos.x - passer_pos.x) / drag_integral;
+    let vy = (aim_pos.y - passer_pos.y) / drag_integral;
+    let start_z = if kind.is_aerial() { 0.25 } else { 0.10 };
+    let vz = if kind.is_aerial() {
+        0.5 * DEFAULT_GRAVITY_Z_MPS2 * flight_sec
+    } else {
+        (ball_z / drag_integral).max(0.0)
+    };
+
+    BallTrajectory {
+        start_time_ms: t_now_ms,
+        start_pos: Vec3::new(passer_pos.x, passer_pos.y, start_z),
+        initial_vel: Vec3::new(vx, vy, vz),
+        gravity_z: DEFAULT_GRAVITY_Z_MPS2,
+        drag,
+        is_shot: false,
+        is_carrier_dribble: false,
+    }
+}
+
 /// DES two-phase pass & first-touch resolver:
 /// 1. Computes analytic `BallTrajectory` and kinematic `flight_ms = estimate_ball_flight_ms(...)`.
 /// 2. Transitions ball to `BallControlState::InFlight` and queries
@@ -293,13 +329,6 @@ pub fn execute_pass_and_first_touch_des(
         - pitch_pen)
         .clamp(0.45, 0.98);
 
-    let ball_z: f32 = match kind {
-        PassKindV4::Short => 0.0,
-        PassKindV4::Through => 0.15,
-        PassKindV4::Cross => 2.1,
-        PassKindV4::Long | PassKindV4::Switch => 3.2,
-    };
-
     state.team_state_mut(att_side).passes_attempted += 1;
 
     // Phase 1 (Kick & In-Flight): compute kinematic flight time and analytic 3D trajectory.
@@ -313,7 +342,6 @@ pub fn execute_pass_and_first_touch_des(
     );
     let t_now_ms = state.des_clock.sim_time_ms;
     let t_arrival_ms = t_now_ms.saturating_add(flight_ms);
-    let flight_sec = (flight_ms as f32 / 1000.0).max(0.05);
 
     let is_misplaced = (rng.next_double() as f32) > execution_accuracy;
     let aim_pos = if is_misplaced {
@@ -333,30 +361,7 @@ pub fn execute_pass_and_first_touch_des(
         target_pos
     };
 
-    let drag = if kind.is_aerial() { 0.08f32 } else { 0.16f32 };
-    let drag_integral = if drag > 1e-5 {
-        (1.0 - (-drag * flight_sec).exp()) / drag
-    } else {
-        flight_sec
-    };
-    let vx = (aim_pos.x - passer_pos.x) / drag_integral;
-    let vy = (aim_pos.y - passer_pos.y) / drag_integral;
-    let start_z = if kind.is_aerial() { 0.25 } else { 0.10 };
-    let vz = if kind.is_aerial() {
-        0.5 * DEFAULT_GRAVITY_Z_MPS2 * flight_sec
-    } else {
-        (ball_z / drag_integral).max(0.0)
-    };
-
-    let traj = BallTrajectory {
-        start_time_ms: t_now_ms,
-        start_pos: Vec3::new(passer_pos.x, passer_pos.y, start_z),
-        initial_vel: Vec3::new(vx, vy, vz),
-        gravity_z: DEFAULT_GRAVITY_Z_MPS2,
-        drag,
-        is_shot: false,
-        is_carrier_dribble: false,
-    };
+    let traj = build_pass_trajectory(kind,passer_pos,aim_pos,t_now_ms,flight_ms);
 
     // Ball is now airborne / rolling in flight.
     state.ball.pos = traj.start_pos;

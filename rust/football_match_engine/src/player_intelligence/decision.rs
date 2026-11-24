@@ -10,6 +10,7 @@ use super::intent::{CandidateOption, DecisionPlanV4, PassKindV4, PlannedActionV4
 use super::timing::evaluate_one_touch_intent;
 use super::utility::{ActionValue, is_switch, possession_value, turnover_cost, shot_goal_probability, shot_value};
 use super::on_ball::{choose_carry, choose_hold};
+use super::pass_forecast::PassForecast;
 
 /// DES entry point returning the chosen action along with `decision_delay_ms` and `is_one_touch`.
 pub fn perceive_evaluate_and_decide_des(
@@ -61,6 +62,7 @@ pub fn perceive_evaluate_and_decide_des(
     } else { 0.0 };
     let readiness = (carrier.fatigue.anaerobic / 100.0).clamp(0.25,1.0);
 
+    let pass_forecast=PassForecast::new(state,att_side,perception_quality);
     let mut candidates: Vec<CandidateOption> = Vec::with_capacity(14);
     let offside_line = offside_reference_progress_m(state, att_side, carrier.pos);
     // Perception is fallible, especially under pressure; the Law 11 check remains exact.
@@ -120,7 +122,10 @@ pub fn perceive_evaluate_and_decide_des(
         let touch = normalize_attr(mate_attrs.technical.first_touch);
         // The estimates below describe what the player thinks is achievable,
         // not the engine's actual contact/accuracy calculation.
-        let success = (0.76 + 0.18 * skill + 0.07 * touch - 0.46 * lane_risk
+        // Retain the existing utility weight, but evaluate future
+        // playable contacts rather than static distance to the lane.
+        let predicted_risk=pass_forecast.lane_risk(state,input,timing,carrier.pos,t_idx,kind);
+        let success = (0.76 + 0.18 * skill + 0.07 * touch - 0.46 * predicted_risk
             - 0.16 * target_pressure - 0.12 * pressure_norm
             - 0.12 * (dist_m / 65.0) - 0.07 * (1.0 - readiness)).clamp(0.06,0.98);
         let destination = possession_value(mate_progress,mate.pos.y,target_pressure);

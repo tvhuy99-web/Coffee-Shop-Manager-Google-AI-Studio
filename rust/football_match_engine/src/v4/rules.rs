@@ -857,14 +857,12 @@ pub fn estimate_dead_ball_phase_ms(
 
 /// Estimates kinematic ball travel duration in milliseconds based on distance, kick type,
 /// pitch quality, weather, and controlled stochastic variance.
-pub fn estimate_ball_flight_ms(
-    config: &TimingModelConfig,
+fn nominal_ball_flight_and_spread(
     distance_m: f32,
     kind: BallFlightKind,
     weather: WeatherCondition,
     pitch: PitchQuality,
-    rng: &mut DeterministicRng,
-) -> i64 {
+) -> (i64,f64) {
     let dist = if distance_m.is_finite() {
         distance_m.clamp(0.5, 115.0)
     } else {
@@ -916,6 +914,24 @@ pub fn estimate_ball_flight_ms(
     } else {
         0.08f64
     };
+    (nominal_ms,spread)
+}
+
+/// Nominal duration for a player's forecast; consumes no RNG.
+pub(crate) fn nominal_ball_flight_ms(
+    config:&TimingModelConfig,distance_m:f32,kind:BallFlightKind,
+    weather:WeatherCondition,pitch:PitchQuality,
+)->i64 {
+    nominal_ball_flight_and_spread(distance_m,kind,weather,pitch).0
+        .max(1).clamp(config.ball_flight_min_ms,config.ball_flight_max_ms)
+}
+
+/// Actual ball travel duration, using the original distribution.
+pub fn estimate_ball_flight_ms(
+    config:&TimingModelConfig,distance_m:f32,kind:BallFlightKind,
+    weather:WeatherCondition,pitch:PitchQuality,rng:&mut DeterministicRng,
+)->i64 {
+    let (nominal_ms,spread)=nominal_ball_flight_and_spread(distance_m,kind,weather,pitch);
     let lo = ((nominal_ms as f64) * (1.0 - spread)).round() as i64;
     let hi = ((nominal_ms as f64) * (1.0 + spread)).round() as i64;
     let range = BoundedDurationRangeMs::new(lo.max(1), nominal_ms.max(1), hi.max(lo.max(1)));
