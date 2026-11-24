@@ -28,7 +28,7 @@ impl PassKindV4 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum PlannedActionV4 {
     Pass {
         target_idx: usize,
@@ -51,7 +51,7 @@ pub enum PlannedActionV4 {
 
 /// DES decision bundle pairing the chosen football action with its kinematic reaction/decision
 /// delay (`decision_delay_ms`) and one-touch vs multi-touch execution intent (`is_one_touch`).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DecisionPlanV4 {
     pub action: PlannedActionV4,
     pub decision_delay_ms: i64,

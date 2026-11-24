@@ -70,6 +70,10 @@ pub enum DesEventPayload {
         player_id: String,
         side: TeamSideV4,
     },
+    ActionExecute {
+        player_id: String,
+        side: TeamSideV4,
+    },
     DribbleStep {
         carrier_id: String,
         side: TeamSideV4,

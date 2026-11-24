@@ -131,6 +131,18 @@ jobs:
       - name: Verify fast and full accounting parity
         working-directory: rust/football_match_engine
         run: cargo test --lib fast_batch_and_full_event_diagnostics_match -- --nocapture
+  pi_timing_regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify timed PI intentions, carry accounting and cancellation
+        working-directory: rust/football_match_engine
+        run: cargo test --lib pi_timing_ -- --nocapture
+      - name: Verify actual full-event replay and batch parity
+        working-directory: rust/football_match_engine
+        run: cargo test --lib fast_batch_and_full_event_diagnostics_match -- --nocapture
   attacking_sample:
     runs-on: ubuntu-latest
     timeout-minutes: 20

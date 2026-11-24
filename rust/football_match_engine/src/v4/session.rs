@@ -8,7 +8,7 @@ use crate::v4::ai_manager::{apply_manual_substitution_group, evaluate_ai_manager
 use crate::v4::attributes::normalize_attr;
 use crate::v4::ball_play::{execute_dribble_duel, execute_pass_and_first_touch_des, is_receiver_offside, pass_reach_candidate, EmittedPlayEvent};
 use crate::v4::checkpoint::{
-    PendingFlightSnapshotV4, FlightActionV4, FlightCounterDeltaV4,
+    PendingFlightSnapshotV4, FlightActionV4, FlightCounterDeltaV4, PendingDecisionV4, PendingCarryV4,
     compute_checkpoint_checksum, verify_checkpoint, MatchCheckpointV4, MatchSessionSnapshotV4,
     RngSnapshotV4, SessionStatsSnapshotV4, CHECKPOINT_SCHEMA_VERSION_V4,
 };
@@ -25,15 +25,15 @@ use crate::v4::interaction::{
     contact_control_probability, blocked_ball_velocity, find_moving_ball_recovery,
     LooseBallResolution, BoundaryKind, EarlyInteractionHit,
 };
-use crate::v4::movement::{advance_off_ball_movement, evaluate_local_context, lookup_attrs};
-use crate::player_intelligence::{perceive_evaluate_and_decide, PassKindV4, PlannedActionV4};
+use crate::v4::movement::{advance_off_ball_movement, evaluate_local_context, evaluate_passing_lane, lookup_attrs};
+use crate::player_intelligence::{perceive_evaluate_and_decide_des, DecisionPlanV4, PassKindV4, PlannedActionV4, PI_POLICY_ID};
 use crate::v4::psychology::{
     check_impact_injury, check_muscle_injury, compute_post_match_morale_delta,
     compute_prematch_form_multiplier, pressing_foul_hazard_prob, resolve_foul_discipline,
     shift_momentum, update_in_match_psychology,
 };
 use crate::v4::rules::{
-    estimate_ball_flight_ms, estimate_dead_ball_phase_ms, estimate_reaction_decision_ms,
+    estimate_ball_flight_ms, estimate_dead_ball_phase_ms,
     initial_dead_ball_phase, next_dead_ball_phase, BallFlightKind, CommandLifecycleStatus,
     CommandOrigin, DeadBallKind, DeadBallPhase, DeadBallState, HalfEndPolicy, HalfStageV4,
     PendingSubstitutionItem, PendingTacticalCommand, RulesetConfig,
@@ -44,7 +44,7 @@ use crate::v4::set_pieces::{
 };
 use crate::v4::shooting::{resolve_shot_v4_des, ShotKindV4};
 use crate::v4::spatial::{
-    is_in_attacking_penalty_box, TeamSideV4, Vec2, Vec3, PITCH_LENGTH_M,
+    attacking_progress_m, distance_to_attacking_goal, is_in_attacking_penalty_box, TeamSideV4, Vec2, Vec3, PITCH_LENGTH_M,
 };
 use crate::v4::state::{BallControlState, MatchStateV4};
 use crate::v4::tactics::{
@@ -152,6 +152,8 @@ pub struct MatchSessionV4 {
     pending_tactical_commands: Vec<PendingTacticalCommand>,
     command_timeline: Vec<AppliedCommandV4>,
     pending_flight: Option<PendingFlightSnapshotV4>,
+    pending_decision: Option<PendingDecisionV4>,
+    pending_carry: Option<PendingCarryV4>,
 }
 
 impl MatchSessionV4 {
@@ -206,6 +208,8 @@ impl MatchSessionV4 {
             pending_tactical_commands: Vec::new(),
             command_timeline: Vec::new(),
             pending_flight: None,
+            pending_decision: None,
+            pending_carry: None,
         })
     }
 
@@ -268,6 +272,9 @@ impl MatchSessionV4 {
             diagnostics_collector,
             diagnostics_summary,
             pending_flight: self.pending_flight.clone(),
+            pi_policy_id: PI_POLICY_ID.into(),
+            pending_decision: self.pending_decision.clone(),
+            pending_carry: self.pending_carry.clone(),
         };
 
         let payload_json = serde_json::to_string(&payload)?;
@@ -330,6 +337,8 @@ impl MatchSessionV4 {
             pending_tactical_commands: payload.pending_tactical_commands,
             command_timeline: payload.applied_commands,
             pending_flight: payload.pending_flight,
+            pending_decision: payload.pending_decision,
+            pending_carry: payload.pending_carry,
         })
     }
 
@@ -948,6 +957,8 @@ impl MatchSessionV4 {
     ) -> Result<(), V4Error> {
         self.scheduler.invalidate_period();
         self.pending_flight = None;
+        self.pending_decision = None;
+        self.pending_carry = None;
         self.state.dead_ball = None;
         self.state.des_clock.begin_period(period, regulation_ms);
         self.state.sync_legacy_clock();
@@ -1018,7 +1029,7 @@ impl MatchSessionV4 {
         }
 
         // Schedule first live-play decision from kickoff.
-        let first_dt = self.estimate_carrier_decision_ms(self.carrier_idx, false);
+        let first_dt = 1; // observation, not an extra decision delay
         self.scheduler
             .schedule(
                 now_ms.saturating_add(first_dt),
@@ -1137,12 +1148,20 @@ impl MatchSessionV4 {
                         }
                         self.handle_shot_arrival()?;
                     }
-                    DesEventPayload::DecisionReady { .. }
-                    | DesEventPayload::DribbleStep { .. } => {
-                        if self.state.dead_ball.is_some() {
-                            return Ok(());
+                    DesEventPayload::DecisionReady { .. } => {
+                        if self.state.dead_ball.is_none() {
+                            self.begin_player_decision(false)?;
                         }
-                        self.handle_live_play_step(dt_ms)?;
+                    }
+                    DesEventPayload::ActionExecute { player_id, side } => {
+                        if self.state.dead_ball.is_none() {
+                            self.execute_player_decision(&player_id, side)?;
+                        }
+                    }
+                    DesEventPayload::DribbleStep { carrier_id, side } => {
+                        if self.state.dead_ball.is_none() {
+                            self.finish_timed_dribble(&carrier_id, side)?;
+                        }
                     }
                 }
 
@@ -1217,6 +1236,22 @@ impl MatchSessionV4 {
                     if old.distance(next) > 0.05 {
                         p.facing_rad = (next.y - old.y).atan2(next.x - old.x);
                     }
+                }
+            }
+            // A carry is a future, real movement interval, never an
+            // additional displacement for an already integrated interval.
+            if let Some(carry) = self.pending_carry.as_ref() {
+                let idx = carry.carrier_idx;
+                let p = &mut self.state.players[idx];
+                if p.on_pitch && !p.sent_off && p.player_id == carry.motion.candidate.player_id {
+                    let old = prev_positions[idx];
+                    let next = carry.motion.position_at(self.state.des_clock.sim_time_ms.min(carry.resolves_at_ms));
+                    p.pos = next;
+                    p.target_pos = carry.motion.target;
+                    p.vel = Vec2::new((next.x-old.x)/dt_sec, (next.y-old.y)/dt_sec);
+                    if old.distance(next)>0.05 { p.facing_rad=(next.y-old.y).atan2(next.x-old.x); }
+                    self.state.ball.pos=Vec3::ground(next.x,next.y);
+                    self.state.ball.vel=Vec3::new(p.vel.x,p.vel.y,0.0);
                 }
             }
             for (idx, p) in self.state.players.iter_mut().enumerate() {
@@ -1588,6 +1623,8 @@ impl MatchSessionV4 {
         self.state.ball.vel = Vec3::default();
         self.state.ball.control = BallControlState::DeadBall;
         self.pending_flight = None;
+        self.pending_decision = None;
+        self.pending_carry = None;
         self.state.dead_ball = Some(db);
 
         self.scheduler
@@ -1855,23 +1892,78 @@ impl MatchSessionV4 {
         }
     }
 
-    fn handle_live_play_step(&mut self, dt_ms: i64) -> Result<(), V4Error> {
-        // Movement, fatigue, psychology, tactical timers, and muscle injury were already
-        // integrated centrally by `advance_world_for_dt(dt_ms, true)` when `dt_ms > 0`.
-        let dt_sec = (dt_ms.max(0) as f32) / 1000.0;
-        let now_ms = self.state.des_clock.sim_time_ms;
-
+    /// PI chooses once from a read-only observation; DES owns the future execution.
+    fn begin_player_decision(&mut self, fresh_receipt: bool) -> Result<(), V4Error> {
+        if self.pending_decision.is_some() || self.pending_flight.is_some() || self.pending_carry.is_some()
+            || self.state.dead_ball.is_some() { return Ok(()); }
         self.ensure_valid_carrier();
-        let c_pos = self.state.players[self.carrier_idx].pos;
-        self.state.ball.pos = Vec3::ground(c_pos.x, c_pos.y).clamp_to_pitch();
+        let idx = self.carrier_idx;
+        let p = &self.state.players[idx];
+        let side = p.side;
+        let id = p.player_id.clone();
+        let pos = p.pos;
+        self.state.ball.pos = Vec3::ground(pos.x,pos.y).clamp_to_pitch();
+        self.state.ball.vel = Vec3::default();
+        self.state.ball.control = BallControlState::Controlled;
+        self.state.ball.owner_side = Some(side);
+        self.state.ball.owner_player_id = Some(id.clone());
+        self.possession_side = side;
+        self.diagnostics.observe_controlled_ball(side,pos);
+        let ctx = evaluate_local_context(&self.state,&self.input,side,pos);
+        let mut plan = perceive_evaluate_and_decide_des(&self.state,&self.input,
+            &self.input.timing_model,idx,ctx,&mut self.rng);
+        // A one-touch intention is a property of this receiver's action,
+        // not of the passer who delivered the previous ball.
+        if !fresh_receipt { plan.is_one_touch = false; }
+        let settle = if fresh_receipt && !plan.is_one_touch {
+            self.input.timing_model.first_touch_settle_ms.sample_triangular(&mut self.rng,1.0).max(150)
+        } else { 0 };
+        let now = self.state.des_clock.sim_time_ms;
+        let at = now.saturating_add(plan.decision_delay_ms.max(1)).saturating_add(settle);
+        self.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
+            DesEventPayload::ActionExecute{player_id:id.clone(),side})
+            .map_err(|e|V4Error::InvalidClock(e.into()))?;
+        self.pending_decision=Some(PendingDecisionV4{player_id:id,side,started_at_ms:now,executes_at_ms:at,plan});
+        Ok(())
+    }
 
-        // Observe controlled ball before action resolution.
-        self.diagnostics
-            .observe_controlled_ball(self.possession_side, c_pos);
-
+    fn execute_player_decision(&mut self, player_id: &str, side: TeamSideV4) -> Result<(), V4Error> {
+        let Some(pending) = self.pending_decision.take() else { return Ok(()); };
+        let now_ms=self.state.des_clock.sim_time_ms;
+        if pending.player_id!=player_id || pending.side!=side || pending.executes_at_ms!=now_ms {
+            return Err(V4Error::InvalidClock("PI action execution does not match pending intention".into()));
+        }
+        self.ensure_valid_carrier();
+        if self.state.players[self.carrier_idx].player_id!=player_id || self.possession_side!=side {
+            return self.begin_player_decision(false);
+        }
+        let idx=self.carrier_idx;
+        let pos=self.state.players[idx].pos;
+        self.state.ball.pos=Vec3::ground(pos.x,pos.y).clamp_to_pitch();
+        let mut plan=pending.plan;
+        // Revalidate the intended target, and measure the physical situation
+        // at execution. Do not re-roll the whole decision after every event.
+        match &mut plan.action {
+            PlannedActionV4::Pass{target_idx,kind,distance_m,progress_gain_m,lane_risk,interceptor_idx}=>{
+                let Some(p)=self.state.players.get(*target_idx) else {return self.begin_player_decision(false);};
+                if !p.on_pitch || p.sent_off || p.side!=side || *target_idx==idx {
+                    return self.begin_player_decision(false);
+                }
+                *distance_m=pos.distance(p.pos);
+                if *distance_m<0.5 {return self.begin_player_decision(false);}
+                *progress_gain_m=attacking_progress_m(side,p.pos)-attacking_progress_m(side,pos);
+                (*lane_risk,*interceptor_idx)=evaluate_passing_lane(&self.state,&self.input,side,pos,p.pos,kind.is_aerial());
+            }
+            PlannedActionV4::Shoot{distance_m,in_box}=>{
+                *distance_m=distance_to_attacking_goal(side,pos);
+                *in_box=is_in_attacking_penalty_box(side,pos);
+            }
+            _=>{}
+        }
+        let dt_sec=now_ms.saturating_sub(pending.started_at_ms).max(0) as f32/1000.0;
         let prev_possession = self.possession_side;
         let (next_side, next_carrier, entered_dead_ball, next_delay_ms) =
-            self.step_live_action_des(self.carrier_idx, dt_sec)?;
+            self.step_live_action_des(self.carrier_idx, plan, dt_sec)?;
 
         self.possession_side = next_side;
         self.carrier_idx = next_carrier;
@@ -1893,11 +1985,12 @@ impl MatchSessionV4 {
             }
         }
 
-        if !entered_dead_ball && self.state.dead_ball.is_none() && self.pending_flight.is_none() {
+        if !entered_dead_ball && self.state.dead_ball.is_none() && self.pending_flight.is_none()
+            && self.pending_carry.is_none() {
             let cid = self.state.players[self.carrier_idx].player_id.clone();
             self.scheduler
                 .schedule(
-                    now_ms.saturating_add(next_delay_ms.max(120)),
+                    now_ms.saturating_add(next_delay_ms.max(1)),
                     EventPriority::ActionDecision,
                     CancellationScope::LivePlayOnly,
                     DesEventPayload::DecisionReady {
@@ -2233,61 +2326,15 @@ impl MatchSessionV4 {
             return Ok(());
         }
 
-        let cid = self.state.players[outcome.next_carrier_idx].player_id.clone();
-        if retained && is_one_touch && distance_m <= 18.0 {
-            self.diagnostics.record_one_touch_pass();
-            let one_touch_ms = self.estimate_carrier_decision_ms(outcome.next_carrier_idx, true);
-            self.scheduler
-                .schedule(
-                    now_ms.saturating_add(one_touch_ms.max(120)),
-                    EventPriority::ActionDecision,
-                    CancellationScope::LivePlayOnly,
-                    DesEventPayload::DecisionReady {
-                        player_id: cid,
-                        side: outcome.next_side,
-                    },
-                )
-                .map_err(|e| V4Error::InvalidClock(e.into()))?;
-        } else {
-            let settle_ms = self
-                .input
-                .timing_model
-                .first_touch_settle_ms
-                .sample_triangular(&mut self.rng, 1.0)
-                .max(150);
-            self.scheduler
-                .schedule(
-                    now_ms.saturating_add(settle_ms),
-                    EventPriority::BallStateTransition,
-                    CancellationScope::LivePlayOnly,
-                    DesEventPayload::FirstTouchComplete {
-                        player_id: cid,
-                        side: outcome.next_side,
-                    },
-                )
-                .map_err(|e| V4Error::InvalidClock(e.into()))?;
-        }
-        Ok(())
+        let _ = (distance_m, is_one_touch, now_ms);
+        // Receiver chooses its own intent immediately after the contact.
+        // A controlling touch is included only if the new plan requires it.
+        self.begin_player_decision(true)
     }
 
     /// CRITICAL-01: Player finishes first touch and schedules the next decision.
     fn handle_first_touch_complete(&mut self) -> Result<(), V4Error> {
-        self.ensure_valid_carrier();
-        let now_ms = self.state.des_clock.sim_time_ms;
-        let cid = self.state.players[self.carrier_idx].player_id.clone();
-        let react_ms = self.estimate_carrier_decision_ms(self.carrier_idx, false);
-        self.scheduler
-            .schedule(
-                now_ms.saturating_add(react_ms.max(150)),
-                EventPriority::ActionDecision,
-                CancellationScope::LivePlayOnly,
-                DesEventPayload::DecisionReady {
-                    player_id: cid,
-                    side: self.possession_side,
-                },
-            )
-            .map_err(|e| V4Error::InvalidClock(e.into()))?;
-        Ok(())
+        self.begin_player_decision(false)
     }
 
     /// CRITICAL-01: Schedules a shot in-flight so `Goal`/`Save`/`ShotOffTarget` occurs at
@@ -2322,6 +2369,7 @@ impl MatchSessionV4 {
     fn step_live_action_des(
         &mut self,
         carrier_idx: usize,
+        plan: DecisionPlanV4,
         dt_sec: f32,
     ) -> Result<(TeamSideV4, usize, bool, i64), V4Error> {
         let att_side = self.state.players[carrier_idx].side;
@@ -2395,15 +2443,7 @@ impl MatchSessionV4 {
             }
         }
 
-        let planned = perceive_evaluate_and_decide(
-            &self.state,
-            &self.input,
-            carrier_idx,
-            carrier_ctx,
-            &mut self.rng,
-        );
-
-        match planned {
+        match plan.action {
             PlannedActionV4::Pass {
                 target_idx,
                 kind,
@@ -2413,7 +2453,8 @@ impl MatchSessionV4 {
                 interceptor_idx,
             } => {
                 let now = self.state.des_clock.sim_time_ms;
-                let is_one_touch = kind == PassKindV4::Short && distance_m <= 16.0 && carrier_ctx.pressure >= 45.0;
+                let is_one_touch = plan.is_one_touch;
+                if is_one_touch { self.diagnostics.record_one_touch_pass(); }
                 let mut resolved = self.state.clone();
                 let pass = execute_pass_and_first_touch_des(&mut resolved, &self.input, &self.input.timing_model,
                     carrier_idx, target_idx, kind, distance_m, progress_gain_m, lane_risk, interceptor_idx,
@@ -2458,51 +2499,9 @@ impl MatchSessionV4 {
 
                 Ok((att_side, carrier_idx, false, 0))
             }
-            PlannedActionV4::Dribble { defender_idx } => {
-                let outcome = execute_dribble_duel(
-                    &mut self.state,
-                    &self.input,
-                    carrier_idx,
-                    defender_idx,
-                    carrier_ctx,
-                    dt_sec,
-                    &mut self.rng,
-                );
-                let had_foul = outcome.events.iter().any(|e| e.kind == EventTypeV4::Foul);
-                let had_card = outcome
-                    .events
-                    .iter()
-                    .any(|e| matches!(e.kind, EventTypeV4::YellowCard | EventTypeV4::RedCard));
-                let foul_xy = self.state.players[carrier_idx].pos;
-                if outcome.next_side != att_side {
-                    self.last_passer_idx = None;
-                }
-                self.flush_play_events(outcome.events, att_side);
-
-                if had_foul {
-                    let db_kind = if is_in_attacking_penalty_box(att_side, foul_xy) {
-                        DeadBallKind::PenaltyKick
-                    } else {
-                        DeadBallKind::DirectFreeKick
-                    };
-                    self.open_dead_ball(
-                        db_kind,
-                        att_side,
-                        Vec3::ground(foul_xy.x, foul_xy.y),
-                        false,
-                        had_card,
-                    )?;
-                    return Ok((att_side, carrier_idx, true, 0));
-                }
-
-                let dribble_ms = 900 + self.rng.next_int(1_400) as i64;
-                let react_ms = self.estimate_carrier_decision_ms(outcome.next_carrier_idx, false);
-                Ok((
-                    outcome.next_side,
-                    outcome.next_carrier_idx,
-                    false,
-                    dribble_ms.saturating_add(react_ms),
-                ))
+            PlannedActionV4::Dribble { .. } => {
+                self.start_timed_dribble(carrier_idx)?;
+                Ok((att_side,carrier_idx,false,0))
             }
             PlannedActionV4::Shoot { .. } => {
                 let assist = self.last_passer_idx;
@@ -2552,8 +2551,7 @@ impl MatchSessionV4 {
                 self.state.ball.control = BallControlState::Controlled;
                 self.state.ball.owner_side = Some(def_side);
                 self.state.ball.owner_player_id = Some(next_id);
-                let react_ms = self.estimate_carrier_decision_ms(next_idx, false);
-                Ok((def_side, next_idx, false, flight_ms.saturating_add(react_ms)))
+                Ok((def_side, next_idx, false, flight_ms))
             }
             PlannedActionV4::HoldAndRecycle => {
                 let carrier_id = self.state.players[carrier_idx].player_id.clone();
@@ -2578,10 +2576,75 @@ impl MatchSessionV4 {
                     meta,
                 );
                 let carry_ms = 1_100 + self.rng.next_int(1_600) as i64;
-                let react_ms = self.estimate_carrier_decision_ms(carrier_idx, false);
-                Ok((att_side, carrier_idx, false, carry_ms.saturating_add(react_ms)))
+                Ok((att_side, carrier_idx, false, carry_ms))
             }
         }
+    }
+
+    /// Start a new physical carry interval. Its target is deliberately the
+    /// existing forward-dribble policy; directional intelligence comes in 5.4.
+    fn start_timed_dribble(&mut self, idx: usize) -> Result<(), V4Error> {
+        let now=self.state.des_clock.sim_time_ms;
+        let duration=900+self.rng.next_int(1_400) as i64;
+        let mut candidate=pass_reach_candidate(&self.state,idx,false);
+        candidate.speed_mps*=0.88;
+        candidate.reaction_ms=0;
+        let dir=if candidate.side==TeamSideV4::Home {1.0} else {-1.0};
+        let pos=candidate.pos;
+        let target=Vec2::new(pos.x+dir*candidate.speed_mps*(duration as f32/1000.0),pos.y).clamp_to_pitch();
+        let at=now.saturating_add(duration);
+        self.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
+            DesEventPayload::DribbleStep{carrier_id:candidate.player_id.clone(),side:candidate.side})
+            .map_err(|e|V4Error::InvalidClock(e.into()))?;
+        self.pending_carry=Some(PendingCarryV4{carrier_idx:idx,resolves_at_ms:at,
+            motion:PassContactMotion{candidate,target,started_at_ms:now}});
+        Ok(())
+    }
+
+    fn finish_timed_dribble(&mut self, player_id:&str, side:TeamSideV4) -> Result<(),V4Error> {
+        let Some(carry)=self.pending_carry.take() else {return Ok(());};
+        let idx=carry.carrier_idx;
+        let now=self.state.des_clock.sim_time_ms;
+        if carry.resolves_at_ms!=now || carry.motion.candidate.player_id!=player_id || carry.motion.candidate.side!=side {
+            return Err(V4Error::InvalidClock("carry completion does not match pending motion".into()));
+        }
+        if !self.state.players[idx].on_pitch || self.state.players[idx].sent_off {
+            return self.begin_player_decision(false);
+        }
+        let pos=self.state.players[idx].pos;
+        let moved=carry.motion.candidate.pos.distance(pos);
+        let ctx=evaluate_local_context(&self.state,&self.input,side,pos);
+        // World integration has already accounted for the entire carry.
+        // The existing duel resolver is used only for its contact outcome
+        // with zero displacement/time, not a second movement interval.
+        let mut outcome=execute_dribble_duel(&mut self.state,&self.input,idx,
+            ctx.nearest_defender_idx,ctx,0.0,&mut self.rng);
+        let had_foul=outcome.events.iter().any(|e|e.kind==EventTypeV4::Foul);
+        let had_card=outcome.events.iter().any(|e|matches!(e.kind,EventTypeV4::YellowCard|EventTypeV4::RedCard));
+        let had_injury=outcome.events.iter().any(|e|e.kind==EventTypeV4::Injury);
+        for ev in &mut outcome.events {
+            if ev.kind==EventTypeV4::DribbleWon {ev.metadata.progress_gain=Some(moved.round() as i32);}
+        }
+        if outcome.events.is_empty() {
+            self.emit(EventTypeV4::Carry,HighlightTier::None,None,Some(side),Some(player_id.into()),None,
+                EventMetadataV4{progress_gain:Some(moved.round() as i32),pressure:Some(ctx.pressure.round() as u8),
+                    ..EventMetadataV4::default()});
+        }
+        self.flush_play_events(outcome.events,side);
+        if had_foul {
+            let kind=if is_in_attacking_penalty_box(side,pos){DeadBallKind::PenaltyKick}else{DeadBallKind::DirectFreeKick};
+            return self.open_dead_ball(kind,side,Vec3::ground(pos.x,pos.y),had_injury,had_card);
+        }
+        if outcome.next_side!=side {
+            self.last_passer_idx=None;
+            let avg_wr=self.team_avg_work_rate(outcome.next_side);
+            let ball=self.state.ball.pos;
+            let phase_events=update_tactical_phases(&mut self.state,side,outcome.next_side,ball,0,avg_wr);
+            self.flush_play_events(phase_events,outcome.next_side);
+        }
+        self.carrier_idx=outcome.next_carrier_idx;
+        self.possession_side=outcome.next_side;
+        self.begin_player_decision(false)
     }
 
     fn finalize_shot_outcome_des(
@@ -2632,12 +2695,11 @@ impl MatchSessionV4 {
             return Ok((def_side, shot_out.next_carrier_idx, true, 0));
         }
 
-        let react_ms = self.estimate_carrier_decision_ms(shot_out.next_carrier_idx, false);
         Ok((
             shot_out.next_side,
             shot_out.next_carrier_idx,
             false,
-            900 + react_ms,
+            900,
         ))
     }
 
@@ -2648,6 +2710,9 @@ impl MatchSessionV4 {
     ) -> Result<(), V4Error> {
         let elapsed_ms = self.state.des_clock.period_elapsed_ms;
         self.scheduler.invalidate_period();
+        self.pending_flight = None;
+        self.pending_decision = None;
+        self.pending_carry = None;
         self.state.dead_ball = None;
 
         match period {
@@ -2740,10 +2805,11 @@ impl MatchSessionV4 {
         one_touch: bool,
     ) -> Result<(), V4Error> {
         let cid = self.state.players[carrier_idx].player_id.clone();
-        let delay_ms = self.estimate_carrier_decision_ms(carrier_idx, one_touch);
+        let delay_ms: i64 = 1;
+        let _ = one_touch; // actual intent belongs to the upcoming PI observation
         self.scheduler
             .schedule(
-                now_ms.saturating_add(delay_ms.max(120)),
+                now_ms.saturating_add(delay_ms),
                 EventPriority::ActionDecision,
                 CancellationScope::LivePlayOnly,
                 DesEventPayload::DecisionReady {
@@ -2753,25 +2819,6 @@ impl MatchSessionV4 {
             )
             .map_err(|e| V4Error::InvalidClock(e.into()))?;
         Ok(())
-    }
-
-    fn estimate_carrier_decision_ms(&mut self, carrier_idx: usize, one_touch: bool) -> i64 {
-        let side = self.state.players[carrier_idx].side;
-        let pos = self.state.players[carrier_idx].pos;
-        let ctx = evaluate_local_context(&self.state, &self.input, side, pos);
-        let attrs = *lookup_attrs(&self.input, &self.state.players[carrier_idx]);
-        let tempo = self.state.active_instructions(side).tempo;
-        estimate_reaction_decision_ms(
-            &self.input.timing_model,
-            attrs.technical.first_touch,
-            attrs.mental.vision,
-            attrs.mental.decisions,
-            attrs.mental.composure,
-            ctx.pressure,
-            tempo,
-            one_touch,
-            &mut self.rng,
-        )
     }
 
     fn flush_play_events(&mut self, events: Vec<EmittedPlayEvent>, att_side: TeamSideV4) {
@@ -3515,5 +3562,73 @@ mod moving_recovery_tests {
             assert_eq!(db.restart_side,TeamSideV4::Home);
         }
         assert_eq!(s.timeline_fingerprint,r.timeline_fingerprint);
+    }
+}
+
+
+#[cfg(test)]
+mod pi_timing_tests {
+    use super::*;
+    use crate::v4::input::{SimulationMode,RulesModeV4};
+    use crate::v4::tests::make_v4_input;
+
+    #[test]
+    fn pi_timing_plan_waits_and_survives_checkpoint() {
+        let mut s=MatchSessionV4::new(make_v4_input(18001,SimulationMode::FullEvent,RulesModeV4::Standard)).unwrap();
+        s.step_one_des_event(true).unwrap();
+        s.scheduler.invalidate_live_play();
+        let now=s.sim_time_ms();
+        s.begin_player_decision(false).unwrap();
+        let p=s.pending_decision.clone().unwrap();
+        assert_eq!(p.executes_at_ms,now+p.plan.decision_delay_ms);
+        assert!(p.executes_at_ms>now && s.pending_flight.is_none());
+        let ck=s.export_checkpoint().unwrap();
+        let mut restored=MatchSessionV4::from_checkpoint(serde_json::from_str(&serde_json::to_string(&ck).unwrap()).unwrap()).unwrap();
+        for m in [&mut s,&mut restored] {
+            m.step_one_des_event(true).unwrap();
+            assert_eq!(m.sim_time_ms(),p.executes_at_ms);
+            assert!(m.pending_decision.is_none());
+        }
+        assert_eq!(s.timeline_fingerprint,restored.timeline_fingerprint);
+        assert_eq!(s.rng.state(),restored.rng.state());
+    }
+
+    #[test]
+    fn pi_timing_carry_moves_only_during_future_interval() {
+        let mut s=MatchSessionV4::new(make_v4_input(18002,SimulationMode::FullEvent,RulesModeV4::Standard)).unwrap();
+        s.step_one_des_event(true).unwrap();
+        s.scheduler.invalidate_live_play();
+        let idx=s.carrier_idx;
+        for p in &mut s.state.players {
+            if p.side!=s.possession_side {p.pos=Vec2::new(95.0,5.0);}
+        }
+        s.state.players[idx].pos=Vec2::new(40.0,34.0);
+        s.state.players[idx].vel=Vec2::default();
+        s.state.ball.pos=Vec3::ground(40.0,34.0);
+        let before=s.state.players[idx].fatigue.distance_m;
+        let launch=s.sim_time_ms();
+        s.start_timed_dribble(idx).unwrap();
+        let carry=s.pending_carry.clone().unwrap();
+        assert_eq!(s.state.players[idx].pos,carry.motion.candidate.pos);
+        assert_eq!(s.state.players[idx].fatigue.distance_m,before);
+        let duration=carry.resolves_at_ms-launch;
+        s.step_one_des_event(true).unwrap();
+        assert_eq!(s.sim_time_ms(),carry.resolves_at_ms);
+        assert!(s.pending_carry.is_none());
+        let moved=s.state.players[idx].pos.distance(carry.motion.candidate.pos);
+        assert!(moved>0.0 && moved<=carry.motion.candidate.speed_mps*duration as f32/1000.0+0.01);
+        let charged=s.state.players[idx].fatigue.distance_m-before;
+        assert!((charged-moved).abs()<0.01,"movement distance charged once");
+    }
+
+    #[test]
+    fn pi_timing_dead_ball_cancels_pending_intention() {
+        let mut s=MatchSessionV4::new(make_v4_input(18003,SimulationMode::FullEvent,RulesModeV4::Standard)).unwrap();
+        s.step_one_des_event(true).unwrap();
+        s.scheduler.invalidate_live_play();
+        s.begin_player_decision(false).unwrap();
+        assert!(s.pending_decision.is_some());
+        s.open_dead_ball(DeadBallKind::ThrowIn,TeamSideV4::Away,Vec3::ground(40.0,0.0),false,false).unwrap();
+        assert!(s.pending_decision.is_none() && s.pending_carry.is_none());
     }
 }

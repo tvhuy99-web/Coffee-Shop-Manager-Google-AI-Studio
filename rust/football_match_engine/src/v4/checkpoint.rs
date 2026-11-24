@@ -167,6 +167,24 @@ impl FlightCounterDeltaV4 {
 /// Complete deterministic session payload stored inside `MatchCheckpointV4`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PendingDecisionV4 {
+    pub player_id: String,
+    pub side: TeamSideV4,
+    pub started_at_ms: i64,
+    pub executes_at_ms: i64,
+    pub plan: crate::player_intelligence::DecisionPlanV4,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingCarryV4 {
+    pub carrier_idx: usize,
+    pub resolves_at_ms: i64,
+    pub motion: crate::v4::interaction::PassContactMotion,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MatchSessionSnapshotV4 {
     pub input: MatchInputV4,
     pub state: MatchStateV4,
@@ -186,6 +204,12 @@ pub struct MatchSessionSnapshotV4 {
     /// In-flight pass/shot awaiting `BallInFlightArrival`, `ShotArrival`, or `EarlyInteractionResolved`.
     #[serde(default)]
     pub pending_flight: Option<PendingFlightSnapshotV4>,
+    #[serde(default)]
+    pub pi_policy_id: String,
+    #[serde(default)]
+    pub pending_decision: Option<PendingDecisionV4>,
+    #[serde(default)]
+    pub pending_carry: Option<PendingCarryV4>,
 }
 
 /// Self-verifying versioned DES v1.4 match checkpoint envelope.
@@ -246,6 +270,10 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
         )));
     }
 
+    if ckpt.payload.pi_policy_id != crate::player_intelligence::PI_POLICY_ID {
+        return Err(V4Error::InvalidInput(format!("checkpoint PI policy mismatch: expected {}, got {:?}",
+            crate::player_intelligence::PI_POLICY_ID, ckpt.payload.pi_policy_id)));
+    }
     let current_ruleset = ckpt.payload.input.effective_ruleset();
     check_ruleset_compatibility(&ckpt.ruleset_identity, &current_ruleset.identity)
         .map_err(V4Error::InvalidInput)?;
