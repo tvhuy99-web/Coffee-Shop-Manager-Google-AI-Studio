@@ -69,12 +69,15 @@ pub struct PendingFlightSnapshotV4 {
     // the changed engine behaviour before promising replay compatibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) pass_contact_motion: Option<crate::v4::interaction::PassContactMotion>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) offside_at_launch: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlightActionV4 {
     Pass { passer_idx: usize, kind: PassKindV4, distance_m: f32, is_one_touch: bool },
     Shot { shooter_idx: usize },
+    LooseRecovery { origin_side: TeamSideV4 },
 }
 
 /// Only copy additive outcome deltas, never the entire cloned world: intervening

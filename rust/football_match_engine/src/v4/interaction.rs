@@ -714,3 +714,75 @@ mod pass_reach_tests {
         }
     }
 }
+
+
+/// Probability of controlling a ball AFTER a physically valid contact.
+/// Technique and body balance matter; reaching with the tip of a boot
+/// at high ball speed is not equivalent to a cushioned reception.
+pub(crate) fn contact_control_probability(
+    skill: f32, balance: f32, fatigue: f32, speed_mps: f32,
+    height_m: f32, reach_fraction: f32, pressure: f32,
+) -> f32 {
+    let quality = 0.72 * skill.clamp(0.0, 1.0) + 0.28 * balance.clamp(0.0, 1.0);
+    let load = 0.24 * (speed_mps / 30.0).clamp(0.0, 1.0)
+        + 0.16 * (height_m / 2.4).clamp(0.0, 1.0)
+        + 0.26 * reach_fraction.clamp(0.0, 1.0)
+        + 0.12 * pressure.clamp(0.0, 1.0);
+    (0.38 + 0.58 * quality * fatigue.clamp(0.45, 1.0) - load).clamp(0.04, 0.96)
+}
+
+/// Stage 3a: blocked ball drops at the contact point. Find the first active
+/// player able to reach the grounded loose ball; no team gets priority.
+/// A later stage will extend this to rolling/airborne deflections.
+pub(crate) fn find_grounded_ball_recovery(
+    candidates: &[PassReachCandidate], spot: Vec2,
+) -> Option<(usize, i64)> {
+    // Allow the ball to drop and players to react before awarding possession.
+    // A bounded local search, not an engine-wide simulation tick.
+    for ms in (250_i64..=120_000).step_by(50) {
+        let mut best: Option<(usize, f32)> = None;
+        for (idx, p) in candidates.iter().enumerate() {
+            let residual = p.position_toward(spot, ms).distance(spot);
+            if residual > p.reach_m { continue; }
+            if best.map_or(true, |(old_idx, d)| residual < d - 1e-4
+                || ((residual - d).abs() <= 1e-4 && p.player_id < candidates[old_idx].player_id)) {
+                best = Some((idx, residual));
+            }
+        }
+        if let Some((idx, _)) = best { return Some((idx, ms)); }
+    }
+    None
+}
+
+#[cfg(test)]
+mod contact_control_tests {
+    use super::*;
+    #[test]
+    fn des_contact_control_skill_and_contact_difficulty() {
+        let easy = contact_control_probability(0.9, 0.9, 1.0, 8.0, 0.0, 0.2, 0.0);
+        let hard = contact_control_probability(0.9, 0.9, 1.0, 25.0, 1.5, 0.95, 0.8);
+        let weak = contact_control_probability(0.2, 0.2, 0.6, 8.0, 0.0, 0.2, 0.0);
+        assert!(easy > hard && easy > weak);
+        assert!(hard > 0.0 && easy < 1.0);
+    }
+    #[test]
+    fn des_contact_control_recovery_race_is_side_neutral() {
+        let candidate = |id: &str, side, x| PassReachCandidate {
+            player_id: id.into(), side, pos: Vec2::new(x, 34.0),
+            velocity: Vec2::default(), speed_mps: 7.0, acceleration_mps2: 4.0,
+            agility: 0.65, reaction_ms: 200, reach_m: 1.0, playable_height_m: 1.2,
+        };
+        let spot = Vec2::new(50.0, 34.0);
+        let mut players = vec![candidate("H", TeamSideV4::Home, 51.8),
+                               candidate("A", TeamSideV4::Away, 55.0)];
+        let (winner, ms) = find_grounded_ball_recovery(&players, spot).unwrap();
+        assert_eq!(winner, 0);
+        assert!(ms > 250);
+        assert!(players[winner].position_toward(spot, ms).distance(spot) <= players[winner].reach_m);
+        players[0].side = TeamSideV4::Away;
+        players[1].side = TeamSideV4::Home;
+        assert_eq!(find_grounded_ball_recovery(&players, spot), Some((winner, ms)));
+        players.swap(0, 1);
+        assert_eq!(find_grounded_ball_recovery(&players, spot), Some((1, ms)));
+    }
+}

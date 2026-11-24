@@ -26,6 +26,7 @@ use crate::v4::spatial::{
 };
 
 pub const DIAGNOSTICS_SCHEMA_VERSION_V4: u32 = 1;
+fn is_zero_u32(value: &u32) -> bool { *value == 0 }
 
 /// Summary distribution (milliseconds) for dead-ball durations or DES intervals.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,6 +213,12 @@ pub struct TeamAttackDiagnosticsV4 {
     pub clearances_ending_possession: u32,
     pub turnovers: TurnoverBreakdownV4,
     pub passes_by_type: BTreeMap<String, PassBreakdownV4>,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub pass_contacts_loose: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub pass_loose_regained: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub pass_loose_lost: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -532,12 +539,29 @@ impl MatchDiagnosticsCollectorV4 {
             }
             EventTypeV4::PassFailed => {
                 self.record_pass(side, metadata, false);
-                self.lose_ball(side, metadata.outcome.as_deref().unwrap_or("MISPLACED"));
+                if metadata.extra.get("pendingPassRecovery").map(String::as_str) == Some("true") {
+                    self.team_mut(side).pass_contacts_loose += 1;
+                } else {
+                    self.lose_ball(side, metadata.outcome.as_deref().unwrap_or("MISPLACED"));
+                }
             }
             EventTypeV4::Offside => {
-                // Law 11: offside IS an attempted pass but not PassFailed.
-                self.record_pass(side, metadata, false);
+                // A deflected pass was already counted at contact.
+                if metadata.extra.get("passAlreadyCounted").map(String::as_str) != Some("true") {
+                    self.record_pass(side, metadata, false);
+                }
                 self.lose_ball(side, "OFFSIDE");
+            }
+            EventTypeV4::SecondBallWon if metadata.cause.as_deref() == Some("PASS_CONTACT_LOOSE") => {
+                match metadata.extra.get("recoveryOutcome").map(String::as_str) {
+                    Some("ATTACK_REGAINED") => self.team_mut(side).pass_loose_regained += 1,
+                    Some("DEFENCE_WON") => {
+                        self.team_mut(side.opposite()).pass_loose_lost += 1;
+                        self.lose_ball(side.opposite(), "INTERCEPTED");
+                    }
+                    _ => {}
+                }
+                self.observe_territory(side, ball_pos.xy());
             }
             EventTypeV4::FirstTouch if metadata.outcome.as_deref() == Some("HEAVY_TOUCH_LOST") => {
                 self.lose_ball(side, "FIRST_TOUCH_ERROR");
