@@ -6,7 +6,7 @@ use crate::fingerprints;
 use crate::rng::DeterministicRng;
 use crate::v4::ai_manager::{apply_manual_substitution_group, evaluate_ai_managers};
 use crate::v4::attributes::normalize_attr;
-use crate::v4::ball_play::{execute_dribble_duel, execute_pass_and_first_touch_des, EmittedPlayEvent};
+use crate::v4::ball_play::{execute_dribble_duel, execute_pass_and_first_touch_des, pass_reach_candidate, EmittedPlayEvent};
 use crate::v4::checkpoint::{
     PendingFlightSnapshotV4, FlightActionV4, FlightCounterDeltaV4,
     compute_checkpoint_checksum, verify_checkpoint, MatchCheckpointV4, MatchSessionSnapshotV4,
@@ -21,7 +21,7 @@ use crate::v4::events::{
 };
 use crate::v4::input::{MatchInputV4, TeamInstructionsV4};
 use crate::v4::interaction::{
-    InteractionKind,
+    InteractionKind, PassContactMotion,
 };
 use crate::v4::movement::{advance_off_ball_movement, evaluate_local_context, lookup_attrs};
 use crate::v4::perception::{perceive_evaluate_and_decide, PassKindV4, PlannedActionV4};
@@ -1201,6 +1201,22 @@ impl MatchSessionV4 {
                 dt_sec,
                 &mut self.rng,
             );
+            // Keep the predicted contact participant on the same motion
+            // path used by the resolver, including across unrelated DES events.
+            if let Some(motion) = self.pending_flight.as_ref().and_then(|f| f.pass_contact_motion.as_ref()) {
+                let now = self.state.des_clock.sim_time_ms;
+                if let Some((idx, p)) = self.state.players.iter_mut().enumerate()
+                    .find(|(_, p)| p.player_id == motion.candidate.player_id && p.on_pitch && !p.sent_off) {
+                    let old = prev_positions[idx];
+                    let next = motion.position_at(now);
+                    p.pos = next;
+                    p.target_pos = motion.target;
+                    p.vel = Vec2::new((next.x - old.x) / dt_sec, (next.y - old.y) / dt_sec);
+                    if old.distance(next) > 0.05 {
+                        p.facing_rad = (next.y - old.y).atan2(next.x - old.x);
+                    }
+                }
+            }
             for (idx, p) in self.state.players.iter_mut().enumerate() {
                 if let Some(prev) = prev_positions.get(idx) {
                     p.last_moved_m = prev.distance(p.pos);
@@ -1914,7 +1930,9 @@ impl MatchSessionV4 {
                 ev.metadata.extra.insert("shotLaunchSimTimeMs".into(), launch_ms.to_string());
             }
         }
-        if flight.early_interaction.as_ref().map(|h| h.kind == InteractionKind::PassInterception).unwrap_or(false) {
+        if flight.early_interaction.as_ref().map(|h|
+            h.kind == InteractionKind::PassInterception && h.time_ms < flight.planned_arrival_ms
+        ).unwrap_or(false) {
             self.diagnostics.record_early_interception();
         }
         flight.counter_delta.apply(&mut self.state);
@@ -2082,6 +2100,7 @@ impl MatchSessionV4 {
             action: FlightActionV4::Shot { shooter_idx },
             outcome: shot.outcome, ball_after: resolved.ball, counter_delta: delta,
             won_corner: shot.won_corner, early_interaction: shot.early_interaction,
+            pass_contact_motion: None,
         };
         let payload = DesEventPayload::ShotArrival { shooter_id: self.state.players[shooter_idx].player_id.clone(), side,
             target_y_mm: 34_000, target_z_mm: 1_100 };
@@ -2194,6 +2213,20 @@ impl MatchSessionV4 {
                 let delta = FlightCounterDeltaV4::between(&self.state, &resolved);
                 self.state.next_highlight_sequence_id = resolved.next_highlight_sequence_id;
                 let trajectory = pass.trajectory.ok_or_else(|| V4Error::InvalidClock("missing pass trajectory".into()))?;
+                let contact_idx = if let Some(hit) = pass.early_interaction.as_ref() {
+                    if hit.kind == InteractionKind::PassInterception {
+                        hit.defender_id.as_deref().and_then(|id|
+                            self.state.players.iter().position(|p| p.player_id == id))
+                    } else { None }
+                } else if pass.outcome.events.iter().any(|e| matches!(e.kind,
+                    EventTypeV4::PassCompleted | EventTypeV4::ThroughBall | EventTypeV4::Cross | EventTypeV4::Offside)) {
+                    Some(target_idx)
+                } else { None };
+                let pass_contact_motion = contact_idx.map(|idx| PassContactMotion {
+                    candidate: pass_reach_candidate(&self.state, idx, kind.is_aerial()),
+                    target: trajectory.position_at_ms(now.saturating_add(pass.elapsed_ms.max(1))).xy(),
+                    started_at_ms: now,
+                });
                 let flight = PendingFlightSnapshotV4 {
                     trajectory,
                     planned_arrival_ms: now.saturating_add(pass.planned_flight_ms.max(1)),
@@ -2201,6 +2234,7 @@ impl MatchSessionV4 {
                     action: FlightActionV4::Pass { passer_idx: carrier_idx, kind, distance_m, is_one_touch },
                     outcome: pass.outcome, ball_after: resolved.ball, counter_delta: delta,
                     won_corner: false, early_interaction: pass.early_interaction,
+                    pass_contact_motion,
                 };
                 let target = self.state.players[target_idx].pos;
                 let payload = DesEventPayload::BallInFlightArrival {

@@ -91,6 +91,18 @@ jobs:
       - name: Verify offside decision and movement
         working-directory: rust/football_match_engine
         run: cargo test --lib des_offside_ -- --nocapture
+  pass_reach_regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify symmetric pass contact physics
+        working-directory: rust/football_match_engine
+        run: cargo test --lib des_pass_reach_ -- --nocapture
+      - name: Verify actual match timeline
+        working-directory: rust/football_match_engine
+        run: cargo test --lib qa01_long_pass_interception_emitted_at_interaction_time -- --nocapture
   attacking_sample:
     runs-on: ubuntu-latest
     timeout-minutes: 20

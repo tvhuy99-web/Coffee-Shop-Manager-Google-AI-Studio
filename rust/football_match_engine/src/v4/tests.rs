@@ -2261,17 +2261,21 @@ fn qa01_long_pass_interception_emitted_at_interaction_time() {
         !mid_flight_interceptions.is_empty(),
         "QA-01: expected mid-flight interceptions with launch/arrival metadata"
     );
+    let mut strict_mid_flight = 0;
     for ev in &mid_flight_interceptions {
         let launch_ms: i64 = ev.metadata.extra["launchSimTimeMs"].parse().expect("launch ms");
         let arrival_ms: i64 = ev.metadata.extra["plannedArrivalSimTimeMs"].parse().expect("arrival ms");
-        assert!(
-            ev.sim_time_ms > launch_ms && ev.sim_time_ms < arrival_ms,
-            "QA-01: interception at {}ms must occur strictly between launch ({}ms) and planned arrival ({}ms)",
-            ev.sim_time_ms,
-            launch_ms,
-            arrival_ms
-        );
+        match ev.metadata.extra.get("passContactPhase").map(String::as_str) {
+            Some("ARRIVAL") => assert_eq!(ev.sim_time_ms, arrival_ms, "arrival contest must occur at arrival"),
+            Some("MID_FLIGHT") => {
+                assert!(ev.sim_time_ms > launch_ms && ev.sim_time_ms < arrival_ms,
+                    "mid-flight interception must be strictly between kick and arrival");
+                strict_mid_flight += 1;
+            }
+            _ => panic!("interception lacks explicit physical contact phase"),
+        }
     }
+    assert!(strict_mid_flight > 0, "must exercise genuine mid-flight interceptions");
 }
 
 #[test]

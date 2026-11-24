@@ -3,8 +3,8 @@ use crate::v4::attributes::normalize_attr;
 use crate::v4::events::{EventMetadataV4, EventTypeV4, HighlightTier};
 use crate::v4::input::{MatchInputV4, PitchQuality, PreferredFoot, WeatherCondition};
 use crate::v4::interaction::{
-    find_earliest_ball_interaction, BallTrajectory, BoundaryKind, DefenderCandidate,
-    EarlyInteractionHit, InteractionKind, DEFAULT_GRAVITY_Z_MPS2,
+    find_pass_contact, BallTrajectory, BoundaryKind, DefenderCandidate,
+    EarlyInteractionHit, InteractionKind, PassContact, PassReachCandidate, DEFAULT_GRAVITY_Z_MPS2,
 };
 use crate::v4::movement::{
     evaluate_local_context, player_attrs, player_max_speed_mps, LocalSpatialContext,
@@ -115,6 +115,35 @@ pub(crate) fn build_defender_candidates(
     out
 }
 
+/// Build the same pass-contact motion profile for an attacker or defender.
+pub(crate) fn pass_reach_candidate(
+    state: &MatchStateV4,
+    idx: usize,
+    is_aerial: bool,
+) -> PassReachCandidate {
+    let p = &state.players[idx];
+    let attrs = player_attrs(state, p);
+    let accel = normalize_attr(attrs.physical.acceleration);
+    let agility = normalize_attr(attrs.physical.agility);
+    let ant = normalize_attr(attrs.mental.anticipation);
+    let concentration = normalize_attr(attrs.mental.concentration);
+    let fatigue = ((p.fatigue.aerobic * 0.6 + p.fatigue.anaerobic * 0.4) / 100.0).clamp(0.45, 1.0);
+    PassReachCandidate {
+        player_id: p.player_id.clone(),
+        side: p.side,
+        pos: p.pos,
+        velocity: p.vel,
+        speed_mps: player_max_speed_mps(attrs, p),
+        acceleration_mps2: (2.4 + 3.0 * accel) * fatigue,
+        agility,
+        reaction_ms: (310.0 - ant * 120.0 - concentration * 55.0).round() as i64,
+        reach_m: 0.85 + agility * 0.25,
+        playable_height_m: if is_aerial {
+            1.65 + normalize_attr(attrs.physical.jumping_reach) * 0.75
+        } else { 1.20 },
+    }
+}
+
 /// Second-last active opponent, in the attacking side's coordinate system.
 /// Shared by perception, off-ball movement and the authoritative Law 11 check.
 /// Goalkeepers count as opponents; sent-off/off-pitch players do not.
@@ -170,7 +199,7 @@ pub fn is_receiver_offside(
 /// DES two-phase pass & first-touch resolver:
 /// 1. Computes analytic `BallTrajectory` and kinematic `flight_ms = estimate_ball_flight_ms(...)`.
 /// 2. Transitions ball to `BallControlState::InFlight` and queries
-///    `find_earliest_ball_interaction(&traj, &defenders, t_now_ms, t_arrival_ms)` to detect
+///    the symmetric pass-contact detector to detect
 ///    defensive `PassInterception` or `BallOutOfBounds` BEFORE arrival at the receiver.
 /// 3. Never credits a completed pass when an earlier `PassInterception` or boundary exit occurs.
 /// 4. Models one-touch (`is_one_touch`) vs controlled multi-touch reception via `first_touch` & `composure`.
@@ -185,8 +214,8 @@ pub fn execute_pass_and_first_touch_des(
     kind: PassKindV4,
     distance_m: f32,
     progress_gain_m: f32,
-    lane_risk: f32,
-    interceptor_idx: Option<usize>,
+    _lane_risk: f32,
+    _interceptor_idx: Option<usize>,
     passer_ctx: LocalSpatialContext,
     is_one_touch: bool,
     rng: &mut DeterministicRng,
@@ -338,8 +367,20 @@ pub fn execute_pass_and_first_touch_des(
     state.ball.last_touch_side = Some(att_side);
     state.ball.last_touch_player_id = Some(passer_id.clone());
 
-    let defenders = build_defender_candidates(state, def_side, kind.is_aerial());
-    let early_hit = find_earliest_ball_interaction(&traj, &defenders, t_now_ms, t_arrival_ms);
+    let defenders: Vec<_> = state.players.iter().enumerate()
+        .filter(|(_, p)| p.on_pitch && !p.sent_off && p.side == def_side && !p.is_goalkeeper)
+        .map(|(idx, _)| pass_reach_candidate(state, idx, kind.is_aerial()))
+        .collect();
+    let receiver = pass_reach_candidate(state, target_idx, kind.is_aerial());
+    // Recovery of inaccurate passes by arbitrary teammates is a separate
+    // stage. For an accurate pass, the intended receiver races defenders.
+    let contact = find_pass_contact(&traj, &defenders,
+        if is_misplaced { None } else { Some(&receiver) }, t_now_ms, t_arrival_ms);
+    let (early_hit, receiver_contact) = match contact {
+        Some(PassContact::Other(hit)) => (Some(hit), None),
+        Some(PassContact::Receiver { time_ms, ball_pos }) => (None, Some((time_ms, ball_pos))),
+        None => (None, None),
+    };
 
     // Phase 2 (Continuous In-Flight Resolution): check earliest interception or boundary exit
     // strictly BEFORE the pass can ever be credited as completed.
@@ -351,8 +392,7 @@ pub fn execute_pass_and_first_touch_des(
                     .defender_id
                     .as_deref()
                     .and_then(|id| state.players.iter().position(|p| p.player_id == id))
-                    .or(interceptor_idx)
-                    .unwrap_or_else(|| first_outfield(state, def_side));
+                    .expect("pass contact identifies an active defender");
                 let int_id = state.players[int_idx].player_id.clone();
                 let int_pos = hit.ball_pos.clamp_to_pitch();
 
@@ -364,13 +404,16 @@ pub fn execute_pass_and_first_touch_des(
                 state.ball.last_touch_side = Some(def_side);
                 state.ball.last_touch_player_id = Some(int_id.clone());
 
-                let meta = EventMetadataV4 {
+                let mut meta = EventMetadataV4 {
                     pass_type: Some(kind.as_str().into()),
                     distance_m: Some(distance_m),
                     pressure: Some(passer_ctx.pressure.round() as u8),
                     outcome: Some("INTERCEPTED".into()),
                     ..EventMetadataV4::default()
                 };
+                meta.extra.insert("passContactPhase".into(), if hit.time_ms < t_arrival_ms {
+                    "MID_FLIGHT".into()
+                } else { "ARRIVAL".into() });
                 events.push(EmittedPlayEvent {
                     kind: EventTypeV4::PassFailed,
                     tier: HighlightTier::None,
@@ -497,75 +540,12 @@ pub fn execute_pass_and_first_touch_des(
         }
     }
 
-    // Secondary lane-read interception check when a defender is already positioned along the lane.
-    if let Some(int_idx) = interceptor_idx {
-        let int_attrs = *player_attrs(state, &state.players[int_idx]);
-        let int_id = state.players[int_idx].player_id.clone();
-        let int_pos = state.players[int_idx].pos;
-        let flair_deception = normalize_attr(passer_attrs.mental.flair) * 0.08;
-        let int_prob = (lane_risk
-            * (0.20 + normalize_attr(int_attrs.mental.anticipation) * 0.16)
-            + (1.0 - execution_accuracy) * 0.18
-            - flair_deception)
-            .clamp(0.01, 0.36);
+    // Lane risk is a decision input, not a second chance to intercept a
+    // trajectory that no defender can physically reach.
 
-        if (rng.next_double() as f32) < int_prob {
-            let ball_pos =
-                Vec3::new(int_pos.x, int_pos.y, (ball_z * 0.35).min(1.4)).clamp_to_pitch();
-            state.ball.pos = ball_pos;
-            state.ball.vel = Vec3::default();
-            state.ball.control = BallControlState::Controlled;
-            state.ball.owner_side = Some(def_side);
-            state.ball.owner_player_id = Some(int_id.clone());
-            state.ball.last_touch_side = Some(def_side);
-            state.ball.last_touch_player_id = Some(int_id.clone());
-
-            let meta = EventMetadataV4 {
-                pass_type: Some(kind.as_str().into()),
-                distance_m: Some(distance_m),
-                pressure: Some(passer_ctx.pressure.round() as u8),
-                outcome: Some("INTERCEPTED".into()),
-                ..EventMetadataV4::default()
-            };
-            events.push(EmittedPlayEvent {
-                kind: EventTypeV4::PassFailed,
-                tier: HighlightTier::None,
-                seq_id: None,
-                side: Some(att_side),
-                actor: Some(passer_id),
-                target: Some(target_id),
-                ball_pos,
-                metadata: meta.clone(),
-            });
-            events.push(EmittedPlayEvent {
-                kind: EventTypeV4::Interception,
-                tier: HighlightTier::None,
-                seq_id: None,
-                side: Some(def_side),
-                actor: Some(int_id),
-                target: None,
-                ball_pos,
-                metadata: meta,
-            });
-            return DesBallPlayOutcome {
-                trajectory: Some(traj.clone()),
-                planned_flight_ms: flight_ms,
-                outcome: BallPlayOutcome {
-                    next_side: def_side,
-                    next_carrier_idx: int_idx,
-                    stoppage_seconds: 0,
-                    events,
-                },
-                elapsed_ms: (flight_ms / 2).max(1),
-                dead_ball_kind: None,
-                restart_spot: None,
-                early_interaction: None,
-            };
-        }
-    }
-
-    // Misplaced pass that stayed in bounds: recovered by nearest defender.
-    if is_misplaced {
+    // Legacy loose-ball recovery remains isolated until stage 4.
+    // An accurate kick whose intended receiver cannot reach it is not completed.
+    if is_misplaced || receiver_contact.is_none() {
         let def_idx = evaluate_local_context(state, input, att_side, target_pos)
             .nearest_defender_idx
             .unwrap_or_else(|| first_outfield(state, def_side));
@@ -613,6 +593,9 @@ pub fn execute_pass_and_first_touch_des(
         };
     }
 
+    let (receiver_time_ms, receiver_ball_pos) = receiver_contact.expect("reachable receiver");
+    let contact_elapsed_ms = (receiver_time_ms - t_now_ms).max(1);
+    let target_pos = receiver_ball_pos.xy();
     // Phase 3 (Arrival at Receiver): Law 11 Offside involvement check.
     if receiver_in_offside_position {
         state.team_state_mut(att_side).offsides += 1;
@@ -648,7 +631,7 @@ pub fn execute_pass_and_first_touch_des(
                 stoppage_seconds: 0,
                 events,
             },
-            elapsed_ms: flight_ms,
+            elapsed_ms: contact_elapsed_ms,
             dead_ball_kind: Some(DeadBallKind::Offside),
             restart_spot: Some(off_pos),
             early_interaction: None,
@@ -692,7 +675,7 @@ pub fn execute_pass_and_first_touch_des(
         / target_ana_mod)
         .clamp(0.006, 0.22);
 
-    let arrived_pos = Vec3::new(target_pos.x, target_pos.y, ball_z * 0.15).clamp_to_pitch();
+    let arrived_pos = receiver_ball_pos.clamp_to_pitch();
     state.ball.pos = arrived_pos;
     state.ball.vel = Vec3::default();
 
@@ -803,7 +786,7 @@ pub fn execute_pass_and_first_touch_des(
                 stoppage_seconds: 0,
                 events,
             },
-            elapsed_ms: flight_ms,
+            elapsed_ms: contact_elapsed_ms,
             dead_ball_kind: None,
             restart_spot: None,
             early_interaction: None,
@@ -846,7 +829,7 @@ pub fn execute_pass_and_first_touch_des(
             stoppage_seconds: 0,
             events,
         },
-        elapsed_ms: flight_ms,
+        elapsed_ms: contact_elapsed_ms,
         dead_ball_kind: None,
         restart_spot: None,
         early_interaction: None,

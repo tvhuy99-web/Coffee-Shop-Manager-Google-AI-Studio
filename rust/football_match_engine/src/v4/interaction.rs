@@ -352,6 +352,156 @@ pub fn find_earliest_ball_interaction(
     best_hit
 }
 
+
+/// Stage 2: symmetric, acceleration-limited pass-contact prediction.
+/// A contact is not yet a successful tackle/control test (stage 3).
+/// Parameters describe movement, not a desired pass-success percentage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PassReachCandidate {
+    pub player_id: String,
+    pub side: TeamSideV4,
+    pub pos: Vec2,
+    pub velocity: Vec2,
+    pub speed_mps: f32,
+    pub acceleration_mps2: f32,
+    pub agility: f32,
+    pub reaction_ms: i64,
+    pub reach_m: f32,
+    pub playable_height_m: f32,
+}
+
+impl PassReachCandidate {
+    /// Approximate a player's movement towards a fixed contact point. Coast
+    /// during reaction, then turn and accelerate with a bounded running speed.
+    /// This same absolute-time path is used to move the selected participant
+    /// in the live world, so a predicted contact cannot teleport a player.
+    pub(crate) fn position_toward(&self, target: Vec2, elapsed_ms: i64) -> Vec2 {
+        let t = elapsed_ms.max(0) as f32 / 1000.0;
+        let vmax = self.speed_mps.max(0.0);
+        let raw_speed = (self.velocity.x * self.velocity.x + self.velocity.y * self.velocity.y).sqrt();
+        let scale = if raw_speed > vmax && raw_speed > 0.0 { vmax / raw_speed } else { 1.0 };
+        let vx = self.velocity.x * scale;
+        let vy = self.velocity.y * scale;
+        let reaction = self.reaction_ms.max(0) as f32 / 1000.0;
+        let coast_t = t.min(reaction);
+        let origin = Vec2::new(self.pos.x + vx * coast_t, self.pos.y + vy * coast_t).clamp_to_pitch();
+        if t <= reaction { return origin; }
+        let dist = origin.distance(target);
+        if dist <= 0.001 || vmax <= 0.001 { return origin; }
+        let ux = (target.x - origin.x) / dist;
+        let uy = (target.y - origin.y) / dist;
+        let projected = vx * ux + vy * uy;
+        let actual_speed = raw_speed.min(vmax);
+        let alignment = if actual_speed > 0.15 { (projected / actual_speed).clamp(-1.0, 1.0) } else { 1.0 };
+        // A player running the other way must brake/turn before accelerating.
+        let turn_s = (1.0 - alignment) * (0.10 + 0.24 * (1.0 - self.agility.clamp(0.0, 1.0)));
+        let run_s = (t - reaction - turn_s).max(0.0);
+        let v0 = projected.clamp(0.0, vmax);
+        let accel = self.acceleration_mps2.max(0.1);
+        let ramp_s = ((vmax - v0) / accel).min(run_s);
+        let cover = (v0 * ramp_s + 0.5 * accel * ramp_s * ramp_s
+            + vmax * (run_s - ramp_s)).min(dist);
+        Vec2::new(origin.x + ux * cover, origin.y + uy * cover).clamp_to_pitch()
+    }
+
+    fn contact_distance(&self, ball: Vec3, elapsed_ms: i64) -> Option<f32> {
+        if ball.z > self.playable_height_m { return None; }
+        let residual = self.position_toward(ball.xy(), elapsed_ms).distance(ball.xy());
+        if residual <= self.reach_m { Some(residual) } else { None }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PassContactMotion {
+    pub candidate: PassReachCandidate,
+    pub target: Vec2,
+    pub started_at_ms: i64,
+}
+
+impl PassContactMotion {
+    pub(crate) fn position_at(&self, now_ms: i64) -> Vec2 {
+        self.candidate.position_toward(self.target, now_ms.saturating_sub(self.started_at_ms))
+    }
+}
+
+pub(crate) enum PassContact {
+    Receiver { time_ms: i64, ball_pos: Vec3 },
+    Other(EarlyInteractionHit),
+}
+
+/// Find the first playable contact along the same trajectory for both sides.
+/// The intended receiver may meet the pass near its planned destination,
+/// rather than automatically waiting for the ball at a fixed timestamp.
+/// Only the intended receiver is eligible in this stage; recovering a missed
+/// pass with other teammates and contested/deflected balls belong to stages 3–4.
+/// Boundary detection remains analytic. Sampling is local, not a global tick.
+pub(crate) fn find_pass_contact(
+    traj: &BallTrajectory,
+    defenders: &[PassReachCandidate],
+    receiver: Option<&PassReachCandidate>,
+    t_now_ms: i64,
+    t_arrival_ms: i64,
+) -> Option<PassContact> {
+    if t_arrival_ms <= t_now_ms { return None; }
+    let boundary = find_earliest_ball_interaction(traj, &[], t_now_ms, t_arrival_ms);
+    let end = boundary.as_ref().map_or(t_arrival_ms, |h| h.time_ms);
+    let destination = traj.position_at_ms(t_arrival_ms).xy();
+    let start = traj.position_at_ms(t_now_ms).xy();
+    let horizon_s = (end - t_now_ms).max(0) as f32 / 1000.0;
+    // Conservative geometric filter: include everyone who could reach the
+    // segment at full speed, even if acceleration later rules them out.
+    let nearby: Vec<_> = defenders.iter().filter(|p| {
+        crate::v4::spatial::point_to_segment_distance_m(p.pos, start, destination)
+            <= p.speed_mps * horizon_s + p.reach_m + 0.01
+    }).collect();
+    let contact_at = |time: i64| -> Option<PassContact> {
+        // Boundary has precedence if the ball is already out.
+        if boundary.as_ref().map_or(false, |h| time >= h.time_ms) { return None; }
+        let ball = traj.position_at_ms(time);
+        let elapsed = time - t_now_ms;
+        let receiving = receiver.filter(|_| ball.xy().distance(destination) <= 2.0)
+            .and_then(|p| p.contact_distance(ball, elapsed));
+        let mut best: Option<(&PassReachCandidate, f32)> = None;
+        for &p in &nearby {
+            if let Some(d) = p.contact_distance(ball, elapsed) {
+                if best.map_or(true, |(prev, prev_d)| d < prev_d - 1e-4
+                    || ((d - prev_d).abs() <= 1e-4 && p.player_id < prev.player_id)) {
+                    best = Some((p, d));
+                }
+            }
+        }
+        if let Some(d) = receiving {
+            if best.map_or(true, |(_, def_d)| d <= def_d) {
+                return Some(PassContact::Receiver { time_ms: time, ball_pos: ball });
+            }
+        }
+        best.map(|(p, residual)| PassContact::Other(EarlyInteractionHit {
+            time_ms: time, kind: InteractionKind::PassInterception, ball_pos: ball,
+            defender_id: Some(p.player_id.clone()), defender_side: Some(p.side),
+            boundary: None, distance_m: residual, used_adaptive_substep: true,
+        }))
+    };
+    // Bounded even with a custom timing model. Refine a detected contact in
+    // the preceding bracket; do not truncate the end of long trajectories.
+    let step = ((end - t_now_ms + 179) / 180).max(25);
+    let mut prev = t_now_ms;
+    while prev < end {
+        let sample = prev.saturating_add(step).min(end);
+        if let Some(hit) = contact_at(sample) {
+            let mut fine = prev.saturating_add(1);
+            while fine < sample {
+                if let Some(earlier) = contact_at(fine) { return Some(earlier); }
+                fine = fine.saturating_add(5);
+            }
+            return Some(hit);
+        }
+        prev = sample;
+    }
+    boundary.map(PassContact::Other)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,5 +622,92 @@ mod tests {
             hit.kind,
             InteractionKind::TackleContest | InteractionKind::PressingThresholdReached
         ));
+    }
+}
+
+
+#[cfg(test)]
+mod pass_reach_tests {
+    use super::*;
+    fn runner(id: &str, side: TeamSideV4, x: f32, y: f32) -> PassReachCandidate {
+        PassReachCandidate {
+            player_id: id.into(), side, pos: Vec2::new(x, y), velocity: Vec2::default(),
+            speed_mps: 8.0, acceleration_mps2: 4.0, agility: 0.65,
+            reaction_ms: 200, reach_m: 1.0, playable_height_m: 1.2,
+        }
+    }
+    fn trajectory() -> BallTrajectory {
+        BallTrajectory { start_time_ms: 0, start_pos: Vec3::new(40.0, 34.0, 0.1),
+            initial_vel: Vec3::new(20.0, 0.0, 0.0), gravity_z: 9.81, drag: 0.0,
+            is_shot: false, is_carrier_dribble: false }
+    }
+
+    #[test]
+    fn des_pass_reach_acceleration_and_turn_direction() {
+        let p = runner("P", TeamSideV4::Home, 40.0, 34.0);
+        let target = Vec2::new(50.0, 34.0);
+        assert!(p.position_toward(target, 500).distance(p.pos) < 0.3);
+        let mut toward = p.clone();
+        toward.velocity.x = 5.0;
+        let mut away = p.clone();
+        away.velocity.x = -5.0;
+        assert!(toward.position_toward(target, 800).distance(target)
+            < p.position_toward(target, 800).distance(target));
+        assert!(away.position_toward(target, 800).distance(target)
+            > p.position_toward(target, 800).distance(target));
+        let mut tired = p.clone();
+        tired.acceleration_mps2 = 2.0;
+        tired.speed_mps = 4.0;
+        assert!(tired.position_toward(target, 1500).distance(target)
+            > p.position_toward(target, 1500).distance(target));
+        let mut mirrored = p.clone();
+        mirrored.side = TeamSideV4::Away;
+        assert_eq!(p.position_toward(target, 1500), mirrored.position_toward(target, 1500));
+    }
+
+    #[test]
+    fn des_pass_reach_receiver_and_defender_race() {
+        let traj = trajectory();
+        let receiver = runner("R", TeamSideV4::Home, 60.0, 34.0);
+        let unreachable = runner("D", TeamSideV4::Away, 50.0, 38.0);
+        assert!(matches!(find_pass_contact(&traj, &[unreachable], Some(&receiver), 0, 1000),
+            Some(PassContact::Receiver { time_ms, .. }) if time_ms > 800 && time_ms <= 1000));
+        let on_lane = runner("D", TeamSideV4::Away, 50.0, 34.0);
+        match find_pass_contact(&traj, &[on_lane.clone()], Some(&receiver), 0, 1000) {
+            Some(PassContact::Other(h)) => {
+                assert_eq!(h.kind, InteractionKind::PassInterception);
+                assert!(h.time_ms > 0 && h.time_ms < 1000);
+                let motion = PassContactMotion { candidate: on_lane, target: h.ball_pos.xy(), started_at_ms: 0 };
+                assert!(motion.position_at(h.time_ms).distance(h.ball_pos.xy()) <= 1.001);
+            }
+            _ => panic!("defender already on the lane must intercept before receiver"),
+        }
+        let close_receiver = runner("R", TeamSideV4::Home, 59.0, 34.0);
+        let late_defender = runner("D", TeamSideV4::Away, 60.0, 36.5);
+        assert!(matches!(find_pass_contact(&traj, &[late_defender], Some(&close_receiver), 0, 1000),
+            Some(PassContact::Receiver { .. })));
+    }
+
+    #[test]
+    fn des_pass_reach_checks_end_of_long_flight_and_boundary() {
+        let mut traj = trajectory();
+        traj.initial_vel.x = 12.0;
+        let late = runner("D", TeamSideV4::Away, 92.0, 34.0);
+        match find_pass_contact(&traj, &[late], None, 0, 4500) {
+            Some(PassContact::Other(h)) => {
+                assert_eq!(h.kind, InteractionKind::PassInterception);
+                assert!(h.time_ms > 3200 && h.time_ms <= 4500);
+            }
+            _ => panic!("long flight tail must not be dropped"),
+        }
+        traj.start_pos = Vec3::new(40.0, 67.0, 0.1);
+        traj.initial_vel = Vec3::new(0.0, 10.0, 0.0);
+        match find_pass_contact(&traj, &[], None, 0, 1000) {
+            Some(PassContact::Other(h)) => {
+                assert_eq!(h.kind, InteractionKind::BallOutOfBounds);
+                assert_eq!(h.time_ms, 100);
+            }
+            _ => panic!("pitch boundary must remain authoritative"),
+        }
     }
 }

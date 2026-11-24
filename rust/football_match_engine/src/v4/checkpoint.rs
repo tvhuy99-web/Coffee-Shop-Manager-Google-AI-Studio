@@ -65,6 +65,10 @@ pub struct PendingFlightSnapshotV4 {
     pub counter_delta: FlightCounterDeltaV4,
     pub won_corner: bool,
     pub early_interaction: Option<EarlyInteractionHit>,
+    // Optional for existing development snapshots. Final release must version
+    // the changed engine behaviour before promising replay compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pass_contact_motion: Option<crate::v4::interaction::PassContactMotion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
