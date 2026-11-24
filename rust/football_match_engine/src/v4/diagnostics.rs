@@ -186,6 +186,10 @@ pub struct DesMatchDiagnosticsV4 {
     #[serde(default)]
     pub cover_distance_m: f32,
     #[serde(default)]
+    pub mark_player_ms: i64,
+    #[serde(default)]
+    pub mark_distance_m: f32,
+    #[serde(default)]
     pub preparation_contacts: u32,
     #[serde(default)]
     pub preparation_turnovers: u32,
@@ -443,6 +447,10 @@ struct DesDiagnosticsAccumulator {
     #[serde(default)]
     cover_distance_m: f32,
     #[serde(default)]
+    mark_player_ms: i64,
+    #[serde(default)]
+    mark_distance_m: f32,
+    #[serde(default)]
     preparation_contacts: u32,
     #[serde(default)]
     preparation_turnovers: u32,
@@ -540,6 +548,8 @@ impl DesDiagnosticsAccumulator {
             press_distance_m: self.press_distance_m,
             screen_distance_m: self.screen_distance_m,
             cover_distance_m: self.cover_distance_m,
+            mark_player_ms: self.mark_player_ms,
+            mark_distance_m: self.mark_distance_m,
             preparation_contacts: self.preparation_contacts,
             preparation_turnovers: self.preparation_turnovers,
             preparation_fouls: self.preparation_fouls,
@@ -704,6 +714,7 @@ impl MatchDiagnosticsCollectorV4 {
             Press=>(&mut self.des.press_player_ms,&mut self.des.press_distance_m),
             Screen=>(&mut self.des.screen_player_ms,&mut self.des.screen_distance_m),
             Cover=>(&mut self.des.cover_player_ms,&mut self.des.cover_distance_m),
+            Mark=>(&mut self.des.mark_player_ms,&mut self.des.mark_distance_m),
         };
         *time=time.saturating_add(dt_ms.max(0));
         *distance+=moved.max(0.0);

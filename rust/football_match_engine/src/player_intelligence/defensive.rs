@@ -4,7 +4,7 @@ use crate::v4::spatial::{attacking_progress_m,TeamSideV4,Vec2};
 use super::support::ObservedPlayer;
 
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
-pub(crate) enum DefensiveRole { Press, Screen, Cover }
+pub(crate) enum DefensiveRole { Press, Screen, Cover, Mark }
 
 #[derive(Debug,Clone,Copy)]
 pub(crate) struct DefenderObservation<'a> {
@@ -23,6 +23,8 @@ pub(crate) struct DefensiveIntent {
     pub idx:usize,
     pub target:Vec2,
     pub role:DefensiveRole,
+    /// Observed attacking player whose receiving option is denied.
+    pub marked_idx:Option<usize>,
 }
 
 fn toward(from:Vec2,to:Vec2,dist:f32)->Vec2 {
@@ -62,7 +64,7 @@ pub(crate) fn assign_defense(def_side:TeamSideV4,ball:Vec2,carrier:usize,
     let radius=5.0+17.0*press+if transition{3.0*press}else{0.0};
     let budget=6.0+18.0*press;
     if let Some(p)=choose(defenders,press_target,&result,radius,budget) {
-        result.push(DefensiveIntent{idx:p.idx,target:press_target,role:DefensiveRole::Press});
+        result.push(DefensiveIntent{idx:p.idx,target:press_target,role:DefensiveRole::Press,marked_idx:Some(carrier)});
     }else{return result;}
     // Choose the most threatening nearby outlet by progression towards
     // our goal, proximity, and openness. Do not use hidden AI intentions.
@@ -84,7 +86,7 @@ pub(crate) fn assign_defense(def_side:TeamSideV4,ball:Vec2,carrier:usize,
         let target=toward(r.pos,ball,(ball.distance(r.pos)*0.28).clamp(1.5,5.0));
         if target.distance(press_target)>3.0 {
             if let Some(p)=choose(defenders,target,&result,7.0+12.0*press,5.0+13.0*press) {
-                result.push(DefensiveIntent{idx:p.idx,target,role:DefensiveRole::Screen});
+                result.push(DefensiveIntent{idx:p.idx,target,role:DefensiveRole::Screen,marked_idx:Some(r.idx)});
             }
         }
     }
@@ -93,10 +95,65 @@ pub(crate) fn assign_defense(def_side:TeamSideV4,ball:Vec2,carrier:usize,
     let target=Vec2::new(ball.x+dir*(5.0+3.0*press),ball.y+(34.0-ball.y)*0.23).clamp_to_pitch();
     if result.iter().all(|a|a.target.distance(target)>3.0) {
         if let Some(p)=choose(defenders,target,&result,8.0+8.0*press,5.0+9.0*press) {
-            result.push(DefensiveIntent{idx:p.idx,target,role:DefensiveRole::Cover});
+            result.push(DefensiveIntent{idx:p.idx,target,role:DefensiveRole::Cover,marked_idx:None});
         }
     }
+    // Regional marking is an additional responsibility for players not
+    // already pressing, screening or covering. No extra defender is
+    // created; only an existing shape destination can be replaced.
+    assign_regional_marks(def_side,ball,carrier,players,defenders,press,transition,&mut result);
     result
+}
+
+/// Mark the goal-side shoulder of an unassigned threat inside a defender's
+/// own tactical neighborhood. Select pairs jointly, not independently.
+/// Stay in shape when marginal denial does not justify leaving the zone.
+/// No opponent future intent or hidden attribute is consulted.
+fn assign_regional_marks(def_side:TeamSideV4,ball:Vec2,carrier:usize,
+    players:&[ObservedPlayer],defenders:&[DefenderObservation<'_>],
+    press:f32,transition:bool,result:&mut Vec<DefensiveIntent>) {
+    let att=def_side.opposite();
+    let own_goal=Vec2::new(if def_side==TeamSideV4::Home{0.0}else{105.0},34.0);
+    // More aggressive instructions permit a larger local hand-off zone.
+    // These are spatial priors, not target counts of marks or tackles.
+    let zone=7.0+4.0*press;
+    let reach=10.0+5.0*press;
+    loop {
+        let mut best:Option<(usize,usize,Vec2,f32,&str)>=None;
+        for r in players.iter().filter(|p|p.side==att && p.idx!=carrier && !p.is_gk
+            && ball.distance(p.pos)<=34.0 && attacking_progress_m(att,p.pos)>=attacking_progress_m(att,ball)-8.0) {
+            if result.iter().any(|a|a.marked_idx==Some(r.idx)){continue;}
+            let target=toward(r.pos,own_goal,1.8);
+            if result.iter().any(|a|a.target.distance(target)<3.0){continue;}
+            let lane=super::support::lane_openness(att,ball,r.pos,players);
+            let progress=attacking_progress_m(att,r.pos)/105.0;
+            let central=(1.0-(r.pos.y-34.0).abs()/34.0).clamp(0.0,1.0);
+            let threat=(0.42*progress+0.28*lane+0.18*central+
+                0.12*(1.0-ball.distance(r.pos)/34.0)).clamp(0.0,1.0);
+            for p in defenders {
+                if result.iter().any(|a|a.idx==p.idx){continue;}
+                let deviation=p.shape.distance(target);
+                let travel=p.pos.distance(target);
+                if deviation>zone || travel>reach {continue;}
+                // If the original shape already denies the same receiving
+                // space, the added action has little marginal benefit.
+                let existing=(1.0-p.shape.distance(r.pos)/5.0).clamp(0.0,1.0);
+                let benefit=threat*(1.0-existing)*(0.55+0.45*p.reading);
+                let cost=0.18+0.29*deviation/zone+0.14*travel/reach+
+                    0.10*(1.0-p.energy)+if transition{0.08}else{0.0};
+                let score=benefit-cost;
+                if score<=0.0 {continue;}
+                if best.as_ref().map_or(true,|(_,ri,_,old,id)|score>*old+1e-6 ||
+                    ((score-*old).abs()<=1e-6 && (p.id,r.idx)<(*id,*ri))) {
+                    best=Some((p.idx,r.idx,target,score,p.id));
+                }
+            }
+        }
+        match best {
+            Some((idx,ri,target,_,_))=>result.push(DefensiveIntent{idx,target,role:DefensiveRole::Mark,marked_idx:Some(ri)}),
+            None=>break,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -123,6 +180,42 @@ mod tests {
         assert!(a[2].target.x>ball.x);
         assert!(a.iter().all(|x|x.idx!=5));
         for i in 0..a.len(){for j in i+1..a.len(){assert_ne!(a[i].idx,a[j].idx);}}
+    }
+    #[test]
+    fn pi_defense_regional_marks_are_unique_goal_side_and_local(){
+        let ball=Vec2::new(64.0,34.0);
+        let defenders=[defender(2,"A",75.0,23.0),defender(3,"B",75.0,45.0),
+            defender(4,"C",100.0,3.0)];
+        let players=[ObservedPlayer{idx:0,side:TeamSideV4::Home,pos:ball,is_gk:false},
+            ObservedPlayer{idx:1,side:TeamSideV4::Home,pos:Vec2::new(80.0,23.0),is_gk:false},
+            ObservedPlayer{idx:5,side:TeamSideV4::Home,pos:Vec2::new(80.0,45.0),is_gk:false}];
+        let mut result=Vec::new();
+        assign_regional_marks(TeamSideV4::Away,ball,0,&players,&defenders,0.86,false,&mut result);
+        assert_eq!(result.len(),2);
+        assert!(result.iter().all(|a|a.role==DefensiveRole::Mark && a.idx!=4));
+        assert_ne!(result[0].idx,result[1].idx);
+        assert_ne!(result[0].marked_idx,result[1].marked_idx);
+        for a in &result {
+            let r=players.iter().find(|p|Some(p.idx)==a.marked_idx).unwrap();
+            assert!(a.target.x>r.pos.x && (a.target.distance(r.pos)-1.8).abs()<0.001);
+            let p=defenders.iter().find(|p|p.idx==a.idx).unwrap();
+            assert!(a.target.distance(p.shape)<=7.0+4.0*0.86);
+        }
+        let mut already=vec![DefensiveIntent{idx:2,target:Vec2::new(81.0,23.0),
+            role:DefensiveRole::Screen,marked_idx:Some(1)}];
+        assign_regional_marks(TeamSideV4::Away,ball,0,&players,&defenders,0.86,false,&mut already);
+        assert_eq!(already.len(),2);
+        assert_eq!(already[1].marked_idx,Some(5));
+    }
+
+    #[test]
+    fn pi_defense_regional_marking_does_not_chase_outside_zone(){
+        let ball=Vec2::new(50.0,34.0);
+        let defenders=[defender(2,"A",80.0,10.0)];
+        let players=[ObservedPlayer{idx:1,side:TeamSideV4::Home,pos:Vec2::new(62.0,45.0),is_gk:false}];
+        let mut result=Vec::new();
+        assign_regional_marks(TeamSideV4::Away,ball,0,&players,&defenders,0.86,false,&mut result);
+        assert!(result.is_empty());
     }
     #[test]
     fn pi_defense_high_press_engages_from_farther_and_mirrors(){

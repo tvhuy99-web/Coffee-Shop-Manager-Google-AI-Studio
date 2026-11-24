@@ -68,7 +68,7 @@ jobs:
                       carry[field] += des.get(field,0)
                   for field in ("outletSamples","openOutletsTotal","noOpenOutletSamples","holdDecisionSamples","holdWithOpenOutletSamples"):
                       outlets[field] += des.get(field,0)
-                  for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM","preparationContacts","preparationTurnovers","preparationFouls","carryFouls","tackleOpportunities","tackleCommitChoices","tackleContainChoices","tackleFrontOpportunities","tackleFrontCommits","tackleSideOpportunities","tackleSideCommits","tackleRearOpportunities","tackleRearCommits","tackleExpectedCleanSum","tackleExpectedFoulSum"):
+                  for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM","markPlayerMs","markDistanceM","preparationContacts","preparationTurnovers","preparationFouls","carryFouls","tackleOpportunities","tackleCommitChoices","tackleContainChoices","tackleFrontOpportunities","tackleFrontCommits","tackleSideOpportunities","tackleSideCommits","tackleRearOpportunities","tackleRearCommits","tackleExpectedCleanSum","tackleExpectedFoulSum"):
                       defense[field] += des.get(field,0)
                   for field in ("passRiskPairs","passRiskInitialSum","passRiskReleaseSum","passRiskAbsChangeSum","passRiskIncreased","passRiskDecreased","passRiskStable","reaimReviews","reaimChoices","reaimReleases","reaimPlannedMs","reaimRiskPairs","reaimRiskReductionSum"):
                       drift[field] += des.get(field,0)
