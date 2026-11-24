@@ -277,6 +277,8 @@ pub struct TimingModelConfig {
     // Reaction & decision durations
     pub reaction_base_ms: BoundedDurationRangeMs,
     pub one_touch_reaction_ms: BoundedDurationRangeMs,
+    #[serde(default = "default_first_touch_settle_ms")]
+    pub first_touch_settle_ms: BoundedDurationRangeMs,
     // Dead-ball & restart durations
     pub goal_celebration_ms: BoundedDurationRangeMs,
     pub goal_return_to_half_ms: BoundedDurationRangeMs,
@@ -313,6 +315,7 @@ impl TimingModelConfig {
             ball_flight_max_ms: 4_500,
             reaction_base_ms: BoundedDurationRangeMs::new(320, 680, 1_350),
             one_touch_reaction_ms: BoundedDurationRangeMs::new(150, 290, 520),
+            first_touch_settle_ms: default_first_touch_settle_ms(),
             goal_celebration_ms: BoundedDurationRangeMs::new(14_000, 26_000, 45_000),
             goal_return_to_half_ms: BoundedDurationRangeMs::new(8_000, 14_000, 24_000),
             kickoff_setup_ms: BoundedDurationRangeMs::new(3_000, 6_000, 12_000),
@@ -332,6 +335,10 @@ impl TimingModelConfig {
             referee_red_card_ms: BoundedDurationRangeMs::new(18_000, 30_000, 55_000),
         }
     }
+}
+
+fn default_first_touch_settle_ms() -> BoundedDurationRangeMs {
+    BoundedDurationRangeMs::new(150, 300, 650)
 }
 
 /// Ball flight classification for kinematic travel time estimation.
