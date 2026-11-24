@@ -1,0 +1,45 @@
+name: PI 54 attribute sensitivity audit
+on:
+  workflow_dispatch:
+  push:
+    branches: ['main']
+    paths:
+      - '.github/workflows/pi-attribute-audit.yml'
+      - 'tools/summarize_pi_attribute_audit.py'
+      - 'rust/football_match_engine/src/v4/tests.rs'
+permissions:
+  contents: read
+jobs:
+  attribute_audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        group: [technical, mental, physical, goalkeeping, hidden]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify attribute intervention and export paired evidence
+        env:
+          PI_AUDIT_GROUP: ${{ matrix.group }}
+        run: |
+          set -o pipefail
+          mkdir -p build-evidence
+          git rev-parse HEAD > build-evidence/commit.txt
+          cd rust/football_match_engine
+          cargo test --lib pi_attribute_audit_changes_only_the_named_field_and_role -- --nocapture
+          PI_AUDIT_REPORT_PATH=../../build-evidence/attribute-audit.json cargo test --release --lib v4::tests::pi_attribute_audit_population -- --ignored --exact --nocapture 2>&1 | tee ../../build-evidence/attribute-audit.log
+      - name: Summarize paired evidence
+        if: always()
+        run: |
+          if [ -f build-evidence/attribute-audit.json ]; then
+            python3 tools/summarize_pi_attribute_audit.py build-evidence/attribute-audit.json build-evidence/attribute-summary.json
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pi-attribute-audit-${{ matrix.group }}
+          path: build-evidence/
+          if-no-files-found: error

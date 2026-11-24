@@ -2664,7 +2664,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.15");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.16");
 }
 
 
@@ -2867,4 +2867,136 @@ fn pi_pass_reaim_prefers_open_compatible_lane_and_charges_time() {
     state.players[alternative].on_pitch=false;
     assert!(reconsider_short_pass(&state,&input,car,ctx,action).is_none());
     assert!(reconsider_short_pass(&state,&input,car,ctx,PlannedActionV4::HoldAndRecycle).is_none());
+}
+
+
+// Stage 5.7A: controlled sensitivity screening, not empirical calibration.
+// One named attribute changes in a fixed role cohort. The 12-level
+// baseline is reused for all attributes within each group and seed.
+const PI_AUDIT_GROUPS:[&str;5]=["technical","mental","physical","goalkeeping","hidden"];
+const PI_CAREER_HOOKS:[&str;4]=["professionalism","ambition","adaptability","loyalty"];
+
+fn pi_audit_profile(group:&str,name:&str,level:u8)->PlayerAttributes54 {
+    let baseline=PlayerAttributes54::uniform(12).unwrap();
+    let mut value=serde_json::to_value(baseline).unwrap();
+    *value.get_mut(group).and_then(|g|g.get_mut(name)).expect("canonical attribute")=serde_json::json!(level);
+    let profile:PlayerAttributes54=serde_json::from_value(value).unwrap();
+    profile.validate().unwrap();
+    for (key,actual) in profile.all_named() {
+        assert_eq!(actual,if key==name{level}else{12});
+    }
+    profile
+}
+
+fn pi_audit_input(seed:i64,group:&str,name:&str,level:u8)->MatchInputV4 {
+    let profile=pi_audit_profile(group,name,level);
+    let neutral=PlayerAttributes54::uniform(12).unwrap();
+    let home=make_v4_team_with_attrs("H","HOME_AUDIT",|i|{
+        let eligible=match group {
+            "goalkeeping"=>i==0,
+            "technical"=>i!=0,
+            _=>true,
+        };
+        if eligible{profile}else{neutral}
+    });
+    let mut input=make_v4_input_teams(seed,SimulationMode::FastBatch,RulesModeV4::Standard,
+        home,make_v4_team("A","AWAY_AUDIT",12));
+    // Fixed tactics, not manager adaptation. Standard match context;
+    // rare set pieces and big matches may require separate fixtures.
+    input.ai_home_manager=false;
+    input.ai_away_manager=false;
+    input
+}
+
+#[test]
+fn pi_attribute_audit_changes_only_the_named_field_and_role() {
+    let baseline=serde_json::to_value(PlayerAttributes54::uniform(12).unwrap()).unwrap();
+    let mut count=0;
+    for group in PI_AUDIT_GROUPS {
+        for name in baseline[group].as_object().unwrap().keys() {
+            let low=pi_audit_input(22331,group,name,5);
+            let mid=pi_audit_input(22331,group,name,12);
+            let high=pi_audit_input(22331,group,name,18);
+            assert_ne!(low.input_fingerprint(),mid.input_fingerprint());
+            assert_ne!(high.input_fingerprint(),mid.input_fingerprint());
+            for (i,(a,b)) in low.home_team.lineup.iter().zip(&high.home_team.lineup).enumerate() {
+                let eligible=match group {"goalkeeping"=>i==0,"technical"=>i!=0,_=>true};
+                for ((ka,va),(kb,vb)) in a.attributes.all_named().into_iter().zip(b.attributes.all_named()) {
+                    assert_eq!(ka,kb);
+                    if eligible && ka==name {
+                        assert_eq!((va,vb),(5,18));
+                    }else{assert_eq!((va,vb),(12,12));}
+                }
+            }
+            assert_eq!(serde_json::to_value(&low.away_team).unwrap(),serde_json::to_value(&high.away_team).unwrap());
+            count+=1;
+        }
+    }
+    assert_eq!(count,54);
+}
+
+fn pi_audit_match(input:MatchInputV4)->serde_json::Value {
+    let result=simulate_v4(input).expect("attribute audit match must simulate");
+    let diag=result.diagnostics.as_ref().expect("FastBatch diagnostics");
+    diag.validate_basic().expect("valid diagnostics");
+    assert!(result.ok);
+    serde_json::json!({
+        "seed":result.seed,"inputFingerprint":result.input_fingerprint,
+        "timelineFingerprint":result.event_timeline_fingerprint,
+        "eventCount":result.event_count,"summary":result.summary,"diagnostics":diag
+    })
+}
+
+#[test]
+#[ignore = "population evidence: run in the dedicated five-group workflow"]
+fn pi_attribute_audit_population() {
+    let group=std::env::var("PI_AUDIT_GROUP").expect("set PI_AUDIT_GROUP");
+    assert!(PI_AUDIT_GROUPS.contains(&group.as_str()));
+    let path=std::env::var("PI_AUDIT_REPORT_PATH").expect("set PI_AUDIT_REPORT_PATH");
+    let profile=serde_json::to_value(PlayerAttributes54::uniform(12).unwrap()).unwrap();
+    let names:Vec<_>=profile[&group].as_object().unwrap().keys().cloned().collect();
+    assert!(!names.is_empty());
+    let seeds:Vec<i64>=(0..8).map(|i|104729+i*7907).collect();
+    let mut baselines=Vec::new();
+    for seed in &seeds {
+        baselines.push(pi_audit_match(pi_audit_input(*seed,&group,&names[0],12)));
+    }
+    let mut rows=Vec::new();
+    let mut career_differences=0usize;
+    for name in &names {
+        let career=PI_CAREER_HOOKS.contains(&name.as_str());
+        for (i,seed) in seeds.iter().enumerate() {
+            let low=pi_audit_match(pi_audit_input(*seed,&group,name,5));
+            let high=pi_audit_match(pi_audit_input(*seed,&group,name,18));
+            let mid=&baselines[i];
+            let same=|a:&serde_json::Value,b:&serde_json::Value|{
+                ["timelineFingerprint","eventCount","summary","diagnostics"].iter().all(|key|a[*key]==b[*key])
+            };
+            let low_same=same(&low,mid);
+            let high_same=same(&high,mid);
+            if career && (!low_same||!high_same){career_differences+=1;}
+            rows.push(serde_json::json!({
+                "attribute":name,"seed":seed,"careerHook":career,
+                "lowEqualsBaseline":low_same,"highEqualsBaseline":high_same,
+                "low":low,"high":high
+            }));
+        }
+    }
+    let simulations=baselines.len()+2*rows.len();
+    let report=serde_json::json!({
+        "schemaVersion":1,"piVersion":crate::player_intelligence::PI_MODULE_VERSION,
+        "policyId":crate::player_intelligence::PI_POLICY_ID,
+        "group":group,"levels":[5,12,18],"seeds":seeds,
+        "roleCohort":match group.as_str(){"goalkeeping"=>"home goalkeeper only","technical"=>"home outfield only",_=>"all home starters"},
+        "simulationMode":"FAST_BATCH","fixedTactics":true,
+        "baseline":baselines,"pairs":rows,"simulations":simulations,
+        "careerDifferences":career_differences,
+        "limitations":["Only eight matched seeds per attribute; descriptive screening, not validation of effect size.",
+            "Same seed does not imply the same later random draws after decisions diverge.",
+            "Whole-match outcomes can reflect indirect changes in opportunities, not direct skill execution.",
+            "Rare events, big matches and action-level probabilities require isolated fixtures."]
+    });
+    std::fs::write(&path,serde_json::to_string(&report).unwrap()).expect("write full evidence");
+    println!("PI_ATTRIBUTE_AUDIT group={} attributes={} simulations={} careerDifferences={}",group,names.len(),simulations,career_differences);
+    assert_eq!(career_differences,0,"career-only hooks changed match output; see saved evidence");
 }
