@@ -2353,6 +2353,9 @@ fn qa10_mid_interval_tactical_event_preserves_total_movement_and_fatigue() {
     // event timestamps that happen to precede the same requested time.
     // These are explicit test-only scheduler boundaries in BOTH sessions.
     for s in [&mut s_base,&mut s_cmd] {
+        // Starting the first period invalidates previous period-scoped
+        // events, so install probes only after kickoff initialization.
+        s.start_next_period().expect("start first period");
         s.schedule_test_clock_probe(600_000).expect("initial probe");
         s.schedule_test_clock_probe(650_000).expect("final probe");
         let step=s.advance_until_ms(600_000,1000).expect("advance to command horizon");
