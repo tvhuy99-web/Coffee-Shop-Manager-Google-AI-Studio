@@ -22,7 +22,7 @@ store=get(K/'LabGlobalSeedReplayStore.kt')
 wrapper=get(K/'LabRustLiveSession.kt')
 chk('P0-1 offside snapshot + receiver involvement',
     'receiver_in_offside_position' in ball and
-    ball.index('if receiver_in_offside_position {') > ball.index('// Misplaced pass:') and
+    ball.index('if receiver_in_offside_position {') > ball.index('// Misplaced pass that stayed in bounds:') and
     'caught_prob' not in ball and 'OFFSIDE_INVOLVEMENT' in ball)
 chk('P0-2 no fabricated penalty goals', 'if round >= 20' not in sess and
     'shootout_home_goals += 1;\n                break' not in sess and
