@@ -834,6 +834,83 @@ pub(crate) fn resolve_carry_contact(
     execute_dribble_duel_impl(state,input,carrier_idx,defender_idx,carrier_ctx,0.0,shielding,rng).outcome
 }
 
+/// Authoritative conditional duel probabilities, extracted without
+/// changing arithmetic or random draw order. Geometry is currently
+/// used by reachability, not by these conditional execution formulas.
+pub(crate) fn carrier_duel_win_probability(
+    state:&MatchStateV4,input:&MatchInputV4,carrier_idx:usize,def_idx:usize,shielding:bool
+)->f32 {
+    let carrier_attrs=*player_attrs(state,&state.players[carrier_idx]);
+    let def_attrs=*player_attrs(state,&state.players[def_idx]);
+    let (wet_pen, pitch_pen) = environment_ball_penalties(input);
+
+    let att_ana =
+        (0.72 + 0.28 * (state.players[carrier_idx].fatigue.anaerobic / 100.0)).clamp(0.65, 1.0);
+    let def_ana =
+        (0.72 + 0.28 * (state.players[def_idx].fatigue.anaerobic / 100.0)).clamp(0.65, 1.0);
+
+    let flair_val = normalize_attr(carrier_attrs.mental.flair);
+    let effective_def_anticipation =
+        (normalize_attr(def_attrs.mental.anticipation) * (1.0 - flair_val * 0.28)).clamp(0.05, 1.0);
+
+    let dribble_score = (normalize_attr(carrier_attrs.technical.dribbling) * 0.30
+        + normalize_attr(carrier_attrs.physical.agility) * 0.18
+        + normalize_attr(carrier_attrs.physical.acceleration) * 0.16
+        + normalize_attr(carrier_attrs.physical.balance) * 0.14
+        + normalize_attr(carrier_attrs.physical.strength) * 0.10
+        + flair_val * 0.12)
+        * att_ana
+        - wet_pen * 0.5
+        - pitch_pen * 0.5;
+
+    // Protecting the ball uses balance, strength and composure rather
+    // than the same agility/acceleration profile as a forward dribble.
+    let att_score=if shielding {
+        (normalize_attr(carrier_attrs.physical.balance)*0.30
+            +normalize_attr(carrier_attrs.physical.strength)*0.25
+            +normalize_attr(carrier_attrs.mental.composure)*0.20
+            +normalize_attr(carrier_attrs.technical.technique)*0.15
+            +normalize_attr(carrier_attrs.technical.dribbling)*0.10)*att_ana-wet_pen*0.5-pitch_pen*0.5
+    }else{dribble_score};
+    let def_score = (normalize_attr(def_attrs.technical.tackling) * 0.30
+        + normalize_attr(def_attrs.technical.marking) * 0.20
+        + effective_def_anticipation * 0.18
+        + normalize_attr(def_attrs.physical.agility) * 0.12
+        + normalize_attr(def_attrs.physical.strength) * 0.10
+        + normalize_attr(def_attrs.mental.bravery) * 0.10)
+        * def_ana;
+
+    let win_prob = (0.50 + (att_score - def_score) * 0.65).clamp(0.18, 0.84);
+    win_prob
+}
+
+pub(crate) fn duel_foul_given_defender_win(input:&MatchInputV4,def_attrs:&crate::v4::attributes::PlayerAttributes54)->f32 {
+    let ref_strict = input.referee_profile.strictness as f32 / 100.0;
+    let foul_prob = (0.14
+        + normalize_attr(def_attrs.mental.aggression) * 0.14
+        + (1.0 - normalize_attr(def_attrs.hidden.temperament)) * 0.08
+        + (1.0 - normalize_attr(def_attrs.hidden.sportsmanship)) * 0.06
+        - normalize_attr(def_attrs.technical.tackling) * 0.10
+        + (ref_strict - 0.5) * 0.08)
+        .clamp(0.05, 0.42);
+
+    foul_prob
+}
+
+/// Exact conditional branch probabilities for a valid contact under the
+/// CURRENT resolver. These are audit data, never an input into PI policy.
+pub(crate) fn duel_contact_probabilities(
+    state:&MatchStateV4,input:&MatchInputV4,carrier_idx:usize,def_idx:usize,
+    carrier_ctx:LocalSpatialContext,shielding:bool
+)->(f32,f32,f32) {
+    let defender_win=1.0-carrier_duel_win_probability(state,input,carrier_idx,def_idx,shielding);
+    let foul=defender_win*duel_foul_given_defender_win(input,player_attrs(state,&state.players[def_idx]));
+    let advantage=if carrier_ctx.overload {
+        foul*(0.12+input.referee_profile.advantage_tendency as f32/100.0*0.28)
+    }else{0.0};
+    (defender_win-foul,foul-advantage,advantage)
+}
+
 fn execute_dribble_duel_impl(
     state:&mut MatchStateV4,input:&MatchInputV4,carrier_idx:usize,defender_idx:Option<usize>,
     carrier_ctx:LocalSpatialContext,dt_sec:f32,shielding:bool,rng:&mut DeterministicRng,
@@ -904,45 +981,7 @@ fn execute_dribble_duel_impl(
 
     let def_id = state.players[def_idx].player_id.clone();
     let def_attrs = *player_attrs(state, &state.players[def_idx]);
-    let (wet_pen, pitch_pen) = environment_ball_penalties(input);
-
-    let att_ana =
-        (0.72 + 0.28 * (state.players[carrier_idx].fatigue.anaerobic / 100.0)).clamp(0.65, 1.0);
-    let def_ana =
-        (0.72 + 0.28 * (state.players[def_idx].fatigue.anaerobic / 100.0)).clamp(0.65, 1.0);
-
-    let flair_val = normalize_attr(carrier_attrs.mental.flair);
-    let effective_def_anticipation =
-        (normalize_attr(def_attrs.mental.anticipation) * (1.0 - flair_val * 0.28)).clamp(0.05, 1.0);
-
-    let dribble_score = (normalize_attr(carrier_attrs.technical.dribbling) * 0.30
-        + normalize_attr(carrier_attrs.physical.agility) * 0.18
-        + normalize_attr(carrier_attrs.physical.acceleration) * 0.16
-        + normalize_attr(carrier_attrs.physical.balance) * 0.14
-        + normalize_attr(carrier_attrs.physical.strength) * 0.10
-        + flair_val * 0.12)
-        * att_ana
-        - wet_pen * 0.5
-        - pitch_pen * 0.5;
-
-    // Protecting the ball uses balance, strength and composure rather
-    // than the same agility/acceleration profile as a forward dribble.
-    let att_score=if shielding {
-        (normalize_attr(carrier_attrs.physical.balance)*0.30
-            +normalize_attr(carrier_attrs.physical.strength)*0.25
-            +normalize_attr(carrier_attrs.mental.composure)*0.20
-            +normalize_attr(carrier_attrs.technical.technique)*0.15
-            +normalize_attr(carrier_attrs.technical.dribbling)*0.10)*att_ana-wet_pen*0.5-pitch_pen*0.5
-    }else{dribble_score};
-    let def_score = (normalize_attr(def_attrs.technical.tackling) * 0.30
-        + normalize_attr(def_attrs.technical.marking) * 0.20
-        + effective_def_anticipation * 0.18
-        + normalize_attr(def_attrs.physical.agility) * 0.12
-        + normalize_attr(def_attrs.physical.strength) * 0.10
-        + normalize_attr(def_attrs.mental.bravery) * 0.10)
-        * def_ana;
-
-    let win_prob = (0.50 + (att_score - def_score) * 0.65).clamp(0.18, 0.84);
+    let win_prob=carrier_duel_win_probability(state,input,carrier_idx,def_idx,shielding);
     let roll = rng.next_double() as f32;
 
     let carrier_old_xy = state.players[carrier_idx].pos;
@@ -1055,14 +1094,7 @@ fn execute_dribble_duel_impl(
         def_attrs.physical.natural_fitness,
     );
 
-    let ref_strict = input.referee_profile.strictness as f32 / 100.0;
-    let foul_prob = (0.14
-        + normalize_attr(def_attrs.mental.aggression) * 0.14
-        + (1.0 - normalize_attr(def_attrs.hidden.temperament)) * 0.08
-        + (1.0 - normalize_attr(def_attrs.hidden.sportsmanship)) * 0.06
-        - normalize_attr(def_attrs.technical.tackling) * 0.10
-        + (ref_strict - 0.5) * 0.08)
-        .clamp(0.05, 0.42);
+    let foul_prob=duel_foul_given_defender_win(input,&def_attrs);
 
     let duel_pos = Vec3::ground(carrier_old_xy.x, carrier_old_xy.y).clamp_to_pitch();
     if (rng.next_double() as f32) < foul_prob {

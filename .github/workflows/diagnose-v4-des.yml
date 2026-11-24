@@ -68,7 +68,7 @@ jobs:
                       carry[field] += des.get(field,0)
                   for field in ("outletSamples","openOutletsTotal","noOpenOutletSamples","holdDecisionSamples","holdWithOpenOutletSamples"):
                       outlets[field] += des.get(field,0)
-                  for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM","markPlayerMs","markDistanceM","preparationContacts","preparationTurnovers","preparationFouls","carryFouls","tackleOpportunities","tackleCommitChoices","tackleContainChoices","tackleFrontOpportunities","tackleFrontCommits","tackleSideOpportunities","tackleSideCommits","tackleRearOpportunities","tackleRearCommits","tackleExpectedCleanSum","tackleExpectedFoulSum"):
+                  for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM","markPlayerMs","markDistanceM","preparationContacts","preparationTurnovers","preparationFouls","carryFouls","tackleOpportunities","tackleCommitChoices","tackleContainChoices","tackleFrontOpportunities","tackleFrontCommits","tackleSideOpportunities","tackleSideCommits","tackleRearOpportunities","tackleRearCommits","tackleExpectedCleanSum","tackleExpectedFoulSum","tackleAuditContacts","tackleAuditClean","tackleAuditFoul","tackleAuditAdvantage","tackleAuditPiCleanSum","tackleAuditPiFoulSum","tackleAuditResolverCleanSum","tackleAuditResolverFoulSum","tackleAuditResolverAdvantageSum"):
                       defense[field] += des.get(field,0)
                   for field in ("passRiskPairs","passRiskInitialSum","passRiskReleaseSum","passRiskAbsChangeSum","passRiskIncreased","passRiskDecreased","passRiskStable","reaimReviews","reaimChoices","reaimReleases","reaimPlannedMs","reaimRiskPairs","reaimRiskReductionSum"):
                       drift[field] += des.get(field,0)
@@ -111,6 +111,21 @@ jobs:
                   "commitPctByApproach":{g:100*defense["tackle"+g+"Commits"]/max(1,defense["tackle"+g+"Opportunities"]) for g in ("Front","Side","Rear")},
                   "perCommittedCandidateCleanPrior":defense["tackleExpectedCleanSum"]/max(1,defense["tackleCommitChoices"]),
                   "perCommittedCandidateFoulPrior":defense["tackleExpectedFoulSum"]/max(1,defense["tackleCommitChoices"])
+              },sort_keys=True))
+              contacts=defense["tackleAuditContacts"]
+              assert contacts == defense["preparationContacts"]+carry["carryContacts"]
+              assert defense["tackleAuditClean"]+defense["tackleAuditFoul"]+defense["tackleAuditAdvantage"] <= contacts
+              assert defense["tackleAuditFoul"] == defense["preparationFouls"]+defense["carryFouls"]
+              print("PI_TACKLE_CONTACT_AUDIT",json.dumps({
+                  "contactsPerMatch":contacts/n,
+                  "meanPiClean":defense["tackleAuditPiCleanSum"]/max(1,contacts),
+                  "meanPiFoulIncludingAdvantage":defense["tackleAuditPiFoulSum"]/max(1,contacts),
+                  "meanResolverClean":defense["tackleAuditResolverCleanSum"]/max(1,contacts),
+                  "meanResolverStoppedFoul":defense["tackleAuditResolverFoulSum"]/max(1,contacts),
+                  "meanResolverAdvantage":defense["tackleAuditResolverAdvantageSum"]/max(1,contacts),
+                  "observedClean":defense["tackleAuditClean"]/max(1,contacts),
+                  "observedStoppedFoul":defense["tackleAuditFoul"]/max(1,contacts),
+                  "observedAdvantage":defense["tackleAuditAdvantage"]/max(1,contacts)
               },sort_keys=True))
               print("PI_CONTEST_OUTCOMES",json.dumps({k:v/n for k,v in sorted(outcomes.items())},sort_keys=True))
               assert drift["passRiskPairs"] == drift["passRiskIncreased"]+drift["passRiskDecreased"]+drift["passRiskStable"]

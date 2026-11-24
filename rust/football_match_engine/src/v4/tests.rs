@@ -2664,7 +2664,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.21");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.22");
 }
 
 
@@ -3486,4 +3486,52 @@ fn pi_psychology_momentum_recovery_and_checkpoint_context() {
     assert_eq!(state.players[idx].psychology,restored.players[idx].psychology);
     assert_eq!(recovered,decision_uncertainty(&restored,idx,0.4));
     println!("PI_PSYCHOLOGY momentum neutral={neutral} after={after} recovered={recovered}");
+}
+
+
+#[test]
+fn pi_defense_contact_audit_current_angle_mismatch() {
+    use crate::v4::state::MatchStateV4;
+    use crate::v4::ball_play::{duel_contact_probabilities,resolve_carry_contact};
+    use crate::v4::movement::evaluate_local_context;
+    let input=make_v4_input(22901,SimulationMode::FullEvent,RulesModeV4::Standard);
+    let mut state=MatchStateV4::from_input(&input);
+    let a=state.players.iter().position(|p|p.side==TeamSideV4::Home&&!p.is_goalkeeper).unwrap();
+    let b=state.players.iter().position(|p|p.side==TeamSideV4::Away&&!p.is_goalkeeper).unwrap();
+    state.players[a].pos=Vec2::new(50.0,34.0);
+    state.players[b].pos=Vec2::new(51.0,34.0);
+    state.players[a].vel=Vec2::default();
+    state.players[b].vel=Vec2::default();
+    state.players[a].facing_rad=0.0;
+    let ctx=evaluate_local_context(&state,&input,TeamSideV4::Home,state.players[a].pos);
+    let mut rear=state.clone();
+    rear.players[a].facing_rad=std::f32::consts::PI;
+    let front_pi=crate::player_intelligence::evaluate_tackle(&state,a,b,0.0);
+    let rear_pi=crate::player_intelligence::evaluate_tackle(&rear,a,b,0.0);
+    let front=duel_contact_probabilities(&state,&input,a,b,ctx,false);
+    let back=duel_contact_probabilities(&rear,&input,a,b,ctx,false);
+    assert!(front_pi.access>rear_pi.access);
+    assert!(front_pi.clean_win_probability>rear_pi.clean_win_probability);
+    // Deliberately record the known mismatch, not an assertion that this
+    // is realistic. When physics is improved, replace this evidence test.
+    assert_eq!(front,back);
+    let mut clean=0u32;let mut foul=0u32;let mut advantage=0u32;
+    for k in 0..4096i64 {
+        let mut x=state.clone();let mut y=rear.clone();
+        let mut rx=DeterministicRng::new(104729+k*7907);
+        let mut ry=DeterministicRng::new(104729+k*7907);
+        let ox=resolve_carry_contact(&mut x,&input,a,Some(b),ctx,false,&mut rx);
+        let oy=resolve_carry_contact(&mut y,&input,a,Some(b),ctx,false,&mut ry);
+        let kinds=|o:&crate::v4::ball_play::BallPlayOutcome|o.events.iter().map(|e|e.kind).collect::<Vec<_>>();
+        assert_eq!(kinds(&ox),kinds(&oy));
+        assert_eq!(rx.state(),ry.state());
+        clean+=u32::from(ox.events.iter().any(|e|e.kind==EventTypeV4::TackleWon));
+        foul+=u32::from(ox.events.iter().any(|e|e.kind==EventTypeV4::Foul));
+        advantage+=u32::from(ox.events.iter().any(|e|e.kind==EventTypeV4::AdvantagePlayed));
+    }
+    for (observed,expected) in [(clean,front.0),(foul,front.1),(advantage,front.2)] {
+        assert!((observed as f32/4096.0-expected).abs()<0.04,"branch frequency vs exact resolver");
+    }
+    println!("PI_TACKLE_ISOLATED front_pi_clean={} rear_pi_clean={} resolver={front:?} observed={clean}/{foul}/{advantage} n=4096",
+        front_pi.clean_win_probability,rear_pi.clean_win_probability);
 }

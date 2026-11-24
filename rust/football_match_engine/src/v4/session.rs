@@ -2102,8 +2102,8 @@ impl MatchSessionV4 {
             if let Some(def_idx)=contact {
                 self.mark_tackle_recovery(def_idx);
                 let ctx=evaluate_local_context(&self.state,&self.input,side,pos);
-                let mut outcome=resolve_carry_contact(&mut self.state,&self.input,idx,Some(def_idx),ctx,
-                    pending.plan.carry.map_or(false,|c|c.shielding),&mut self.rng);
+                let mut outcome=self.resolve_audited_carry_contact(idx,Some(def_idx),ctx,
+                    pending.plan.carry.map_or(false,|c|c.shielding));
                 let foul=outcome.events.iter().any(|e|e.kind==EventTypeV4::Foul);
                 let card=outcome.events.iter().any(|e|matches!(e.kind,EventTypeV4::YellowCard|EventTypeV4::RedCard));
                 let injury=outcome.events.iter().any(|e|e.kind==EventTypeV4::Injury);
@@ -2763,6 +2763,25 @@ impl MatchSessionV4 {
         Ok(())
     }
 
+    fn resolve_audited_carry_contact(&mut self,idx:usize,contact:Option<usize>,
+        ctx:crate::v4::movement::LocalSpatialContext,shielding:bool)->crate::v4::ball_play::BallPlayOutcome {
+        // Evaluate against the SAME physical snapshot and same actual
+        // contact, not all candidate commits or hypothetical reaches.
+        // No forecast is used to change the resolved outcome.
+        let audit=contact.map(|def_idx|{
+            let pi=crate::player_intelligence::evaluate_tackle(&self.state,idx,def_idx,0.0);
+            let resolver=crate::v4::ball_play::duel_contact_probabilities(&self.state,&self.input,idx,def_idx,ctx,shielding);
+            (pi,resolver)
+        });
+        let out=resolve_carry_contact(&mut self.state,&self.input,idx,contact,ctx,shielding,&mut self.rng);
+        if let Some((pi,resolver))=audit {
+            let has=|kind|out.events.iter().any(|e|e.kind==kind);
+            self.diagnostics.record_tackle_contact_audit(pi.clean_win_probability,pi.foul_probability,
+                resolver,has(EventTypeV4::TackleWon),has(EventTypeV4::Foul),has(EventTypeV4::AdvantagePlayed));
+        }
+        out
+    }
+
     fn finish_timed_dribble(&mut self, player_id:&str, side:TeamSideV4) -> Result<(),V4Error> {
         let Some(carry)=self.pending_carry.take() else {return Ok(());};
         let idx=carry.carrier_idx;
@@ -2787,7 +2806,7 @@ impl MatchSessionV4 {
             self.mark_tackle_recovery(def_idx);
             self.diagnostics.record_carry_contact();
         }
-        let mut outcome=resolve_carry_contact(&mut self.state,&self.input,idx,contact,ctx,carry.shielding,&mut self.rng);
+        let mut outcome=self.resolve_audited_carry_contact(idx,contact,ctx,carry.shielding);
         self.diagnostics.record_carry_result(outcome.next_side!=side);
         let had_foul=outcome.events.iter().any(|e|e.kind==EventTypeV4::Foul);
         if had_foul {self.diagnostics.record_carry_foul();}

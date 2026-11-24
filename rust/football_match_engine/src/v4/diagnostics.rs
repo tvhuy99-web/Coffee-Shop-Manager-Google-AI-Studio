@@ -220,6 +220,24 @@ pub struct DesMatchDiagnosticsV4 {
     #[serde(default)]
     pub tackle_expected_foul_sum: f64,
     #[serde(default)]
+    pub tackle_audit_contacts: u32,
+    #[serde(default)]
+    pub tackle_audit_clean: u32,
+    #[serde(default)]
+    pub tackle_audit_foul: u32,
+    #[serde(default)]
+    pub tackle_audit_advantage: u32,
+    #[serde(default)]
+    pub tackle_audit_pi_clean_sum: f64,
+    #[serde(default)]
+    pub tackle_audit_pi_foul_sum: f64,
+    #[serde(default)]
+    pub tackle_audit_resolver_clean_sum: f64,
+    #[serde(default)]
+    pub tackle_audit_resolver_foul_sum: f64,
+    #[serde(default)]
+    pub tackle_audit_resolver_advantage_sum: f64,
+    #[serde(default)]
     pub pass_risk_pairs: u32,
     #[serde(default)]
     pub pass_risk_initial_sum: f64,
@@ -481,6 +499,24 @@ struct DesDiagnosticsAccumulator {
     #[serde(default)]
     tackle_expected_foul_sum: f64,
     #[serde(default)]
+    tackle_audit_contacts: u32,
+    #[serde(default)]
+    tackle_audit_clean: u32,
+    #[serde(default)]
+    tackle_audit_foul: u32,
+    #[serde(default)]
+    tackle_audit_advantage: u32,
+    #[serde(default)]
+    tackle_audit_pi_clean_sum: f64,
+    #[serde(default)]
+    tackle_audit_pi_foul_sum: f64,
+    #[serde(default)]
+    tackle_audit_resolver_clean_sum: f64,
+    #[serde(default)]
+    tackle_audit_resolver_foul_sum: f64,
+    #[serde(default)]
+    tackle_audit_resolver_advantage_sum: f64,
+    #[serde(default)]
     pass_risk_pairs: u32,
     #[serde(default)]
     pass_risk_initial_sum: f64,
@@ -565,6 +601,15 @@ impl DesDiagnosticsAccumulator {
             tackle_rear_commits: self.tackle_rear_commits,
             tackle_expected_clean_sum: self.tackle_expected_clean_sum,
             tackle_expected_foul_sum: self.tackle_expected_foul_sum,
+            tackle_audit_contacts: self.tackle_audit_contacts,
+            tackle_audit_clean: self.tackle_audit_clean,
+            tackle_audit_foul: self.tackle_audit_foul,
+            tackle_audit_advantage: self.tackle_audit_advantage,
+            tackle_audit_pi_clean_sum: self.tackle_audit_pi_clean_sum,
+            tackle_audit_pi_foul_sum: self.tackle_audit_pi_foul_sum,
+            tackle_audit_resolver_clean_sum: self.tackle_audit_resolver_clean_sum,
+            tackle_audit_resolver_foul_sum: self.tackle_audit_resolver_foul_sum,
+            tackle_audit_resolver_advantage_sum: self.tackle_audit_resolver_advantage_sum,
             pass_risk_pairs: self.pass_risk_pairs,
             pass_risk_initial_sum: self.pass_risk_initial_sum,
             pass_risk_release_sum: self.pass_risk_release_sum,
@@ -757,6 +802,20 @@ impl MatchDiagnosticsCollectorV4 {
             else {(&mut self.des.tackle_rear_opportunities,&mut self.des.tackle_rear_commits)};
         *n=n.saturating_add(1);
         if commits {*c=c.saturating_add(1);}
+    }
+    /// Actual contact denominator, separate from the repeated candidate
+    /// evaluations. PI estimate is refreshed for audit only at contact.
+    pub(crate) fn record_tackle_contact_audit(&mut self,pi_clean:f32,pi_foul:f32,
+        resolver:(f32,f32,f32),clean:bool,foul:bool,advantage:bool) {
+        self.des.tackle_audit_contacts+=1;
+        self.des.tackle_audit_clean+=u32::from(clean);
+        self.des.tackle_audit_foul+=u32::from(foul);
+        self.des.tackle_audit_advantage+=u32::from(advantage);
+        self.des.tackle_audit_pi_clean_sum+=f64::from(pi_clean);
+        self.des.tackle_audit_pi_foul_sum+=f64::from(pi_foul);
+        self.des.tackle_audit_resolver_clean_sum+=f64::from(resolver.0);
+        self.des.tackle_audit_resolver_foul_sum+=f64::from(resolver.1);
+        self.des.tackle_audit_resolver_advantage_sum+=f64::from(resolver.2);
     }
     pub fn record_preparation_contact(&mut self,lost:bool,foul:bool) {
         self.des.preparation_contacts=self.des.preparation_contacts.saturating_add(1);
