@@ -1,5 +1,5 @@
 //! Player Intelligence 4.0: read-only policy, deterministic intentions.
-//! Extraction profile preserves pre-PI behavior and RNG ordering exactly.
+//! Behavioral policy is versioned separately from the original extraction baseline.
 //! No scheduler, score mutation, ball ownership or fatigue integration here.
 mod decision;
 mod goalkeeper;
@@ -7,6 +7,7 @@ mod intent;
 mod off_ball;
 mod timing;
 mod version;
+mod utility;
 
 pub use decision::{perceive_evaluate_and_decide, perceive_evaluate_and_decide_des};
 pub use goalkeeper::choose_gk_distribution;

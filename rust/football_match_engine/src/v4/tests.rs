@@ -2636,5 +2636,42 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.1");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.2");
+}
+
+
+#[test]
+fn pi_on_ball_prefers_useful_progress_to_empty_switch() {
+    use crate::v4::state::MatchStateV4;
+    use crate::v4::movement::evaluate_local_context;
+    use crate::player_intelligence::{perceive_evaluate_and_decide_des,PlannedActionV4,PassKindV4};
+    let input=make_v4_input_teams(19301,SimulationMode::FullEvent,RulesModeV4::Standard,
+        make_v4_team("H","H",18),make_v4_team("A","A",13));
+    let mut state=MatchStateV4::from_input(&input);
+    let car=state.players.iter().position(|p|p.player_id=="H06").unwrap();
+    let forward=state.players.iter().position(|p|p.player_id=="H07").unwrap();
+    let switch=state.players.iter().position(|p|p.player_id=="H08").unwrap();
+    for (i,p) in state.players.iter_mut().enumerate() {
+        if p.side==TeamSideV4::Home {
+            p.on_pitch=i==car || i==forward || i==switch;
+            p.pos=if i==car {Vec2::new(47.0,10.0)} else if i==forward {
+                Vec2::new(71.0,32.0)
+            } else {Vec2::new(47.0,58.0)};
+        } else {
+            p.pos=Vec2::new(if p.is_goalkeeper {100.0} else {80.0},66.0);
+        }
+    }
+    let ctx=evaluate_local_context(&state,&input,TeamSideV4::Home,state.players[car].pos);
+    let mut useful=0;
+    let mut empty=0;
+    for seed in 1..=128 {
+        let mut rng=DeterministicRng::new(seed*7919);
+        let plan=perceive_evaluate_and_decide_des(&state,&input,&input.timing_model,car,ctx,&mut rng);
+        if let PlannedActionV4::Pass{target_idx,kind,..}=plan.action {
+            if target_idx==forward {useful+=1;}
+            if target_idx==switch {assert_eq!(kind,PassKindV4::Switch);empty+=1;}
+        }
+    }
+    println!("PI_ON_BALL_CHOICE useful={} empty_switch={}",useful,empty);
+    assert!(useful>empty && useful>64,"clear progressive option should beat a pointless switch");
 }

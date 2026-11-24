@@ -143,6 +143,20 @@ jobs:
       - name: Verify actual full-event replay and batch parity
         working-directory: rust/football_match_engine
         run: cargo test --lib fast_batch_and_full_event_diagnostics_match -- --nocapture
+  pi_on_ball_regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check shared utility, field value and actual decisions
+        working-directory: rust/football_match_engine
+        run: cargo test --lib pi_on_ball_ -- --nocapture
+      - name: Check old interface and offside awareness
+        working-directory: rust/football_match_engine
+        run: |
+          cargo test --lib pi4_legacy_api_and_direct_policy_match -- --nocapture
+          cargo test --lib des_offside_ -- --nocapture
   attacking_sample:
     runs-on: ubuntu-latest
     timeout-minutes: 20
