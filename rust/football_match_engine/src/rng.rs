@@ -5,6 +5,9 @@ pub struct DeterministicRng { root_seed: u64, state: u64 }
 
 impl DeterministicRng {
     pub fn new(seed: i64) -> Self { Self {root_seed: seed as u64, state: seed as u64} }
+    pub fn from_seed_and_state(root_seed: i64, state: i64) -> Self {
+        Self { root_seed: root_seed as u64, state: state as u64 }
+    }
     pub fn root_seed(&self) -> i64 { self.root_seed as i64 }
     pub fn state(&self) -> i64 { self.state as i64 }
 

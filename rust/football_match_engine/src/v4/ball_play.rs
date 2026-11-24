@@ -2,16 +2,25 @@ use crate::rng::DeterministicRng;
 use crate::v4::attributes::normalize_attr;
 use crate::v4::events::{EventMetadataV4, EventTypeV4, HighlightTier};
 use crate::v4::input::{MatchInputV4, PitchQuality, PreferredFoot, WeatherCondition};
-use crate::v4::movement::{evaluate_local_context, lookup_attrs, LocalSpatialContext};
+use crate::v4::interaction::{
+    find_earliest_ball_interaction, BallTrajectory, BoundaryKind, DefenderCandidate,
+    EarlyInteractionHit, InteractionKind, DEFAULT_GRAVITY_Z_MPS2,
+};
+use crate::v4::movement::{
+    evaluate_local_context, player_attrs, player_max_speed_mps, LocalSpatialContext,
+};
 use crate::v4::perception::PassKindV4;
 use crate::v4::psychology::{check_impact_injury, resolve_foul_discipline};
-use crate::v4::spatial::{
-    attacking_progress_m, TeamSideV4, Vec2, Vec3, PITCH_HALF_LENGTH_M, PITCH_LENGTH_M,
-    PITCH_WIDTH_M,
+use crate::v4::rules::{
+    estimate_ball_flight_ms, BallFlightKind, DeadBallKind, TimingModelConfig,
 };
-use crate::v4::state::{BallControlState, MatchStateV4};
+use crate::v4::spatial::{
+    attacking_progress_m, is_in_attacking_penalty_box, TeamSideV4, Vec2, Vec3,
+    PITCH_HALF_LENGTH_M, PITCH_LENGTH_M, PITCH_WIDTH_M,
+};
+use crate::v4::state::{BallControlState, MatchStateV4, PlayerRuntimeStateV4};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BallPlayOutcome {
     pub next_side: TeamSideV4,
     pub next_carrier_idx: usize,
@@ -19,7 +28,42 @@ pub struct BallPlayOutcome {
     pub events: Vec<EmittedPlayEvent>,
 }
 
+impl BallPlayOutcome {
+    /// Infers the DES `DeadBallKind` implied by emitted events, if play stopped.
+    pub fn inferred_dead_ball_kind(&self) -> Option<DeadBallKind> {
+        for ev in self.events.iter().rev() {
+            match ev.kind {
+                EventTypeV4::Goal | EventTypeV4::OwnGoal => {
+                    return Some(DeadBallKind::GoalCelebration)
+                }
+                EventTypeV4::Corner => return Some(DeadBallKind::Corner),
+                EventTypeV4::GoalKick => return Some(DeadBallKind::GoalKick),
+                EventTypeV4::ThrowIn => return Some(DeadBallKind::ThrowIn),
+                EventTypeV4::Offside => return Some(DeadBallKind::Offside),
+                EventTypeV4::PenaltyAwarded => return Some(DeadBallKind::PenaltyKick),
+                EventTypeV4::Foul => return Some(DeadBallKind::DirectFreeKick),
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
+/// DES-aware wrapper around `BallPlayOutcome` carrying exact kinematic flight/duel elapsed time,
+/// dead-ball restart classification (so `session.rs` opens `DeadBallState` instead of adding
+/// hardcoded stoppage seconds), and any early continuous-interaction hit.
 #[derive(Debug, Clone)]
+pub struct DesBallPlayOutcome {
+    pub trajectory: Option<BallTrajectory>,
+    pub planned_flight_ms: i64,
+    pub outcome: BallPlayOutcome,
+    pub elapsed_ms: i64,
+    pub dead_ball_kind: Option<DeadBallKind>,
+    pub restart_spot: Option<Vec3>,
+    pub early_interaction: Option<EarlyInteractionHit>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EmittedPlayEvent {
     pub kind: EventTypeV4,
     pub tier: HighlightTier,
@@ -31,10 +75,49 @@ pub struct EmittedPlayEvent {
     pub metadata: EventMetadataV4,
 }
 
+/// Builds kinematic `DefenderCandidate` snapshots for all active outfield defenders of `def_side`.
+pub(crate) fn build_defender_candidates(
+    state: &MatchStateV4,
+    def_side: TeamSideV4,
+    is_aerial: bool,
+) -> Vec<DefenderCandidate> {
+    let mut out = Vec::with_capacity(11);
+    for p in &state.players {
+        if !p.on_pitch || p.sent_off || p.side != def_side || p.is_goalkeeper {
+            continue;
+        }
+        let attrs = player_attrs(state, p);
+        let pace = normalize_attr(attrs.physical.pace);
+        let accel = normalize_attr(attrs.physical.acceleration);
+        let ant = normalize_attr(attrs.mental.anticipation);
+        let pos_skill = normalize_attr(attrs.mental.positioning);
+        let conc = normalize_attr(attrs.mental.concentration);
+        let max_speed_mps = 4.2 + pace * 2.8 + accel * 1.1;
+        let fatigue_factor =
+            ((p.fatigue.aerobic * 0.6 + p.fatigue.anaerobic * 0.4) / 100.0).clamp(0.45, 1.0);
+        let reach_m = if is_aerial {
+            0.85 + pos_skill * 0.25 + normalize_attr(attrs.physical.jumping_reach) * 0.35
+        } else {
+            0.90 + pos_skill * 0.30 + ant * 0.20
+        };
+        let reaction_delay_ms = (260.0 - ant * 110.0 - conc * 40.0).round() as i64;
+        out.push(DefenderCandidate {
+            player_id: p.player_id.clone(),
+            side: p.side,
+            pos: p.pos,
+            max_speed_mps,
+            reach_m,
+            reaction_delay_ms: reaction_delay_ms.clamp(95, 280),
+            anticipation_norm: ant,
+            fatigue_factor,
+        });
+    }
+    out
+}
+
 /// Evaluates Law 11 (Offside) at the instant the teammate plays the ball:
 /// - Exempt if receiver is in own half (`<= 52.5m`) or behind the ball.
-/// - Offside if receiver is ahead of the ball AND ahead of the second-last opponent defender
-///   (with `off_the_ball` + `anticipation` governing ability to hold the line vs `offside_trap`).
+/// - Offside if receiver is ahead of the ball AND ahead of the second-last opponent defender.
 pub fn is_receiver_offside(
     state: &MatchStateV4,
     att_side: TeamSideV4,
@@ -65,10 +148,19 @@ pub fn is_receiver_offside(
     recv_prog > offside_line + 0.001
 }
 
+/// DES two-phase pass & first-touch resolver:
+/// 1. Computes analytic `BallTrajectory` and kinematic `flight_ms = estimate_ball_flight_ms(...)`.
+/// 2. Transitions ball to `BallControlState::InFlight` and queries
+///    `find_earliest_ball_interaction(&traj, &defenders, t_now_ms, t_arrival_ms)` to detect
+///    defensive `PassInterception` or `BallOutOfBounds` BEFORE arrival at the receiver.
+/// 3. Never credits a completed pass when an earlier `PassInterception` or boundary exit occurs.
+/// 4. Models one-touch (`is_one_touch`) vs controlled multi-touch reception via `first_touch` & `composure`.
+/// 5. Emits `stoppage_seconds: 0` and returns `dead_ball_kind` so `session.rs` opens `DeadBallState`.
 #[allow(clippy::too_many_arguments)]
-pub fn execute_pass_and_first_touch(
+pub fn execute_pass_and_first_touch_des(
     state: &mut MatchStateV4,
     input: &MatchInputV4,
+    timing: &TimingModelConfig,
     passer_idx: usize,
     target_idx: usize,
     kind: PassKindV4,
@@ -77,8 +169,9 @@ pub fn execute_pass_and_first_touch(
     lane_risk: f32,
     interceptor_idx: Option<usize>,
     passer_ctx: LocalSpatialContext,
+    is_one_touch: bool,
     rng: &mut DeterministicRng,
-) -> BallPlayOutcome {
+) -> DesBallPlayOutcome {
     let mut events = Vec::with_capacity(5);
     let att_side = state.players[passer_idx].side;
     let def_side = att_side.opposite();
@@ -88,22 +181,20 @@ pub fn execute_pass_and_first_touch(
     let passer_pos = state.players[passer_idx].pos;
     let target_pos = state.players[target_idx].pos;
 
-    let passer_attrs = *lookup_attrs(input, &state.players[passer_idx]);
-    let target_attrs = *lookup_attrs(input, &state.players[target_idx]);
+    let passer_attrs = *player_attrs(state, &state.players[passer_idx]);
+    let target_attrs = *player_attrs(state, &state.players[target_idx]);
     let passer_fam = state.players[passer_idx].position_familiarity;
     let passer_aero = state.players[passer_idx].fatigue.aerobic;
     let passer_ana = state.players[passer_idx].fatigue.anaerobic;
     let psych_comp = state.players[passer_idx].psychology.composure_delta;
 
-    // Law 11: snapshot the receiver's POSITION when the ball is played. An
-    // offside position is not itself an offence; the player must subsequently
-    // touch/play the pass or interfere with an opponent. An intercepted or
-    // misplaced pass must not automatically be whistled offside.
+    // Law 11: snapshot the receiver's POSITION at the exact instant the ball is played.
     let receiver_in_offside_position =
         is_receiver_offside(state, att_side, passer_pos, target_pos);
 
     let (wet_pen, pitch_pen) = environment_ball_penalties(input);
-    let foot_mod = weak_foot_pass_modifier(input, att_side, &passer_id, passer_pos, target_pos);
+    let foot_mod =
+        weak_foot_pass_modifier(state, &state.players[passer_idx], passer_pos, target_pos);
 
     let pass_skill = match kind {
         PassKindV4::Cross => {
@@ -130,11 +221,24 @@ pub fn execute_pass_and_first_touch(
 
     let pressure_norm = (passer_ctx.pressure / 100.0).clamp(0.0, 1.0);
     let composure = (normalize_attr(passer_attrs.mental.composure) + psych_comp).clamp(0.1, 1.0);
+    let passer_ft = normalize_attr(passer_attrs.technical.first_touch);
+    let one_touch_mod = if is_one_touch {
+        // One-touch release requires clean first touch & composure to keep accuracy intact.
+        (0.91 + passer_ft * 0.065 + composure * 0.045).clamp(0.88, 1.02)
+    } else {
+        (1.0 + composure * 0.025).clamp(1.0, 1.03)
+    };
+
     let pressure_pen = pressure_norm * (0.16 - composure * 0.08);
     let dist_pen = ((distance_m - 14.0).max(0.0) * 0.0032).min(0.16);
-    let fatigue_mod = (0.82 + 0.18 * ((passer_aero * 0.65 + passer_ana * 0.35) / 100.0)).clamp(0.75, 1.0);
+    let fatigue_mod =
+        (0.82 + 0.18 * ((passer_aero * 0.65 + passer_ana * 0.35) / 100.0)).clamp(0.75, 1.0);
 
-    let execution_accuracy = ((0.745 + pass_skill * 0.20) * fatigue_mod * foot_mod * (0.90 + 0.10 * passer_fam)
+    let execution_accuracy = ((0.745 + pass_skill * 0.20)
+        * fatigue_mod
+        * foot_mod
+        * one_touch_mod
+        * (0.90 + 0.10 * passer_fam)
         - pressure_pen
         - dist_pen
         - wet_pen
@@ -150,22 +254,252 @@ pub fn execute_pass_and_first_touch(
 
     state.team_state_mut(att_side).passes_attempted += 1;
 
+    // Phase 1 (Kick & In-Flight): compute kinematic flight time and analytic 3D trajectory.
+    let flight_ms = estimate_ball_flight_ms(
+        timing,
+        distance_m,
+        BallFlightKind::from(kind),
+        input.match_environment.weather,
+        input.match_environment.pitch_quality,
+        rng,
+    );
+    let t_now_ms = state.des_clock.sim_time_ms;
+    let t_arrival_ms = t_now_ms.saturating_add(flight_ms);
+    let flight_sec = (flight_ms as f32 / 1000.0).max(0.05);
+
+    let is_misplaced = (rng.next_double() as f32) > execution_accuracy;
+    let aim_pos = if is_misplaced {
+        let near_left = target_pos.y <= 9.5;
+        let near_right = target_pos.y >= (PITCH_WIDTH_M - 9.5);
+        let err_mag = (2.8 + (1.0 - execution_accuracy) * 9.0).clamp(2.5, 9.5);
+        let err_y = if near_left && (rng.next_double() as f32) < 0.55 {
+            -(target_pos.y + 1.8)
+        } else if near_right && (rng.next_double() as f32) < 0.55 {
+            (PITCH_WIDTH_M - target_pos.y) + 1.8
+        } else {
+            (rng.next_double() as f32 - 0.5) * 2.0 * err_mag
+        };
+        let err_x = (rng.next_double() as f32 - 0.5) * err_mag;
+        Vec2::new(target_pos.x + err_x, target_pos.y + err_y)
+    } else {
+        target_pos
+    };
+
+    let drag = if kind.is_aerial() { 0.08f32 } else { 0.16f32 };
+    let drag_integral = if drag > 1e-5 {
+        (1.0 - (-drag * flight_sec).exp()) / drag
+    } else {
+        flight_sec
+    };
+    let vx = (aim_pos.x - passer_pos.x) / drag_integral;
+    let vy = (aim_pos.y - passer_pos.y) / drag_integral;
+    let start_z = if kind.is_aerial() { 0.25 } else { 0.10 };
+    let vz = if kind.is_aerial() {
+        0.5 * DEFAULT_GRAVITY_Z_MPS2 * flight_sec
+    } else {
+        (ball_z / drag_integral).max(0.0)
+    };
+
+    let traj = BallTrajectory {
+        start_time_ms: t_now_ms,
+        start_pos: Vec3::new(passer_pos.x, passer_pos.y, start_z),
+        initial_vel: Vec3::new(vx, vy, vz),
+        gravity_z: DEFAULT_GRAVITY_Z_MPS2,
+        drag,
+        is_shot: false,
+        is_carrier_dribble: false,
+    };
+
+    // Ball is now airborne / rolling in flight.
+    state.ball.pos = traj.start_pos;
+    state.ball.vel = traj.initial_vel;
+    state.ball.control = BallControlState::InFlight;
+    state.ball.owner_side = None;
+    state.ball.owner_player_id = None;
+    state.ball.last_touch_side = Some(att_side);
+    state.ball.last_touch_player_id = Some(passer_id.clone());
+
+    let defenders = build_defender_candidates(state, def_side, kind.is_aerial());
+    let early_hit = find_earliest_ball_interaction(&traj, &defenders, t_now_ms, t_arrival_ms);
+
+    // Phase 2 (Continuous In-Flight Resolution): check earliest interception or boundary exit
+    // strictly BEFORE the pass can ever be credited as completed.
+    if let Some(hit) = early_hit {
+        let elapsed_ms = (hit.time_ms - t_now_ms).max(1);
+        match hit.kind {
+            InteractionKind::PassInterception => {
+                let int_idx = hit
+                    .defender_id
+                    .as_deref()
+                    .and_then(|id| state.players.iter().position(|p| p.player_id == id))
+                    .or(interceptor_idx)
+                    .unwrap_or_else(|| first_outfield(state, def_side));
+                let int_id = state.players[int_idx].player_id.clone();
+                let int_pos = hit.ball_pos.clamp_to_pitch();
+
+                state.ball.pos = int_pos;
+                state.ball.vel = Vec3::default();
+                state.ball.control = BallControlState::Controlled;
+                state.ball.owner_side = Some(def_side);
+                state.ball.owner_player_id = Some(int_id.clone());
+                state.ball.last_touch_side = Some(def_side);
+                state.ball.last_touch_player_id = Some(int_id.clone());
+
+                let meta = EventMetadataV4 {
+                    pass_type: Some(kind.as_str().into()),
+                    distance_m: Some(distance_m),
+                    pressure: Some(passer_ctx.pressure.round() as u8),
+                    outcome: Some("INTERCEPTED".into()),
+                    ..EventMetadataV4::default()
+                };
+                events.push(EmittedPlayEvent {
+                    kind: EventTypeV4::PassFailed,
+                    tier: HighlightTier::None,
+                    seq_id: None,
+                    side: Some(att_side),
+                    actor: Some(passer_id),
+                    target: Some(target_id),
+                    ball_pos: int_pos,
+                    metadata: meta.clone(),
+                });
+                events.push(EmittedPlayEvent {
+                    kind: EventTypeV4::Interception,
+                    tier: HighlightTier::None,
+                    seq_id: None,
+                    side: Some(def_side),
+                    actor: Some(int_id),
+                    target: None,
+                    ball_pos: int_pos,
+                    metadata: meta,
+                });
+                return DesBallPlayOutcome {
+                    trajectory: Some(traj.clone()),
+                    planned_flight_ms: flight_ms,
+                    outcome: BallPlayOutcome {
+                        next_side: def_side,
+                        next_carrier_idx: int_idx,
+                        stoppage_seconds: 0,
+                        events,
+                    },
+                    elapsed_ms,
+                    dead_ball_kind: None,
+                    restart_spot: None,
+                    early_interaction: Some(hit),
+                };
+            }
+            InteractionKind::BallOutOfBounds | InteractionKind::GoalScored => {
+                let spot = hit.ball_pos.clamp_to_pitch();
+                let boundary = hit.boundary.unwrap_or(BoundaryKind::LeftTouchline);
+                let (dead_kind, restart_event, carrier_idx) = match boundary {
+                    BoundaryKind::LeftTouchline | BoundaryKind::RightTouchline => {
+                        state.team_state_mut(def_side).throw_ins += 1;
+                        let def_idx = evaluate_local_context(state, input, att_side, spot.xy())
+                            .nearest_defender_idx
+                            .unwrap_or_else(|| first_outfield(state, def_side));
+                        (DeadBallKind::ThrowIn, EventTypeV4::ThrowIn, def_idx)
+                    }
+                    BoundaryKind::AwayGoalLine => {
+                        if att_side == TeamSideV4::Home {
+                            let gk = find_gk_or_outfield(state, def_side);
+                            (DeadBallKind::GoalKick, EventTypeV4::GoalKick, gk)
+                        } else {
+                            state.team_state_mut(def_side).corners += 1;
+                            (
+                                DeadBallKind::Corner,
+                                EventTypeV4::Corner,
+                                first_outfield(state, def_side),
+                            )
+                        }
+                    }
+                    BoundaryKind::HomeGoalLine => {
+                        if att_side == TeamSideV4::Away {
+                            let gk = find_gk_or_outfield(state, def_side);
+                            (DeadBallKind::GoalKick, EventTypeV4::GoalKick, gk)
+                        } else {
+                            state.team_state_mut(def_side).corners += 1;
+                            (
+                                DeadBallKind::Corner,
+                                EventTypeV4::Corner,
+                                first_outfield(state, def_side),
+                            )
+                        }
+                    }
+                };
+                let restart_actor_id = state.players[carrier_idx].player_id.clone();
+
+                state.ball.pos = spot;
+                state.ball.vel = Vec3::default();
+                state.ball.control = BallControlState::DeadBall;
+                state.ball.owner_side = Some(def_side);
+                state.ball.owner_player_id = Some(restart_actor_id.clone());
+
+                events.push(EmittedPlayEvent {
+                    kind: EventTypeV4::PassFailed,
+                    tier: HighlightTier::None,
+                    seq_id: None,
+                    side: Some(att_side),
+                    actor: Some(passer_id),
+                    target: None,
+                    ball_pos: spot,
+                    metadata: EventMetadataV4 {
+                        pass_type: Some(kind.as_str().into()),
+                        distance_m: Some(distance_m),
+                        outcome: Some("OUT_OF_PLAY".into()),
+                        ..EventMetadataV4::default()
+                    },
+                });
+                events.push(EmittedPlayEvent {
+                    kind: restart_event,
+                    tier: HighlightTier::None,
+                    seq_id: None,
+                    side: Some(def_side),
+                    actor: Some(restart_actor_id),
+                    target: None,
+                    ball_pos: spot,
+                    metadata: EventMetadataV4::default(),
+                });
+
+                return DesBallPlayOutcome {
+                    trajectory: Some(traj.clone()),
+                    planned_flight_ms: flight_ms,
+                    outcome: BallPlayOutcome {
+                        next_side: def_side,
+                        next_carrier_idx: carrier_idx,
+                        stoppage_seconds: 0,
+                        events,
+                    },
+                    elapsed_ms,
+                    dead_ball_kind: Some(dead_kind),
+                    restart_spot: Some(spot),
+                    early_interaction: Some(hit),
+                };
+            }
+            _ => {}
+        }
+    }
+
+    // Secondary lane-read interception check when a defender is already positioned along the lane.
     if let Some(int_idx) = interceptor_idx {
-        let int_attrs = *lookup_attrs(input, &state.players[int_idx]);
+        let int_attrs = *player_attrs(state, &state.players[int_idx]);
         let int_id = state.players[int_idx].player_id.clone();
         let int_pos = state.players[int_idx].pos;
         let flair_deception = normalize_attr(passer_attrs.mental.flair) * 0.08;
-        let int_prob = (lane_risk * (0.26 + normalize_attr(int_attrs.mental.anticipation) * 0.18)
-            + (1.0 - execution_accuracy) * 0.20
+        let int_prob = (lane_risk
+            * (0.20 + normalize_attr(int_attrs.mental.anticipation) * 0.16)
+            + (1.0 - execution_accuracy) * 0.18
             - flair_deception)
-            .clamp(0.015, 0.42);
+            .clamp(0.01, 0.36);
 
         if (rng.next_double() as f32) < int_prob {
-            let ball_pos = Vec3::new(int_pos.x, int_pos.y, (ball_z * 0.35).min(1.4)).clamp_to_pitch();
+            let ball_pos =
+                Vec3::new(int_pos.x, int_pos.y, (ball_z * 0.35).min(1.4)).clamp_to_pitch();
             state.ball.pos = ball_pos;
+            state.ball.vel = Vec3::default();
             state.ball.control = BallControlState::Controlled;
             state.ball.owner_side = Some(def_side);
             state.ball.owner_player_id = Some(int_id.clone());
+            state.ball.last_touch_side = Some(def_side);
+            state.ball.last_touch_player_id = Some(int_id.clone());
 
             let meta = EventMetadataV4 {
                 pass_type: Some(kind.as_str().into()),
@@ -194,71 +528,38 @@ pub fn execute_pass_and_first_touch(
                 ball_pos,
                 metadata: meta,
             });
-            return BallPlayOutcome {
-                next_side: def_side,
-                next_carrier_idx: int_idx,
-                stoppage_seconds: 0,
-                events,
+            return DesBallPlayOutcome {
+                trajectory: Some(traj.clone()),
+                planned_flight_ms: flight_ms,
+                outcome: BallPlayOutcome {
+                    next_side: def_side,
+                    next_carrier_idx: int_idx,
+                    stoppage_seconds: 0,
+                    events,
+                },
+                elapsed_ms: (flight_ms / 2).max(1),
+                dead_ball_kind: None,
+                restart_spot: None,
+                early_interaction: None,
             };
         }
     }
 
-    // Misplaced pass: check if ball goes out over touchline (Law 15 Throw-In)
-    if (rng.next_double() as f32) > execution_accuracy {
-        let near_touchline = target_pos.y <= 9.5 || target_pos.y >= (PITCH_WIDTH_M - 9.5);
+    // Misplaced pass that stayed in bounds: recovered by nearest defender.
+    if is_misplaced {
         let def_idx = evaluate_local_context(state, input, att_side, target_pos)
             .nearest_defender_idx
             .unwrap_or_else(|| first_outfield(state, def_side));
         let def_id = state.players[def_idx].player_id.clone();
-
-        if near_touchline && (rng.next_double() as f32) < 0.55 {
-            let touch_y = if target_pos.y < PITCH_WIDTH_M * 0.5 { 0.0 } else { PITCH_WIDTH_M };
-            let throw_pos = Vec3::ground(target_pos.x.clamp(2.0, PITCH_LENGTH_M - 2.0), touch_y);
-            state.team_state_mut(def_side).throw_ins += 1;
-            state.ball.pos = throw_pos;
-            state.ball.control = BallControlState::Controlled;
-            state.ball.owner_side = Some(def_side);
-            state.ball.owner_player_id = Some(def_id.clone());
-
-            events.push(EmittedPlayEvent {
-                kind: EventTypeV4::PassFailed,
-                tier: HighlightTier::None,
-                seq_id: None,
-                side: Some(att_side),
-                actor: Some(passer_id),
-                target: None,
-                ball_pos: throw_pos,
-                metadata: EventMetadataV4 {
-                    pass_type: Some(kind.as_str().into()),
-                    distance_m: Some(distance_m),
-                    outcome: Some("OUT_OF_PLAY".into()),
-                    ..EventMetadataV4::default()
-                },
-            });
-            events.push(EmittedPlayEvent {
-                kind: EventTypeV4::ThrowIn,
-                tier: HighlightTier::None,
-                seq_id: None,
-                side: Some(def_side),
-                actor: Some(def_id),
-                target: None,
-                ball_pos: throw_pos,
-                metadata: EventMetadataV4::default(),
-            });
-            return BallPlayOutcome {
-                next_side: def_side,
-                next_carrier_idx: def_idx,
-                stoppage_seconds: 8,
-                events,
-            };
-        }
-
         let def_pos = state.players[def_idx].pos;
         let ball_pos = Vec3::ground(def_pos.x, def_pos.y).clamp_to_pitch();
         state.ball.pos = ball_pos;
+        state.ball.vel = Vec3::default();
         state.ball.control = BallControlState::Controlled;
         state.ball.owner_side = Some(def_side);
         state.ball.owner_player_id = Some(def_id.clone());
+        state.ball.last_touch_side = Some(def_side);
+        state.ball.last_touch_player_id = Some(def_id.clone());
 
         let meta = EventMetadataV4 {
             pass_type: Some(kind.as_str().into()),
@@ -277,17 +578,23 @@ pub fn execute_pass_and_first_touch(
             ball_pos,
             metadata: meta,
         });
-        return BallPlayOutcome {
-            next_side: def_side,
-            next_carrier_idx: def_idx,
-            stoppage_seconds: 0,
-            events,
+        return DesBallPlayOutcome {
+            trajectory: Some(traj.clone()),
+            planned_flight_ms: flight_ms,
+            outcome: BallPlayOutcome {
+                next_side: def_side,
+                next_carrier_idx: def_idx,
+                stoppage_seconds: 0,
+                events,
+            },
+            elapsed_ms: flight_ms,
+            dead_ball_kind: None,
+            restart_spot: None,
+            early_interaction: None,
         };
     }
 
-    // The pass has evaded interception and reached the intended receiver.
-    // Receiver involvement is now established: flag an offence deterministically,
-    // independent of flair, timing skill or an arbitrary referee probability.
+    // Phase 3 (Arrival at Receiver): Law 11 Offside involvement check.
     if receiver_in_offside_position {
         state.team_state_mut(att_side).offsides += 1;
         let seq_id = state.next_highlight_sequence_id;
@@ -309,23 +616,35 @@ pub fn execute_pass_and_first_touch(
         });
         let restart_idx = first_outfield(state, def_side);
         state.ball.pos = off_pos;
-        state.ball.control = BallControlState::Controlled;
+        state.ball.vel = Vec3::default();
+        state.ball.control = BallControlState::DeadBall;
         state.ball.owner_side = Some(def_side);
         state.ball.owner_player_id = Some(state.players[restart_idx].player_id.clone());
-        return BallPlayOutcome {
-            next_side: def_side,
-            next_carrier_idx: restart_idx,
-            stoppage_seconds: 12,
-            events,
+        return DesBallPlayOutcome {
+            trajectory: Some(traj.clone()),
+            planned_flight_ms: flight_ms,
+            outcome: BallPlayOutcome {
+                next_side: def_side,
+                next_carrier_idx: restart_idx,
+                stoppage_seconds: 0,
+                events,
+            },
+            elapsed_ms: flight_ms,
+            dead_ball_kind: Some(DeadBallKind::Offside),
+            restart_spot: Some(off_pos),
+            early_interaction: None,
         };
     }
 
+    // Reception & First Touch: distinguish one-touch vs multi-touch control via `first_touch` & `composure`.
     let target_ctx = evaluate_local_context(state, input, att_side, target_pos);
     let target_pressure_norm = (target_ctx.pressure / 100.0).clamp(0.0, 1.0);
-    let first_touch_skill = normalize_attr(target_attrs.technical.first_touch) * 0.50
+    let target_ft = normalize_attr(target_attrs.technical.first_touch);
+    let target_comp = normalize_attr(target_attrs.mental.composure);
+    let first_touch_skill = target_ft * 0.50
         + normalize_attr(target_attrs.technical.technique) * 0.22
         + normalize_attr(target_attrs.physical.balance) * 0.14
-        + normalize_attr(target_attrs.mental.composure) * 0.14;
+        + target_comp * 0.14;
     let target_ana_mod = (0.76 + 0.24 * (state.players[target_idx].fatigue.anaerobic / 100.0))
         .clamp(0.70, 1.0);
 
@@ -337,13 +656,26 @@ pub fn execute_pass_and_first_touch(
         PassKindV4::Cross => 0.20,
     };
 
-    let miscontrol_prob = ((pass_difficulty * 0.65 + target_pressure_norm * 0.16 + wet_pen * 1.1 + pitch_pen * 1.0)
+    // One-touch passes arrive with slightly higher tempo/spin, demanding higher `first_touch`;
+    // multi-touch cushion control rewards `composure` to kill momentum cleanly.
+    let touch_style_factor = if is_one_touch {
+        (1.08 - target_ft * 0.12).clamp(0.95, 1.12)
+    } else {
+        (1.0 - target_comp * 0.08).clamp(0.90, 1.0)
+    };
+
+    let miscontrol_prob = ((pass_difficulty * 0.65
+        + target_pressure_norm * 0.16
+        + wet_pen * 1.1
+        + pitch_pen * 1.0)
         * (1.20 - first_touch_skill * 0.86)
+        * touch_style_factor
         / target_ana_mod)
         .clamp(0.006, 0.22);
 
     let arrived_pos = Vec3::new(target_pos.x, target_pos.y, ball_z * 0.15).clamp_to_pitch();
     state.ball.pos = arrived_pos;
+    state.ball.vel = Vec3::default();
 
     let pass_event_kind = match kind {
         PassKindV4::Through => EventTypeV4::ThroughBall,
@@ -356,8 +688,16 @@ pub fn execute_pass_and_first_touch(
         progress_gain: Some(progress_gain_m.round() as i32),
         pressure: Some(passer_ctx.pressure.round() as u8),
         overload: if target_ctx.overload { Some(true) } else { None },
-        escaped_pressure: if passer_ctx.pressure >= 48.0 { Some(true) } else { None },
-        outcome: Some("COMPLETED".into()),
+        escaped_pressure: if passer_ctx.pressure >= 48.0 {
+            Some(true)
+        } else {
+            None
+        },
+        outcome: Some(if is_one_touch {
+            "COMPLETED_ONE_TOUCH".into()
+        } else {
+            "COMPLETED".into()
+        }),
         ..EventMetadataV4::default()
     };
 
@@ -376,7 +716,7 @@ pub fn execute_pass_and_first_touch(
     if (rng.next_double() as f32) < miscontrol_prob {
         let loose_pos = Vec3::ground(
             (target_pos.x + (rng.next_double() as f32 - 0.5) * 4.5).clamp(0.0, PITCH_LENGTH_M),
-            (target_pos.y + (rng.next_double() as f32 - 0.5) * 4.5).clamp(0.0, 68.0),
+            (target_pos.y + (rng.next_double() as f32 - 0.5) * 4.5).clamp(0.0, PITCH_WIDTH_M),
         );
         state.ball.pos = loose_pos;
         state.ball.control = BallControlState::Loose;
@@ -405,6 +745,8 @@ pub fn execute_pass_and_first_touch(
         state.ball.control = BallControlState::Controlled;
         state.ball.owner_side = Some(def_side);
         state.ball.owner_player_id = Some(winner_id.clone());
+        state.ball.last_touch_side = Some(def_side);
+        state.ball.last_touch_player_id = Some(winner_id.clone());
 
         events.push(EmittedPlayEvent {
             kind: EventTypeV4::LooseBall,
@@ -433,18 +775,29 @@ pub fn execute_pass_and_first_touch(
             },
         });
 
-        return BallPlayOutcome {
-            next_side: def_side,
-            next_carrier_idx: winner_idx,
-            stoppage_seconds: 0,
-            events,
+        return DesBallPlayOutcome {
+            trajectory: Some(traj.clone()),
+            planned_flight_ms: flight_ms,
+            outcome: BallPlayOutcome {
+                next_side: def_side,
+                next_carrier_idx: winner_idx,
+                stoppage_seconds: 0,
+                events,
+            },
+            elapsed_ms: flight_ms,
+            dead_ball_kind: None,
+            restart_spot: None,
+            early_interaction: None,
         };
     }
 
     state.ball.control = BallControlState::Controlled;
     state.ball.owner_side = Some(att_side);
     state.ball.owner_player_id = Some(target_id.clone());
-    if target_ctx.pressure >= 35.0 || kind != PassKindV4::Short {
+    state.ball.last_touch_side = Some(att_side);
+    state.ball.last_touch_player_id = Some(target_id.clone());
+
+    if target_ctx.pressure >= 35.0 || kind != PassKindV4::Short || is_one_touch {
         events.push(EmittedPlayEvent {
             kind: EventTypeV4::FirstTouch,
             tier: HighlightTier::None,
@@ -455,62 +808,144 @@ pub fn execute_pass_and_first_touch(
             ball_pos: arrived_pos,
             metadata: EventMetadataV4 {
                 pressure: Some(target_ctx.pressure.round() as u8),
-                outcome: Some("CLEAN_CONTROL".into()),
+                outcome: Some(if is_one_touch {
+                    "ONE_TOUCH_CONTROL".into()
+                } else {
+                    "CLEAN_CONTROL".into()
+                }),
                 ..EventMetadataV4::default()
             },
         });
     }
 
-    BallPlayOutcome {
-        next_side: att_side,
-        next_carrier_idx: target_idx,
-        stoppage_seconds: 0,
-        events,
+    DesBallPlayOutcome {
+        trajectory: Some(traj.clone()),
+        planned_flight_ms: flight_ms,
+        outcome: BallPlayOutcome {
+            next_side: att_side,
+            next_carrier_idx: target_idx,
+            stoppage_seconds: 0,
+            events,
+        },
+        elapsed_ms: flight_ms,
+        dead_ball_kind: None,
+        restart_spot: None,
+        early_interaction: None,
     }
 }
 
-pub fn execute_dribble_duel(
+#[allow(clippy::too_many_arguments)]
+pub fn execute_pass_and_first_touch(
+    state: &mut MatchStateV4,
+    input: &MatchInputV4,
+    passer_idx: usize,
+    target_idx: usize,
+    kind: PassKindV4,
+    distance_m: f32,
+    progress_gain_m: f32,
+    lane_risk: f32,
+    interceptor_idx: Option<usize>,
+    passer_ctx: LocalSpatialContext,
+    rng: &mut DeterministicRng,
+) -> BallPlayOutcome {
+    let default_timing = TimingModelConfig::default();
+    execute_pass_and_first_touch_des(
+        state,
+        input,
+        &default_timing,
+        passer_idx,
+        target_idx,
+        kind,
+        distance_m,
+        progress_gain_m,
+        lane_risk,
+        interceptor_idx,
+        passer_ctx,
+        false,
+        rng,
+    )
+    .outcome
+}
+
+/// DES dribble / carry duel resolver using actual `dt_sec` and real displacement `moved_m`
+/// for `TwoPoolFatigueState::apply_interval(..., is_dead_ball = false, ...)`.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_dribble_duel_des(
     state: &mut MatchStateV4,
     input: &MatchInputV4,
     carrier_idx: usize,
     defender_idx: Option<usize>,
     carrier_ctx: LocalSpatialContext,
+    dt_sec: f32,
     rng: &mut DeterministicRng,
-) -> BallPlayOutcome {
+) -> DesBallPlayOutcome {
     let mut events = Vec::with_capacity(5);
+    let dt = dt_sec.max(0.0);
+    let elapsed_ms = (dt * 1000.0).round() as i64;
+    let noise_scale = dt.min(1.0).sqrt();
+
     let att_side = state.players[carrier_idx].side;
     let def_side = att_side.opposite();
     let carrier_id = state.players[carrier_idx].player_id.clone();
-    let carrier_attrs = *lookup_attrs(input, &state.players[carrier_idx]);
+    let carrier_attrs = *player_attrs(state, &state.players[carrier_idx]);
 
     let dir = match att_side {
         TeamSideV4::Home => 1.0f32,
         TeamSideV4::Away => -1.0f32,
     };
 
-    let Some(def_idx) = defender_idx.filter(|&i| state.players[i].pos.distance(state.players[carrier_idx].pos) <= 6.5) else {
-        let gain = 6.0 + normalize_attr(carrier_attrs.physical.pace) * 6.0;
+    let Some(def_idx) = defender_idx
+        .filter(|&i| state.players[i].pos.distance(state.players[carrier_idx].pos) <= 6.5)
+    else {
+        let max_speed = player_max_speed_mps(&carrier_attrs, &state.players[carrier_idx]);
+        // Dribbling with the ball is ~88% of top sprint speed.
+        let carry_gain = (max_speed * 0.88 * dt).min(6.0 + normalize_attr(carrier_attrs.physical.pace) * 6.0);
+        let old_xy = state.players[carrier_idx].pos;
         let new_xy = Vec2::new(
-            state.players[carrier_idx].pos.x + dir * gain,
-            state.players[carrier_idx].pos.y + (rng.next_double() as f32 - 0.5) * 4.0,
+            old_xy.x + dir * carry_gain,
+            old_xy.y + (rng.next_double() as f32 - 0.5) * 4.0 * noise_scale,
         )
         .clamp_to_pitch();
+        let moved_m = old_xy.distance(new_xy);
         state.players[carrier_idx].pos = new_xy;
+        state.players[carrier_idx].last_moved_m = moved_m;
         state.ball.pos = Vec3::ground(new_xy.x, new_xy.y);
-        return BallPlayOutcome {
-            next_side: att_side,
-            next_carrier_idx: carrier_idx,
-            stoppage_seconds: 0,
-            events,
+        state.ball.vel = Vec3::default();
+
+        let is_high_intensity = dt > 1e-4 && (moved_m / dt) >= 5.5;
+        state.players[carrier_idx].fatigue.apply_interval(
+            dt,
+            moved_m,
+            is_high_intensity,
+            false,
+            carrier_attrs.physical.stamina,
+            carrier_attrs.physical.natural_fitness,
+        );
+
+        return DesBallPlayOutcome {
+            trajectory: None,
+            planned_flight_ms: 0,
+            outcome: BallPlayOutcome {
+                next_side: att_side,
+                next_carrier_idx: carrier_idx,
+                stoppage_seconds: 0,
+                events,
+            },
+            elapsed_ms,
+            dead_ball_kind: None,
+            restart_spot: None,
+            early_interaction: None,
         };
     };
 
     let def_id = state.players[def_idx].player_id.clone();
-    let def_attrs = *lookup_attrs(input, &state.players[def_idx]);
+    let def_attrs = *player_attrs(state, &state.players[def_idx]);
     let (wet_pen, pitch_pen) = environment_ball_penalties(input);
 
-    let att_ana = (0.72 + 0.28 * (state.players[carrier_idx].fatigue.anaerobic / 100.0)).clamp(0.65, 1.0);
-    let def_ana = (0.72 + 0.28 * (state.players[def_idx].fatigue.anaerobic / 100.0)).clamp(0.65, 1.0);
+    let att_ana =
+        (0.72 + 0.28 * (state.players[carrier_idx].fatigue.anaerobic / 100.0)).clamp(0.65, 1.0);
+    let def_ana =
+        (0.72 + 0.28 * (state.players[def_idx].fatigue.anaerobic / 100.0)).clamp(0.65, 1.0);
 
     let flair_val = normalize_attr(carrier_attrs.mental.flair);
     let effective_def_anticipation =
@@ -534,33 +969,49 @@ pub fn execute_dribble_duel(
         + normalize_attr(def_attrs.mental.bravery) * 0.10)
         * def_ana;
 
-    state.players[carrier_idx].fatigue.apply_interval(
-        2.0,
-        11.0,
-        true,
-        carrier_attrs.physical.stamina,
-        carrier_attrs.physical.natural_fitness,
-    );
-    state.players[def_idx].fatigue.apply_interval(
-        2.0,
-        10.0,
-        true,
-        def_attrs.physical.stamina,
-        def_attrs.physical.natural_fitness,
-    );
-
     let win_prob = (0.50 + (att_score - def_score) * 0.65).clamp(0.18, 0.84);
     let roll = rng.next_double() as f32;
 
+    let carrier_old_xy = state.players[carrier_idx].pos;
+    let def_old_xy = state.players[def_idx].pos;
+    let carrier_max_speed = player_max_speed_mps(&carrier_attrs, &state.players[carrier_idx]);
+    let def_max_speed = player_max_speed_mps(&def_attrs, &state.players[def_idx]);
+
     if roll < win_prob {
-        let gain = 6.5 + normalize_attr(carrier_attrs.physical.acceleration) * 5.5;
+        let accel = normalize_attr(carrier_attrs.physical.acceleration);
+        let max_burst = (carrier_max_speed * 0.94 * dt).min(6.5 + accel * 5.5);
         let new_xy = Vec2::new(
-            state.players[carrier_idx].pos.x + dir * gain,
-            state.players[carrier_idx].pos.y + (rng.next_double() as f32 - 0.5) * 4.5,
+            carrier_old_xy.x + dir * max_burst,
+            carrier_old_xy.y + (rng.next_double() as f32 - 0.5) * 4.5 * noise_scale,
         )
         .clamp_to_pitch();
+        let carrier_moved_m = carrier_old_xy.distance(new_xy);
+        let def_chase_m = def_old_xy
+            .distance(carrier_old_xy)
+            .min(def_max_speed * dt);
+
         state.players[carrier_idx].pos = new_xy;
+        state.players[carrier_idx].last_moved_m = carrier_moved_m;
+        state.players[def_idx].last_moved_m = def_chase_m;
         state.ball.pos = Vec3::ground(new_xy.x, new_xy.y);
+        state.ball.vel = Vec3::default();
+
+        state.players[carrier_idx].fatigue.apply_interval(
+            dt,
+            carrier_moved_m,
+            true,
+            false,
+            carrier_attrs.physical.stamina,
+            carrier_attrs.physical.natural_fitness,
+        );
+        state.players[def_idx].fatigue.apply_interval(
+            dt,
+            def_chase_m,
+            true,
+            false,
+            def_attrs.physical.stamina,
+            def_attrs.physical.natural_fitness,
+        );
 
         events.push(EmittedPlayEvent {
             kind: EventTypeV4::DribbleWon,
@@ -571,21 +1022,62 @@ pub fn execute_dribble_duel(
             target: Some(def_id),
             ball_pos: state.ball.pos,
             metadata: EventMetadataV4 {
-                escaped_pressure: if carrier_ctx.pressure >= 42.0 { Some(true) } else { None },
-                progress_gain: Some(gain.round() as i32),
+                escaped_pressure: if carrier_ctx.pressure >= 42.0 {
+                    Some(true)
+                } else {
+                    None
+                },
+                progress_gain: Some(carrier_moved_m.round() as i32),
                 pressure: Some(carrier_ctx.pressure.round() as u8),
-                overload: if carrier_ctx.overload { Some(true) } else { None },
+                overload: if carrier_ctx.overload {
+                    Some(true)
+                } else {
+                    None
+                },
                 outcome: Some("BEATEN_DEFENDER".into()),
                 ..EventMetadataV4::default()
             },
         });
-        return BallPlayOutcome {
-            next_side: att_side,
-            next_carrier_idx: carrier_idx,
-            stoppage_seconds: 0,
-            events,
+        return DesBallPlayOutcome {
+            trajectory: None,
+            planned_flight_ms: 0,
+            outcome: BallPlayOutcome {
+                next_side: att_side,
+                next_carrier_idx: carrier_idx,
+                stoppage_seconds: 0,
+                events,
+            },
+            elapsed_ms,
+            dead_ball_kind: None,
+            restart_spot: None,
+            early_interaction: None,
         };
     }
+
+    // Defender closed down the carrier: apply real closing displacement to two-pool fatigue.
+    let def_close_m = def_old_xy
+        .distance(carrier_old_xy)
+        .min(def_max_speed * dt);
+    let carrier_evade_m = (carrier_max_speed * 0.45 * dt).min(3.5);
+    state.players[carrier_idx].last_moved_m = carrier_evade_m;
+    state.players[def_idx].last_moved_m = def_close_m;
+
+    state.players[carrier_idx].fatigue.apply_interval(
+        dt,
+        carrier_evade_m,
+        true,
+        false,
+        carrier_attrs.physical.stamina,
+        carrier_attrs.physical.natural_fitness,
+    );
+    state.players[def_idx].fatigue.apply_interval(
+        dt,
+        def_close_m,
+        true,
+        false,
+        def_attrs.physical.stamina,
+        def_attrs.physical.natural_fitness,
+    );
 
     let ref_strict = input.referee_profile.strictness as f32 / 100.0;
     let foul_prob = (0.14
@@ -596,7 +1088,7 @@ pub fn execute_dribble_duel(
         + (ref_strict - 0.5) * 0.08)
         .clamp(0.05, 0.42);
 
-    let duel_pos = Vec3::ground(state.players[carrier_idx].pos.x, state.players[carrier_idx].pos.y);
+    let duel_pos = Vec3::ground(carrier_old_xy.x, carrier_old_xy.y).clamp_to_pitch();
     if (rng.next_double() as f32) < foul_prob {
         // Advantage Law: referee may let play continue if attacking team retains momentum
         let adv_tend = input.referee_profile.advantage_tendency as f32 / 100.0;
@@ -614,11 +1106,19 @@ pub fn execute_dribble_duel(
                     ..EventMetadataV4::default()
                 },
             });
-            return BallPlayOutcome {
-                next_side: att_side,
-                next_carrier_idx: carrier_idx,
-                stoppage_seconds: 0,
-                events,
+            return DesBallPlayOutcome {
+                trajectory: None,
+                planned_flight_ms: 0,
+                outcome: BallPlayOutcome {
+                    next_side: att_side,
+                    next_carrier_idx: carrier_idx,
+                    stoppage_seconds: 0,
+                    events,
+                },
+                elapsed_ms,
+                dead_ball_kind: None,
+                restart_spot: None,
+                early_interaction: None,
             };
         }
 
@@ -638,22 +1138,45 @@ pub fn execute_dribble_duel(
                 ..EventMetadataV4::default()
             },
         });
-        events.extend(resolve_foul_discipline(state, input, def_idx, seq_id, duel_pos, rng));
+        events.extend(resolve_foul_discipline(
+            state, input, def_idx, seq_id, duel_pos, rng,
+        ));
         if let Some(inj_ev) = check_impact_injury(state, input, carrier_idx, def_idx, rng) {
             events.push(inj_ev);
         }
-        return BallPlayOutcome {
-            next_side: att_side,
-            next_carrier_idx: carrier_idx,
-            stoppage_seconds: 15,
-            events,
+        state.ball.pos = duel_pos;
+        state.ball.vel = Vec3::default();
+        state.ball.control = BallControlState::DeadBall;
+
+        let dead_kind = if is_in_attacking_penalty_box(att_side, carrier_old_xy) {
+            DeadBallKind::PenaltyKick
+        } else {
+            DeadBallKind::DirectFreeKick
+        };
+
+        return DesBallPlayOutcome {
+            trajectory: None,
+            planned_flight_ms: 0,
+            outcome: BallPlayOutcome {
+                next_side: att_side,
+                next_carrier_idx: carrier_idx,
+                stoppage_seconds: 0,
+                events,
+            },
+            elapsed_ms,
+            dead_ball_kind: Some(dead_kind),
+            restart_spot: Some(duel_pos),
+            early_interaction: None,
         };
     }
 
     state.ball.pos = duel_pos;
+    state.ball.vel = Vec3::default();
     state.ball.control = BallControlState::Controlled;
     state.ball.owner_side = Some(def_side);
     state.ball.owner_player_id = Some(def_id.clone());
+    state.ball.last_touch_side = Some(def_side);
+    state.ball.last_touch_player_id = Some(def_id.clone());
 
     events.push(EmittedPlayEvent {
         kind: EventTypeV4::DribbleLost,
@@ -680,12 +1203,42 @@ pub fn execute_dribble_duel(
         metadata: EventMetadataV4::default(),
     });
 
-    BallPlayOutcome {
-        next_side: def_side,
-        next_carrier_idx: def_idx,
-        stoppage_seconds: 0,
-        events,
+    DesBallPlayOutcome {
+        trajectory: None,
+        planned_flight_ms: 0,
+        outcome: BallPlayOutcome {
+            next_side: def_side,
+            next_carrier_idx: def_idx,
+            stoppage_seconds: 0,
+            events,
+        },
+        elapsed_ms,
+        dead_ball_kind: None,
+        restart_spot: None,
+        early_interaction: None,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_dribble_duel(
+    state: &mut MatchStateV4,
+    input: &MatchInputV4,
+    carrier_idx: usize,
+    defender_idx: Option<usize>,
+    carrier_ctx: LocalSpatialContext,
+    dt_sec: f32,
+    rng: &mut DeterministicRng,
+) -> BallPlayOutcome {
+    execute_dribble_duel_des(
+        state,
+        input,
+        carrier_idx,
+        defender_idx,
+        carrier_ctx,
+        dt_sec,
+        rng,
+    )
+    .outcome
 }
 
 fn environment_ball_penalties(input: &MatchInputV4) -> (f32, f32) {
@@ -704,30 +1257,21 @@ fn environment_ball_penalties(input: &MatchInputV4) -> (f32, f32) {
     (wet, pitch)
 }
 
+#[inline]
 fn weak_foot_pass_modifier(
-    input: &MatchInputV4,
-    side: TeamSideV4,
-    player_id: &str,
+    state: &MatchStateV4,
+    player: &PlayerRuntimeStateV4,
     from: Vec2,
     to: Vec2,
 ) -> f32 {
-    let team = match side {
-        TeamSideV4::Home => &input.home_team,
-        TeamSideV4::Away => &input.away_team,
-    };
-    let Some(snap) = team
-        .lineup
-        .iter()
-        .chain(team.bench.iter())
-        .find(|p| p.player_id == player_id)
-    else {
+    let Some(profile) = state.player_profiles.get(player.profile_idx) else {
         return 1.0;
     };
-    if snap.preferred_foot == PreferredFoot::Either {
+    if profile.preferred_foot == PreferredFoot::Either {
         return 1.0;
     }
     let dy = to.y - from.y;
-    let using_weak = match (side, snap.preferred_foot) {
+    let using_weak = match (player.side, profile.preferred_foot) {
         (TeamSideV4::Home, PreferredFoot::Right) => dy < -14.0,
         (TeamSideV4::Home, PreferredFoot::Left) => dy > 14.0,
         (TeamSideV4::Away, PreferredFoot::Right) => dy > 14.0,
@@ -735,7 +1279,7 @@ fn weak_foot_pass_modifier(
         _ => false,
     };
     if using_weak {
-        0.80 + (snap.weak_foot.clamp(1, 5) as f32) * 0.04
+        0.80 + (profile.weak_foot.clamp(1, 5) as f32) * 0.04
     } else {
         1.0
     }
@@ -747,4 +1291,12 @@ fn first_outfield(state: &MatchStateV4, side: TeamSideV4) -> usize {
         .iter()
         .position(|p| p.side == side && !p.is_goalkeeper && p.on_pitch && !p.sent_off)
         .unwrap_or(0)
+}
+
+fn find_gk_or_outfield(state: &MatchStateV4, side: TeamSideV4) -> usize {
+    state
+        .players
+        .iter()
+        .position(|p| p.side == side && p.is_goalkeeper && p.on_pitch && !p.sent_off)
+        .unwrap_or_else(|| first_outfield(state, side))
 }

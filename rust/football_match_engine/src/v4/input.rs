@@ -5,10 +5,11 @@ use serde::{Deserialize, Serialize};
 use crate::fingerprints;
 use crate::v4::attributes::PlayerAttributes54;
 use crate::v4::error::V4Error;
+use crate::v4::rules::{RulesetConfig, TimingModelConfig};
 use crate::v4::{ENGINE_PROTOCOL_VERSION_V4, ENGINE_VERSION_V4, REGULATION_MINUTES_V4};
 
 fn default_protocol_version() -> i32 {
-    ENGINE_PROTOCOL_VERSION_V4
+    ENGINE_PROTOCOL_VERSION_V4 as i32
 }
 
 fn default_engine_version() -> String {
@@ -550,6 +551,10 @@ pub struct MatchInputV4 {
     #[serde(default)]
     pub rules_mode: RulesModeV4,
     #[serde(default)]
+    pub ruleset: RulesetConfig,
+    #[serde(default)]
+    pub timing_model: TimingModelConfig,
+    #[serde(default)]
     pub simulation_mode: SimulationMode,
     #[serde(default)]
     pub simulated_action_minutes: Option<i32>,
@@ -566,10 +571,24 @@ pub struct MatchInputV4 {
 }
 
 impl MatchInputV4 {
+    /// Returns the effective ruleset locked for this match, upgrading the default league ruleset
+    /// to `ifab_knockout_cup` when legacy JSON specifies `rules_mode = Knockout` without an
+    /// explicit `ruleset` payload.
+    pub fn effective_ruleset(&self) -> RulesetConfig {
+        if self.rules_mode == RulesModeV4::Knockout
+            && self.ruleset == RulesetConfig::ifab_league_standard()
+        {
+            RulesetConfig::ifab_knockout_cup()
+        } else {
+            self.ruleset.clone()
+        }
+    }
+
     pub fn validate(&self) -> Result<(), V4Error> {
-        if self.protocol_version != ENGINE_PROTOCOL_VERSION_V4 {
+        let expected_proto = ENGINE_PROTOCOL_VERSION_V4 as i32;
+        if self.protocol_version != expected_proto {
             return Err(V4Error::InvalidProtocolVersion {
-                expected: ENGINE_PROTOCOL_VERSION_V4,
+                expected: expected_proto,
                 actual: self.protocol_version,
             });
         }
@@ -608,7 +627,8 @@ impl MatchInputV4 {
         Ok(())
     }
 
-    /// Complete deterministic input fingerprint over every parameter affecting simulation.
+    /// Complete deterministic input fingerprint over every parameter affecting simulation,
+    /// including immutable `ruleset.identity` and timing model identity locked from kickoff.
     pub fn input_fingerprint(&self) -> u64 {
         let mut h = fingerprints::start();
         h = fingerprints::mix_i32(h, self.protocol_version);
@@ -620,6 +640,9 @@ impl MatchInputV4 {
             RulesModeV4::Standard => 0,
             RulesModeV4::Knockout => 1,
         });
+        h = fingerprints::mix_i64(h, self.ruleset.identity.fingerprint() as i64);
+        h = fingerprints::mix_string(h, Some(&self.timing_model.model_id));
+        h = fingerprints::mix_i32(h, self.timing_model.model_version as i32);
         h = fingerprints::mix_bool(h, self.ai_home_manager);
         h = fingerprints::mix_bool(h, self.ai_away_manager);
         h = fingerprints::mix_i32(h, self.match_environment.weather.code());

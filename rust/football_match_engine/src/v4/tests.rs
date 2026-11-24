@@ -14,7 +14,8 @@ use crate::v4::spatial::{
     is_in_attacking_six_yard_box, point_to_segment_distance_m, TeamSideV4, Vec2, Vec3,
     PITCH_LENGTH_M, PITCH_WIDTH_M,
 };
-use crate::v4::{ENGINE_PROTOCOL_VERSION_V4, ENGINE_VERSION_V4, REGULATION_SECONDS_V4};
+use crate::v4::rules::{RulesetConfig, TimingModelConfig};
+use crate::v4::{ENGINE_PROTOCOL_VERSION_V4, ENGINE_VERSION_V4, HALF_MS_V4, REGULATION_SECONDS_V4};
 
 pub(super) fn make_v4_team_with_attrs<F>(prefix: &str, team_id: &str, mut attr_fn: F) -> TeamMatchSnapshotV4
 where
@@ -110,13 +111,15 @@ pub(super) fn make_v4_input_teams(
     away: TeamMatchSnapshotV4,
 ) -> MatchInputV4 {
     MatchInputV4 {
-        protocol_version: ENGINE_PROTOCOL_VERSION_V4,
+        protocol_version: ENGINE_PROTOCOL_VERSION_V4 as i32,
         match_id: format!("V4-TEST-{}", seed),
         seed,
         engine_version: ENGINE_VERSION_V4.into(),
         neutral_ground: false,
         competition_context: "ENG_1".into(),
         rules_mode: rules,
+        ruleset: RulesetConfig::from_rules_mode(rules),
+        timing_model: TimingModelConfig::des_v1_default(),
         simulation_mode: mode,
         simulated_action_minutes: None,
         ai_home_manager: false,
@@ -682,10 +685,10 @@ fn stage_e_natural_fitness_speeds_anaerobic_recovery_and_carryover_is_valid() {
     let mut high_nat = TwoPoolFatigueState::from_condition(95);
 
     // Drain anaerobic via high-intensity burst, then recover over 10s
-    low_nat.apply_interval(5.0, 25.0, true, 12, 4);
-    high_nat.apply_interval(5.0, 25.0, true, 12, 19);
-    low_nat.apply_interval(10.0, 12.0, false, 12, 4);
-    high_nat.apply_interval(10.0, 12.0, false, 12, 19);
+    low_nat.apply_interval(5.0, 25.0, true, false, 12, 4);
+    high_nat.apply_interval(5.0, 25.0, true, false, 12, 19);
+    low_nat.apply_interval(10.0, 12.0, false, false, 12, 4);
+    high_nat.apply_interval(10.0, 12.0, false, false, 12, 19);
     assert!(
         high_nat.anaerobic > low_nat.anaerobic + 2.0,
         "Expected natural_fitness=19 anaerobic ({:.2}) > natural_fitness=4 ({:.2})",
@@ -1027,7 +1030,18 @@ fn p0_controlled_game_replays_identical_commands_and_fingerprint() {
     }).unwrap();
     let actual = session.run_to_full_time().unwrap();
     assert_eq!(actual.command_timeline.len(), 2);
-    assert!(actual.command_timeline[0].completed_beats < actual.command_timeline[1].completed_beats);
+    assert!(
+        actual.command_timeline[0].accepted_sim_time_ms
+            <= actual.command_timeline[1].accepted_sim_time_ms
+    );
+    assert!(
+        actual.command_timeline[0].scheduled_effective_sim_time_ms
+            >= actual.command_timeline[0].accepted_sim_time_ms
+    );
+    assert!(
+        actual.command_timeline[0].applied_step_index
+            < actual.command_timeline[1].applied_step_index
+    );
 
     let replay = replay_v4_with_timeline(input.clone(), &actual.command_timeline).unwrap();
     assert_eq!(actual.event_timeline_fingerprint, replay.event_timeline_fingerprint);
@@ -1035,7 +1049,8 @@ fn p0_controlled_game_replays_identical_commands_and_fingerprint() {
     assert_eq!(actual.events, replay.events);
 
     let mut invalid = actual.command_timeline.clone();
-    invalid[1].completed_beats = invalid[0].completed_beats.saturating_sub(1);
+    invalid[1].accepted_sim_time_ms = invalid[0].accepted_sim_time_ms.saturating_sub(1);
+    invalid[1].applied_step_index = invalid[0].applied_step_index.saturating_sub(1);
     assert!(replay_v4_with_timeline(input, &invalid).is_err());
 }
 
@@ -1125,7 +1140,7 @@ fn p1_batch_substitution_counts_one_window_and_returns_authoritative_roster() {
         input.home_team.bench.push(bench);
     }
     let mut session = MatchSessionV4::new(input).unwrap();
-    session.advance_steps(1).unwrap();
+    session.advance_steps(2).unwrap();
     session.submit_command(MatchCommandV4::SubstituteBatch {
         side: TeamSideV4::Home,
         changes: vec![
@@ -1133,13 +1148,30 @@ fn p1_batch_substitution_counts_one_window_and_returns_authoritative_roster() {
             SubstitutionChangeV4 { player_out_id: "H09".into(), player_in_id: "SUB-1".into() },
         ],
     }).unwrap();
-    let step = session.advance_steps(1).unwrap();
+    let mut sub_events_seen = 0usize;
+    let mut applied_step = None;
+    for _ in 0..400 {
+        let s = session.advance_steps(10).unwrap();
+        sub_events_seen += s.new_events.iter().filter(|e| e.kind == EventTypeV4::Substitution).count();
+        if s.home_roster.substitutions_used == 2 {
+            applied_step = Some(s);
+            break;
+        }
+        if s.stage == crate::v4::events::SessionStageV4::HalfTimeBreak {
+            let next_p = session.start_next_period().unwrap();
+            sub_events_seen += next_p.new_events.iter().filter(|e| e.kind == EventTypeV4::Substitution).count();
+        }
+        if s.is_full_time {
+            break;
+        }
+    }
+    let step = applied_step.expect("queued batch substitution must execute on the next dead ball");
     assert_eq!(step.home_roster.substitutions_used, 2);
     assert_eq!(step.home_roster.substitution_windows_used, 1);
     assert!(step.home_roster.on_pitch_player_ids.contains(&"SUB-0".to_string()));
     assert!(step.home_roster.on_pitch_player_ids.contains(&"SUB-1".to_string()));
     assert!(!step.home_roster.available_bench_player_ids.contains(&"SUB-0".to_string()));
-    assert_eq!(step.new_events.iter().filter(|e| e.kind == EventTypeV4::Substitution).count(), 2);
+    assert_eq!(sub_events_seen, 2);
 
     // Do not permit two simultaneous changes to chain: an incoming player
     // cannot itself be substituted off within the same group.
@@ -1174,15 +1206,19 @@ fn p1_halftime_substitution_consumes_player_slot_not_inplay_window() {
     bench.player_id = "HALF-SUB".into();
     input.home_team.bench.push(bench);
     let mut session = MatchSessionV4::new(input).unwrap();
+    use crate::v4::events::SessionStageV4;
+    use crate::v4::rules::HalfStageV4;
     let mut halftime = None;
-    for _ in 0..1000 {
-        let step = session.advance_steps(1).unwrap();
-        if step.period == 2 && step.period_elapsed_second == 0 {
+    for _ in 0..2000 {
+        let step = session.advance_steps(25).unwrap();
+        if step.stage == SessionStageV4::HalfTimeBreak {
             halftime = Some(step);
             break;
         }
+        assert!(!step.is_full_time, "must pause at HalfTimeBreak before FullTime");
     }
-    let step = halftime.expect("should reach second half start within 1000 action beats");
+    let step = halftime.expect("should reach HalfTimeBreak in interactive DES session");
+    assert_eq!(session.stage(), HalfStageV4::HalfTimeBreak);
     assert!(step.home_roster.interval_substitution_allowed);
     session.submit_command(MatchCommandV4::SubstituteBatch {
         side: TeamSideV4::Home,
@@ -1190,7 +1226,8 @@ fn p1_halftime_substitution_consumes_player_slot_not_inplay_window() {
             player_out_id: "H08".into(), player_in_id: "HALF-SUB".into(),
         }],
     }).unwrap();
-    let follow_up = session.advance_steps(1).unwrap();
+    let follow_up = session.start_next_period().unwrap();
+    assert_eq!(follow_up.period, 2);
     assert_eq!(follow_up.home_roster.substitutions_used, 1);
     assert_eq!(follow_up.home_roster.substitution_windows_used, 0,
         "halftime is not an in-play substitution opportunity");
@@ -1230,15 +1267,40 @@ fn p1_fourth_inplay_window_is_rejected_even_with_player_slots_left() {
         bench.player_id = format!("WINDOW-SUB-{}", i);
         input.home_team.bench.push(bench);
     }
+    use crate::v4::events::SessionStageV4;
     let mut session = MatchSessionV4::new(input).unwrap();
-    session.advance_steps(1).unwrap();
+    session.advance_steps(2).unwrap();
     for i in 0..3 {
+        // Ensure we are in active live play (not on a break) so each sub consumes an in-play window.
+        if session.stage().is_break() {
+            session.start_next_period().unwrap();
+            session.advance_steps(2).unwrap();
+        }
         session.submit_command(MatchCommandV4::Substitute {
             side: TeamSideV4::Home,
             player_out_id: format!("H{:02}", i + 7),
             player_in_id: format!("WINDOW-SUB-{}", i),
         }).unwrap();
-        session.advance_steps(1).unwrap();
+        let mut applied = false;
+        for _ in 0..400 {
+            let s = session.advance_steps(10).unwrap();
+            if s.home_roster.substitutions_used == (i + 1) as u8 {
+                applied = true;
+                break;
+            }
+            if s.stage == SessionStageV4::HalfTimeBreak {
+                session.start_next_period().unwrap();
+                session.advance_steps(2).unwrap();
+            }
+            if s.is_full_time {
+                break;
+            }
+        }
+        assert!(applied, "in-play substitution {i} must execute on next dead ball");
+    }
+    if session.stage().is_break() {
+        session.start_next_period().unwrap();
+        session.advance_steps(2).unwrap();
     }
     let third = session.advance_steps(1).unwrap().home_roster;
     assert_eq!(third.substitutions_used, 3);
@@ -1405,4 +1467,928 @@ fn p2_50_match_attributes_have_explicit_runtime_wiring_and_4_are_career_hooks() 
         in_match += 1;
     }
     assert_eq!(in_match, 50);
+}
+// ============================================================================
+// DES v1.4 Mandatory Invariant & Contract Tests (Section XII.A & Section 7)
+// ============================================================================
+
+#[test]
+fn des_clock_dynamic_added_time_no_hard_cap() {
+    use crate::clock::{DesClockState, Period};
+
+    let mut clock = DesClockState::default();
+    clock.begin_period(Period::SecondHalf, HALF_MS_V4);
+    clock.advance_ms(HALF_MS_V4, true).unwrap();
+
+    // 11 minutes of compensable stoppages (far above any legacy 4-6 min hard cap)
+    let eleven_min_ms = 11 * 60 * 1_000;
+    clock.record_compensable_lost_ms(eleven_min_ms);
+    let ruleset = RulesetConfig::ifab_league_standard();
+    let announced = ruleset.round_announced_added_time_ms(clock.compensable_lost_ms);
+    assert_eq!(announced, eleven_min_ms);
+    assert_eq!(clock.lock_announced_added_ms(announced), eleven_min_ms);
+    assert_eq!(clock.effective_added_ms(), eleven_min_ms);
+    assert_eq!(clock.period_target_ms(), HALF_MS_V4 + eleven_min_ms);
+
+    // Additional stoppage during added time dynamically extends effective added time
+    clock.record_compensable_lost_ms(135_000);
+    assert_eq!(clock.additional_added_ms, 135_000);
+    assert_eq!(clock.effective_added_ms(), eleven_min_ms + 135_000);
+    assert_eq!(clock.period_target_ms(), HALF_MS_V4 + eleven_min_ms + 135_000);
+}
+
+#[test]
+fn des_clock_no_double_counting_deadball_vs_compensable() {
+    use crate::clock::{DesClockState, Period};
+    use crate::v4::events::SessionStageV4;
+    use crate::v4::session::MatchSessionV4;
+
+    // 1. Direct DesClockState partition invariant
+    let mut clock = DesClockState::default();
+    clock.begin_period(Period::FirstHalf, HALF_MS_V4);
+    clock.advance_ms(120_000, true).unwrap();
+    clock.advance_ms(35_000, false).unwrap();
+    clock.record_compensable_lost_ms(22_000);
+    assert_eq!(clock.ball_in_play_ms + clock.ball_out_of_play_ms, clock.sim_time_ms);
+    assert_eq!(clock.sim_time_ms, 155_000, "compensable lost time must never be double-added to sim_time_ms");
+    assert!(clock.compensable_lost_ms <= clock.ball_out_of_play_ms);
+
+    // 2. Live DES session partition invariant across multiple advances
+    let input = make_v4_input(14002, SimulationMode::FullEvent, RulesModeV4::Standard);
+    let mut session = MatchSessionV4::new(input).unwrap();
+    for _ in 0..80 {
+        let step = session.advance_steps(20).unwrap();
+        assert_eq!(
+            step.ball_in_play_ms + step.ball_out_of_play_ms,
+            step.sim_time_ms,
+            "ball_in_play_ms + ball_out_of_play_ms must equal sim_time_ms"
+        );
+        assert!(
+            step.compensable_lost_ms <= step.ball_out_of_play_ms,
+            "compensable_lost_ms ({}) must not exceed ball_out_of_play_ms ({})",
+            step.compensable_lost_ms,
+            step.ball_out_of_play_ms
+        );
+        if step.stage == SessionStageV4::HalfTimeBreak {
+            session.start_next_period().unwrap();
+        }
+        if step.is_full_time {
+            break;
+        }
+    }
+}
+
+#[test]
+fn des_halftime_break_pauses_interactive_and_auto_advances_fastbatch() {
+    use crate::v4::events::SessionStageV4;
+    use crate::v4::rules::HalfStageV4;
+    use crate::v4::session::MatchSessionV4;
+
+    let input_interactive = make_v4_input(14003, SimulationMode::FullEvent, RulesModeV4::Standard);
+    let mut session = MatchSessionV4::new(input_interactive.clone()).unwrap();
+
+    let mut reached_break = false;
+    for _ in 0..2000 {
+        let step = session.advance_steps(30).unwrap();
+        if step.stage == SessionStageV4::HalfTimeBreak {
+            assert_eq!(session.stage(), HalfStageV4::HalfTimeBreak);
+            assert_eq!(step.stop_reason, "HALF_TIME_BREAK");
+            assert!(!step.is_full_time);
+            reached_break = true;
+            break;
+        }
+        assert!(!step.is_full_time, "interactive session must pause at HalfTimeBreak");
+    }
+    assert!(reached_break, "interactive session must hit HalfTimeBreak");
+
+    // Calling advance_steps while paused at HalfTimeBreak must remain paused with 0 steps
+    let still_paused = session.advance_steps(10).unwrap();
+    assert_eq!(still_paused.stage, SessionStageV4::HalfTimeBreak);
+    assert_eq!(still_paused.steps_executed, 0);
+
+    // Explicit start_next_period resumes second half
+    let h2 = session.start_next_period().unwrap();
+    assert_eq!(h2.period, 2);
+    assert_eq!(h2.stage, SessionStageV4::InHalf);
+
+    // FastBatch auto-advances across HalfTimeBreak to Full Time
+    let mut input_fast = input_interactive;
+    input_fast.simulation_mode = SimulationMode::FastBatch;
+    let fast_res = simulate_v4(input_fast).unwrap();
+    assert!(fast_res.ok);
+    assert!(fast_res.summary.first_half_elapsed_seconds >= 2700);
+    assert!(fast_res.summary.second_half_elapsed_seconds >= 2700);
+}
+
+#[test]
+fn des_goal_celebration_then_kickoff_nonzero_variable_duration() {
+    let mut durations_ms = Vec::new();
+    for seed in 14100..14125i64 {
+        let res = simulate_v4(make_v4_input(
+            seed,
+            SimulationMode::FullEvent,
+            RulesModeV4::Standard,
+        ))
+        .unwrap();
+        for (idx, ev) in res.events.iter().enumerate() {
+            if !matches!(ev.kind, EventTypeV4::Goal | EventTypeV4::OwnGoal) {
+                continue;
+            }
+            if let Some(kickoff) = res.events[idx + 1..]
+                .iter()
+                .take_while(|e| e.period == ev.period)
+                .find(|e| e.kind == EventTypeV4::Kickoff)
+            {
+                let delta = kickoff.sim_time_ms - ev.sim_time_ms;
+                assert!(
+                    delta > 0,
+                    "goal celebration + return + kickoff setup must take nonzero time, got {delta}ms"
+                );
+                durations_ms.push(delta);
+            }
+        }
+        if durations_ms.len() >= 12 {
+            break;
+        }
+    }
+    assert!(
+        durations_ms.len() >= 2,
+        "expected at least 2 goal-to-kickoff pairs across seeds"
+    );
+    let unique: std::collections::HashSet<i64> = durations_ms.iter().copied().collect();
+    assert!(
+        unique.len() >= 2,
+        "goal-to-kickoff durations must vary contextually, not collapse to one constant: {durations_ms:?}"
+    );
+}
+
+#[test]
+fn des_deadball_state_machine_blocks_open_play_events() {
+    use crate::v4::rules::{
+        initial_dead_ball_phase, next_dead_ball_phase, DeadBallKind, DeadBallPhase, DeadBallState,
+    };
+
+    // 1. State machine transition sequence for GoalCelebration (no illegal shortcuts)
+    let mut db = DeadBallState::new(
+        DeadBallKind::GoalCelebration,
+        initial_dead_ball_phase(DeadBallKind::GoalCelebration, false, false, true),
+        TeamSideV4::Away,
+        Vec3::center_spot(),
+        100_000,
+        20_000,
+        20_000,
+    );
+    assert_eq!(db.phase, DeadBallPhase::Celebrating);
+
+    let p2 = next_dead_ball_phase(&db, true, false, false).unwrap();
+    assert_eq!(p2, DeadBallPhase::ReturningToHalf);
+    db.advance_to(p2, 120_000, 12_000, 12_000);
+
+    let p3 = next_dead_ball_phase(&db, true, false, false).unwrap();
+    assert_eq!(p3, DeadBallPhase::ProcessingSubstitutions);
+    db.advance_to(p3, 132_000, 15_000, 15_000);
+
+    let p4 = next_dead_ball_phase(&db, true, false, false).unwrap();
+    assert_eq!(p4, DeadBallPhase::KickoffSetup);
+    db.advance_to(p4, 147_000, 5_000, 5_000);
+
+    let p5 = next_dead_ball_phase(&db, true, false, false).unwrap();
+    assert_eq!(p5, DeadBallPhase::ExecutingRestart);
+    db.advance_to(p5, 152_000, 1_000, 0);
+
+    assert_eq!(next_dead_ball_phase(&db, true, false, false), None);
+
+    // 2. Live match trace: no open-play ball events between Goal/OwnGoal and subsequent Kickoff
+    let mut checked_goals = 0usize;
+    for seed in 14200..14215i64 {
+        let res = simulate_v4(make_v4_input(
+            seed,
+            SimulationMode::FullEvent,
+            RulesModeV4::Standard,
+        ))
+        .unwrap();
+        for (idx, ev) in res.events.iter().enumerate() {
+            if !matches!(ev.kind, EventTypeV4::Goal | EventTypeV4::OwnGoal) {
+                continue;
+            }
+            checked_goals += 1;
+            for between in &res.events[idx + 1..] {
+                if between.period != ev.period || between.kind == EventTypeV4::Kickoff {
+                    break;
+                }
+                assert!(
+                    !matches!(
+                        between.kind,
+                        EventTypeV4::PassCompleted
+                            | EventTypeV4::PassFailed
+                            | EventTypeV4::ThroughBall
+                            | EventTypeV4::Cross
+                            | EventTypeV4::Shot
+                            | EventTypeV4::ShotOnTarget
+                            | EventTypeV4::ShotOffTarget
+                            | EventTypeV4::DribbleLost
+                            | EventTypeV4::Carry
+                            | EventTypeV4::DribbleWon
+                            | EventTypeV4::TackleWon
+                    ),
+                    "open-play event {:?} emitted during dead-ball celebration window",
+                    between.kind
+                );
+            }
+        }
+    }
+    assert!(checked_goals > 0, "expected at least one goal across seeds");
+}
+
+#[test]
+fn des_scheduler_tie_break_priority_sequence_deterministic() {
+    use crate::clock::Period;
+    use crate::v4::scheduler::{
+        CancellationScope, DesEventPayload, EventPriority, EventScheduler,
+    };
+
+    let mut sched = EventScheduler::new();
+    let seq_period = sched
+        .schedule(
+            5_000,
+            EventPriority::PeriodBoundary,
+            CancellationScope::PeriodScoped,
+            DesEventPayload::CheckPeriodEnd {
+                period: Period::FirstHalf,
+            },
+        )
+        .unwrap();
+    let seq_action = sched
+        .schedule(
+            5_000,
+            EventPriority::ActionDecision,
+            CancellationScope::LivePlayOnly,
+            DesEventPayload::DecisionReady {
+                player_id: "H09".into(),
+                side: TeamSideV4::Home,
+            },
+        )
+        .unwrap();
+    let seq_tac = sched
+        .schedule(
+            5_000,
+            EventPriority::TacticalAndCommand,
+            CancellationScope::Persistent,
+            DesEventPayload::TacticalCommandEffective {
+                command_index: 0,
+                side: TeamSideV4::Home,
+            },
+        )
+        .unwrap();
+    let seq_phys_1 = sched
+        .schedule(
+            5_000,
+            EventPriority::PhysicsAndBoundary,
+            CancellationScope::LivePlayOnly,
+            DesEventPayload::EarlyInteractionResolved {
+                interaction_tag: "HIT_A".into(),
+                actor_id: Some("A04".into()),
+            },
+        )
+        .unwrap();
+    let seq_phys_2 = sched
+        .schedule(
+            5_000,
+            EventPriority::PhysicsAndBoundary,
+            CancellationScope::LivePlayOnly,
+            DesEventPayload::EarlyInteractionResolved {
+                interaction_tag: "HIT_B".into(),
+                actor_id: Some("A05".into()),
+            },
+        )
+        .unwrap();
+
+    let order: Vec<u64> = (0..5)
+        .map(|_| sched.pop_next_valid().unwrap().unwrap().insertion_sequence)
+        .collect();
+    assert_eq!(order, vec![seq_phys_1, seq_phys_2, seq_tac, seq_action, seq_period]);
+    assert!(sched.pop_next_valid().unwrap().is_none());
+}
+
+#[test]
+fn des_scheduler_cancels_stale_generation_events() {
+    use crate::clock::Period;
+    use crate::v4::scheduler::{
+        CancellationScope, DesEventPayload, EventPriority, EventScheduler,
+    };
+
+    let mut sched = EventScheduler::new();
+    sched
+        .schedule(
+            1_000,
+            EventPriority::ActionDecision,
+            CancellationScope::LivePlayOnly,
+            DesEventPayload::DribbleStep {
+                carrier_id: "H10".into(),
+                side: TeamSideV4::Home,
+            },
+        )
+        .unwrap();
+    sched
+        .schedule(
+            2_000,
+            EventPriority::PeriodBoundary,
+            CancellationScope::PeriodScoped,
+            DesEventPayload::AnnounceAddedTime {
+                period: Period::FirstHalf,
+            },
+        )
+        .unwrap();
+    sched
+        .schedule(
+            3_000,
+            EventPriority::TacticalAndCommand,
+            CancellationScope::Persistent,
+            DesEventPayload::TacticalCommandEffective {
+                command_index: 7,
+                side: TeamSideV4::Away,
+            },
+        )
+        .unwrap();
+
+    sched.invalidate_live_play();
+    assert_eq!(sched.peek_next_valid_time_ms(), Some(2_000));
+
+    sched.invalidate_period();
+    assert_eq!(sched.peek_next_valid_time_ms(), Some(3_000));
+
+    let surviving = sched.pop_next_valid().unwrap().unwrap();
+    assert_eq!(surviving.event_time_ms, 3_000);
+    assert_eq!(surviving.scope, CancellationScope::Persistent);
+    assert!(sched.pop_next_valid().unwrap().is_none());
+}
+
+#[test]
+fn des_scheduler_rejects_past_and_infinite_same_ms_loop() {
+    use crate::v4::scheduler::{
+        CancellationScope, DesEventPayload, EventPriority, EventScheduler, MAX_ZERO_DT_STREAK,
+    };
+
+    let mut sched = EventScheduler::new();
+    sched.advance_cursor_to(10_000).unwrap();
+    assert!(sched.advance_cursor_to(9_999).is_err());
+    assert!(sched
+        .schedule(
+            9_999,
+            EventPriority::ActionDecision,
+            CancellationScope::LivePlayOnly,
+            DesEventPayload::AiManagerCheck {
+                side: TeamSideV4::Home,
+            },
+        )
+        .is_err());
+
+    for idx in 0..=MAX_ZERO_DT_STREAK {
+        sched
+            .schedule(
+                10_000,
+                EventPriority::ActionDecision,
+                CancellationScope::Persistent,
+                DesEventPayload::TacticalCommandEffective {
+                    command_index: idx,
+                    side: TeamSideV4::Home,
+                },
+            )
+            .unwrap();
+    }
+    for _ in 0..MAX_ZERO_DT_STREAK {
+        assert!(sched.pop_next_valid().unwrap().is_some());
+    }
+    assert!(
+        sched.pop_next_valid().is_err(),
+        "scheduler must trip zero_dt_streak guard after MAX_ZERO_DT_STREAK same-ms pops"
+    );
+}
+
+#[test]
+fn des_ci_defender_intercepts_before_receiver() {
+    use crate::v4::interaction::{
+        find_earliest_ball_interaction, BallTrajectory, DefenderCandidate, InteractionKind,
+    };
+
+    let traj = BallTrajectory {
+        start_time_ms: 1_000,
+        start_pos: Vec3::new(40.0, 34.0, 0.2),
+        initial_vel: Vec3::new(18.0, 0.0, 0.0),
+        gravity_z: 9.81,
+        drag: 0.0,
+        is_shot: false,
+        is_carrier_dribble: false,
+    };
+    let defenders = vec![DefenderCandidate {
+        player_id: "A04".into(),
+        side: TeamSideV4::Away,
+        pos: Vec2::new(58.0, 36.2),
+        max_speed_mps: 8.2,
+        reach_m: 1.15,
+        reaction_delay_ms: 120,
+        anticipation_norm: 0.85,
+        fatigue_factor: 1.0,
+    }];
+
+    // Scheduled receiver arrival is at t=3000ms (x=76m); defender at x=58m must intercept earlier.
+    let hit = find_earliest_ball_interaction(&traj, &defenders, 1_000, 3_000)
+        .expect("defender in passing corridor must intercept before receiver arrival");
+    assert_eq!(hit.kind, InteractionKind::PassInterception);
+    assert!(hit.time_ms > 1_000 && hit.time_ms < 3_000);
+    assert_eq!(hit.defender_id.as_deref(), Some("A04"));
+    assert_eq!(hit.defender_side, Some(TeamSideV4::Away));
+}
+
+#[test]
+fn des_tactical_command_delayed_effective_time_and_override_policy() {
+    use crate::v4::rules::CommandLifecycleStatus;
+    use crate::v4::session::{MatchCommandV4, MatchSessionV4};
+
+    let mut input = make_v4_input(14010, SimulationMode::FullEvent, RulesModeV4::Standard);
+    input.ai_home_manager = false;
+    input.ai_away_manager = false;
+
+    let mut session = MatchSessionV4::new(input).unwrap();
+    // Advance into active live play
+    let mut in_live = false;
+    for _ in 0..40 {
+        let s = session.advance_steps(1).unwrap();
+        if s.dead_ball_state == "LIVE_PLAY" {
+            in_live = true;
+            break;
+        }
+    }
+    assert!(in_live, "session must enter LIVE_PLAY");
+
+    // 1st tactical command during live play must have a positive propagation delay
+    let mut ti1 = TeamInstructionsV4::default();
+    ti1.pressing_intensity = 86;
+    ti1.line_height = 78;
+    session
+        .submit_command(MatchCommandV4::UpdateTactics {
+            side: TeamSideV4::Home,
+            instructions: ti1,
+        })
+        .unwrap();
+
+    // 2nd tactical command immediately overrides 1st while still pending
+    let mut ti2 = TeamInstructionsV4::default();
+    ti2.pressing_intensity = 28;
+    ti2.line_height = 32;
+    session
+        .submit_command(MatchCommandV4::UpdateTactics {
+            side: TeamSideV4::Home,
+            instructions: ti2,
+        })
+        .unwrap();
+
+    let result = session.run_to_full_time().unwrap();
+    assert_eq!(result.command_timeline.len(), 2);
+    let cmd1 = &result.command_timeline[0];
+    let cmd2 = &result.command_timeline[1];
+
+    assert!(
+        cmd1.scheduled_effective_sim_time_ms > cmd1.accepted_sim_time_ms,
+        "live tactical command must have nonzero propagation delay"
+    );
+    assert!(
+        cmd2.scheduled_effective_sim_time_ms > cmd2.accepted_sim_time_ms,
+        "override tactical command must also have nonzero propagation delay"
+    );
+    assert_eq!(
+        cmd1.status,
+        CommandLifecycleStatus::Superseded,
+        "earlier pending tactical command for same side must be superseded"
+    );
+    assert_eq!(cmd2.status, CommandLifecycleStatus::Applied);
+    assert!(
+        cmd2.actual_effective_sim_time_ms
+            .map_or(false, |t| t >= cmd2.scheduled_effective_sim_time_ms),
+        "applied tactical command must take effect at or after scheduled_effective_sim_time_ms"
+    );
+}
+
+#[test]
+fn des_live_sub_waits_for_next_deadball() {
+    use crate::v4::events::SessionStageV4;
+    use crate::v4::rules::CommandLifecycleStatus;
+    use crate::v4::session::{MatchCommandV4, MatchSessionV4};
+
+    let mut input = make_v4_input(14011, SimulationMode::FullEvent, RulesModeV4::Standard);
+    input.ai_home_manager = false;
+    let mut bench = input.home_team.lineup[8].clone();
+    bench.player_id = "LIVE-SUB-0".into();
+    bench.display_name = "Live Sub 0".into();
+    input.home_team.bench.push(bench);
+
+    let mut session = MatchSessionV4::new(input).unwrap();
+    let mut reached_live = false;
+    for _ in 0..40 {
+        let s = session.advance_steps(1).unwrap();
+        if s.dead_ball_state == "LIVE_PLAY" {
+            reached_live = true;
+            break;
+        }
+    }
+    assert!(reached_live, "must reach LIVE_PLAY");
+
+    session
+        .submit_command(MatchCommandV4::Substitute {
+            side: TeamSideV4::Home,
+            player_out_id: "H08".into(),
+            player_in_id: "LIVE-SUB-0".into(),
+        })
+        .unwrap();
+
+    // Immediately after 1 live step (if still live play), sub must remain queued and not yet on pitch
+    let immediate = session.advance_steps(1).unwrap();
+    if immediate.dead_ball_state == "LIVE_PLAY" {
+        assert_eq!(immediate.home_roster.substitutions_used, 0);
+        assert!(immediate.home_roster.on_pitch_player_ids.contains(&"H08".to_string()));
+        assert!(!immediate.home_roster.on_pitch_player_ids.contains(&"LIVE-SUB-0".to_string()));
+        assert!(immediate.pending_commands.iter().any(|c| {
+            c.command_type == "SUBSTITUTE" && c.status == CommandLifecycleStatus::QueuedForDeadBall
+        }));
+    }
+
+    // Advance until next dead ball flushes the queued substitution
+    let mut executed = false;
+    for _ in 0..500 {
+        let s = session.advance_steps(10).unwrap();
+        if s.home_roster.substitutions_used == 1 {
+            assert!(s.home_roster.on_pitch_player_ids.contains(&"LIVE-SUB-0".to_string()));
+            assert!(!s.home_roster.on_pitch_player_ids.contains(&"H08".to_string()));
+            assert_eq!(s.home_roster.substitution_windows_used, 1);
+            executed = true;
+            break;
+        }
+        if s.stage == SessionStageV4::HalfTimeBreak {
+            session.start_next_period().unwrap();
+        }
+        if s.is_full_time {
+            break;
+        }
+    }
+    assert!(executed, "queued live substitution must execute on the next dead ball");
+}
+
+#[test]
+fn des_checkpoint_roundtrip_exact_continuation_all_states() {
+    use crate::v4::checkpoint::{verify_checkpoint, MatchCheckpointV4};
+    use crate::v4::events::SessionStageV4;
+    use crate::v4::session::{MatchCommandV4, MatchSessionV4};
+
+    let mut input = make_v4_input(14012, SimulationMode::FullEvent, RulesModeV4::Standard);
+    input.ai_home_manager = false;
+    let mut bench = input.home_team.lineup[8].clone();
+    bench.player_id = "CKPT-SUB-0".into();
+    input.home_team.bench.push(bench);
+
+    let mut baseline = MatchSessionV4::new(input.clone()).unwrap();
+    let mut resumed = MatchSessionV4::new(input).unwrap();
+
+    // 1. Mid-first-half InHalf checkpoint with queued commands
+    baseline.advance_steps(35).unwrap();
+    resumed.advance_steps(35).unwrap();
+
+    let mut ti = TeamInstructionsV4::default();
+    ti.pressing_intensity = 77;
+    baseline
+        .submit_command(MatchCommandV4::UpdateTactics {
+            side: TeamSideV4::Home,
+            instructions: ti.clone(),
+        })
+        .unwrap();
+    resumed
+        .submit_command(MatchCommandV4::UpdateTactics {
+            side: TeamSideV4::Home,
+            instructions: ti,
+        })
+        .unwrap();
+
+    let sub_cmd = MatchCommandV4::Substitute {
+        side: TeamSideV4::Home,
+        player_out_id: "H08".into(),
+        player_in_id: "CKPT-SUB-0".into(),
+    };
+    baseline.submit_command(sub_cmd.clone()).unwrap();
+    resumed.submit_command(sub_cmd).unwrap();
+
+    let ckpt_live = resumed.export_checkpoint().unwrap();
+    let ckpt_live_json = serde_json::to_string(&ckpt_live).unwrap();
+    let parsed_live: MatchCheckpointV4 = serde_json::from_str(&ckpt_live_json).unwrap();
+    verify_checkpoint(&parsed_live).unwrap();
+
+    // Tampered checksum must be rejected
+    let mut tampered = parsed_live.clone();
+    tampered.checksum_hex = "00000000000000000000000000000000".into();
+    assert!(verify_checkpoint(&tampered).is_err());
+
+    let mut resumed = MatchSessionV4::from_checkpoint(parsed_live).unwrap();
+
+    // 2. Advance both to HalfTimeBreak and round-trip a second checkpoint at HalfTimeBreak
+    for _ in 0..2000 {
+        let s = baseline.advance_steps(30).unwrap();
+        if s.stage == SessionStageV4::HalfTimeBreak {
+            break;
+        }
+    }
+    for _ in 0..2000 {
+        let s = resumed.advance_steps(30).unwrap();
+        if s.stage == SessionStageV4::HalfTimeBreak {
+            break;
+        }
+    }
+    assert_eq!(baseline.stage(), resumed.stage());
+
+    let ckpt_ht = resumed.export_checkpoint().unwrap();
+    let ckpt_ht_json = serde_json::to_string(&ckpt_ht).unwrap();
+    let parsed_ht: MatchCheckpointV4 = serde_json::from_str(&ckpt_ht_json).unwrap();
+    verify_checkpoint(&parsed_ht).unwrap();
+    let mut resumed = MatchSessionV4::from_checkpoint(parsed_ht).unwrap();
+
+    // 3. Finish both sessions and verify bit-exact parity
+    let res_base = baseline.run_to_full_time().unwrap();
+    let res_resumed = resumed.run_to_full_time().unwrap();
+    assert_eq!(res_base.event_timeline_fingerprint, res_resumed.event_timeline_fingerprint);
+    assert_eq!(res_base.event_count, res_resumed.event_count);
+    assert_eq!(res_base.summary, res_resumed.summary);
+    assert_eq!(res_base.events, res_resumed.events);
+}
+
+#[test]
+fn des_fullevent_fastbatch_exact_parity_with_commands() {
+    use crate::v4::session::{
+        replay_v4_with_timeline, MatchCommandV4, MatchSessionV4, SubstitutionChangeV4,
+    };
+
+    let mut input_full = make_v4_input(14013, SimulationMode::FullEvent, RulesModeV4::Standard);
+    input_full.ai_home_manager = false;
+    for i in 0..2 {
+        let mut bench = input_full.home_team.lineup[8].clone();
+        bench.player_id = format!("PARITY-SUB-{i}");
+        input_full.home_team.bench.push(bench);
+    }
+
+    let mut session = MatchSessionV4::new(input_full.clone()).unwrap();
+    session.advance_steps(15).unwrap();
+    let mut ti = TeamInstructionsV4::default();
+    ti.tempo = 78;
+    ti.pressing_intensity = 74;
+    session
+        .submit_command(MatchCommandV4::UpdateTactics {
+            side: TeamSideV4::Home,
+            instructions: ti,
+        })
+        .unwrap();
+    session.advance_steps(20).unwrap();
+    session
+        .submit_command(MatchCommandV4::SubstituteBatch {
+            side: TeamSideV4::Home,
+            changes: vec![
+                SubstitutionChangeV4 {
+                    player_out_id: "H08".into(),
+                    player_in_id: "PARITY-SUB-0".into(),
+                },
+                SubstitutionChangeV4 {
+                    player_out_id: "H09".into(),
+                    player_in_id: "PARITY-SUB-1".into(),
+                },
+            ],
+        })
+        .unwrap();
+
+    let live_res = session.run_to_full_time().unwrap();
+    assert_eq!(live_res.command_timeline.len(), 2);
+
+    let replay_full =
+        replay_v4_with_timeline(input_full.clone(), &live_res.command_timeline).unwrap();
+    let mut input_fast = input_full;
+    input_fast.simulation_mode = SimulationMode::FastBatch;
+    let replay_fast = replay_v4_with_timeline(input_fast, &live_res.command_timeline).unwrap();
+
+    assert!(replay_fast.events.is_empty());
+    assert_eq!(live_res.event_timeline_fingerprint, replay_full.event_timeline_fingerprint);
+    assert_eq!(live_res.event_timeline_fingerprint, replay_fast.event_timeline_fingerprint);
+    assert_eq!(live_res.event_count, replay_fast.event_count);
+    assert_eq!(live_res.summary, replay_full.summary);
+    assert_eq!(live_res.summary, replay_fast.summary);
+}
+
+#[test]
+fn des_ruleset_version_immutable_per_match() {
+    use crate::v4::rules::check_ruleset_compatibility;
+    use crate::v4::session::MatchSessionV4;
+
+    let input_v1 = make_v4_input(14014, SimulationMode::FullEvent, RulesModeV4::Standard);
+    let mut input_v2 = input_v1.clone();
+    input_v2.ruleset.identity.ruleset_version = 2;
+
+    assert_ne!(
+        input_v1.input_fingerprint(),
+        input_v2.input_fingerprint(),
+        "ruleset_version must enter the immutable match input fingerprint"
+    );
+    assert!(check_ruleset_compatibility(
+        &input_v1.ruleset.identity,
+        &input_v2.ruleset.identity
+    )
+    .is_err());
+
+    let mut session = MatchSessionV4::new(input_v1).unwrap();
+    session.advance_steps(10).unwrap();
+    let mut ckpt = session.export_checkpoint().unwrap();
+    ckpt.ruleset_identity.ruleset_version = 99;
+    assert!(
+        MatchSessionV4::from_checkpoint(ckpt).is_err(),
+        "checkpoint with mutated ruleset_version must be rejected"
+    );
+}
+
+#[test]
+fn des_fatigue_step_splitting_invariance() {
+    use crate::v4::state::TwoPoolFatigueState;
+
+    // 1. Live high-intensity burst + dead-ball recovery: 1 coarse interval vs many fine sub-intervals
+    let mut coarse = TwoPoolFatigueState::from_condition(95);
+    coarse.apply_interval(10.0, 40.0, true, false, 14, 14);
+    coarse.apply_interval(20.0, 10.0, false, true, 14, 14);
+
+    let mut fine = TwoPoolFatigueState::from_condition(95);
+    for _ in 0..20 {
+        fine.apply_interval(0.5, 2.0, true, false, 14, 14);
+    }
+    for _ in 0..40 {
+        fine.apply_interval(0.5, 0.25, false, true, 14, 14);
+    }
+
+    assert!(
+        (coarse.aerobic - fine.aerobic).abs() < 1e-3,
+        "aerobic fatigue must be step-splitting invariant: coarse={} fine={}",
+        coarse.aerobic,
+        fine.aerobic
+    );
+    assert!(
+        (coarse.anaerobic - fine.anaerobic).abs() < 1e-3,
+        "anaerobic fatigue must be step-splitting invariant: coarse={} fine={}",
+        coarse.anaerobic,
+        fine.anaerobic
+    );
+    assert!(
+        (coarse.distance_m - fine.distance_m).abs() < 1e-3,
+        "distance accumulation must be step-splitting invariant"
+    );
+}
+
+
+
+#[test]
+fn qa01_long_pass_interception_emitted_at_interaction_time() {
+    let input = make_v4_input(202601, SimulationMode::FullEvent, RulesModeV4::Standard);
+    let mut session = MatchSessionV4::new(input).expect("session");
+    let result = session.run_to_full_time().expect("full match");
+    let mid_flight_interceptions: Vec<_> = result
+        .events
+        .iter()
+        .filter(|e| {
+            e.kind == EventTypeV4::Interception
+                && e.metadata.extra.contains_key("launchSimTimeMs")
+                && e.metadata.extra.contains_key("plannedArrivalSimTimeMs")
+        })
+        .collect();
+    assert!(
+        !mid_flight_interceptions.is_empty(),
+        "QA-01: expected mid-flight interceptions with launch/arrival metadata"
+    );
+    for ev in &mid_flight_interceptions {
+        let launch_ms: i64 = ev.metadata.extra["launchSimTimeMs"].parse().expect("launch ms");
+        let arrival_ms: i64 = ev.metadata.extra["plannedArrivalSimTimeMs"].parse().expect("arrival ms");
+        assert!(
+            ev.sim_time_ms > launch_ms && ev.sim_time_ms < arrival_ms,
+            "QA-01: interception at {}ms must occur strictly between launch ({}ms) and planned arrival ({}ms)",
+            ev.sim_time_ms,
+            launch_ms,
+            arrival_ms
+        );
+    }
+}
+
+#[test]
+fn qa02_shot_goal_emitted_at_arrival_not_kick_time() {
+    let mut verified_goals = 0usize;
+    for seed in 1001..1025 {
+        let input = make_v4_input(seed, SimulationMode::FullEvent, RulesModeV4::Standard);
+        let mut session = MatchSessionV4::new(input).expect("session");
+        let result = session.run_to_full_time().expect("full match");
+        for ev in &result.events {
+            if ev.kind == EventTypeV4::Goal {
+                if let Some(launch_str) = ev.metadata.extra.get("shotLaunchSimTimeMs") {
+                    let launch_ms: i64 = launch_str.parse().expect("shot launch ms");
+                    assert!(
+                        ev.sim_time_ms > launch_ms,
+                        "QA-02: goal ({}ms) must occur STRICTLY after shot kick ({}ms)",
+                        ev.sim_time_ms,
+                        launch_ms
+                    );
+                    verified_goals += 1;
+                }
+            }
+        }
+        if verified_goals >= 2 {
+            break;
+        }
+    }
+    assert!(verified_goals >= 1, "QA-02: expected at least one open-play goal with shotLaunchSimTimeMs");
+}
+
+#[test]
+fn qa08_checkpoint_roundtrip_preserves_rng_root_seed_and_diagnostics() {
+    let input = make_v4_input(202608, SimulationMode::FullEvent, RulesModeV4::Standard);
+    let mut s1 = MatchSessionV4::new(input).expect("s1");
+    s1.advance_until_ms(1_200_000, 1000).expect("advance s1");
+    let ckpt = s1.export_checkpoint().expect("export");
+    let orig_root = ckpt.payload.rng.root_seed;
+    let orig_des_steps = ckpt.payload.diagnostics_summary.des.des_steps_total;
+
+    let mut s2 = MatchSessionV4::from_checkpoint(ckpt).expect("restore s2");
+    let ckpt2 = s2.export_checkpoint().expect("re-export");
+    assert_eq!(
+        ckpt2.payload.rng.root_seed, orig_root,
+        "QA-08/CRITICAL-09: root_seed must survive checkpoint round-trip"
+    );
+    assert_eq!(
+        ckpt2.payload.diagnostics_summary.des.des_steps_total, orig_des_steps,
+        "QA-08/CRITICAL-09: DES diagnostics collector counters must survive checkpoint round-trip"
+    );
+    let r1 = s1.run_to_full_time().expect("finish s1");
+    let r2 = s2.run_to_full_time().expect("finish s2");
+    assert_eq!(r1.event_timeline_fingerprint, r2.event_timeline_fingerprint);
+    assert_eq!(r1.summary.home.goals, r2.summary.home.goals);
+    assert_eq!(r1.summary.away.goals, r2.summary.away.goals);
+}
+
+#[test]
+fn qa10_mid_interval_tactical_event_preserves_total_movement_and_fatigue() {
+    let input = make_v4_input(202610, SimulationMode::FullEvent, RulesModeV4::Standard);
+    let mut s_base = MatchSessionV4::new(input.clone()).expect("base");
+    let mut s_cmd = MatchSessionV4::new(input).expect("cmd");
+    s_base.advance_until_ms(600_000, 1000).expect("advance base");
+    s_cmd.advance_until_ms(600_000, 1000).expect("advance cmd");
+    let mut instr = s_cmd.export_checkpoint().expect("c").payload.input.home_team.team_instructions;
+    instr.tempo = (instr.tempo + 5).min(100);
+    s_cmd
+        .submit_command(MatchCommandV4::UpdateTactics {
+            side: TeamSideV4::Home,
+            instructions: instr,
+        })
+        .expect("submit tactics");
+    let step_b = s_base.advance_until_ms(650_000, 500).expect("b2");
+    let step_c = s_cmd.advance_until_ms(650_000, 500).expect("c2");
+    assert_eq!(
+        step_b.ball_in_play_ms + step_b.ball_out_of_play_ms,
+        step_c.ball_in_play_ms + step_c.ball_out_of_play_ms,
+        "QA-10: inserting a delayed tactical event must not add or lose match clock time"
+    );
+    let ck_b = s_base.export_checkpoint().expect("ck_b");
+    let ck_c = s_cmd.export_checkpoint().expect("ck_c");
+    let avg_aerobic_b: f32 = ck_b.payload.state.players.iter().map(|p| p.fatigue.aerobic).sum::<f32>()
+        / ck_b.payload.state.players.len() as f32;
+    let avg_aerobic_c: f32 = ck_c.payload.state.players.iter().map(|p| p.fatigue.aerobic).sum::<f32>()
+        / ck_c.payload.state.players.len() as f32;
+    assert!(
+        (avg_aerobic_b - avg_aerobic_c).abs() < 1.5,
+        "QA-10: splitting interval with tactical event must preserve aerobic fatigue ({} vs {})",
+        avg_aerobic_b,
+        avg_aerobic_c
+    );
+}
+
+#[test]
+fn qa11_injury_in_added_time_extends_period_dynamically() {
+    let mut clock = crate::clock::DesClockState::default();
+    clock.begin_period(crate::clock::Period::FirstHalf, 2_700_000);
+    clock.advance_ms(2_600_000, true).expect("advance");
+    clock.advance_ms(100_000, false).expect("stoppage");
+    clock.record_compensable_lost_ms(60_000);
+    clock.lock_announced_added_ms(60_000);
+    // Injury occurs during added time
+    clock.advance_ms(45_000, false).expect("injury stoppage");
+    clock.record_compensable_lost_ms(45_000);
+    assert_eq!(clock.announced_added_ms, 60_000);
+    assert_eq!(clock.additional_added_ms, 45_000);
+    assert_eq!(clock.effective_added_ms(), 105_000);
+    assert!(clock.compensable_lost_ms <= clock.ball_out_of_play_ms);
+}
+
+#[test]
+#[ignore]
+fn qa12_monte_carlo_1000_matches_benchmark() {
+    let inputs: Vec<MatchInputV4> = (0..1000)
+        .map(|i| make_v4_input(202612 + i as i64, SimulationMode::FastBatch, RulesModeV4::Standard))
+        .collect();
+    let report = crate::v4::calibration::run_monte_carlo_v4(inputs).expect("monte carlo 1000");
+    assert_eq!(report.match_count, 1000);
+    assert!(report.matches_per_sec > 0.0);
+    assert!(report.avg_ball_in_play_min > 0.0);
 }

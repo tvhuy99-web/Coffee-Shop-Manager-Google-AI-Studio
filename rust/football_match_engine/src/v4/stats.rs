@@ -94,6 +94,26 @@ fn record_event(home: &mut FromEvents, away: &mut FromEvents, ev: &MatchEventV4)
 /// equal the authoritative final summary. FastBatch uses validate_summary only.
 pub fn audit_result(result: &MatchResultV4) -> Result<(), String> {
     validate_summary(&result.summary)?;
+    // Works even in FastBatch: diagnostics are built by the same event emitter,
+    // without retaining a complete event timeline.
+    if let Some(d) = &result.diagnostics {
+        d.validate_basic()?;
+        for (label, diagnostic, summary) in [
+            ("HOME", &d.home, &result.summary.home),
+            ("AWAY", &d.away, &result.summary.away),
+        ] {
+            if diagnostic.shots != summary.shots as u32
+                || diagnostic.shots_on_target != summary.shots_on_target as u32
+                || diagnostic.shots_off_target != summary.shots_off_target as u32
+                || diagnostic.shots_blocked != summary.shots_blocked as u32
+                || diagnostic.goals != summary.goals as u32
+                || diagnostic.passes_attempted != summary.passes_attempted as u32
+                || diagnostic.passes_completed != summary.passes_completed as u32
+            {
+                return Err(format!("{label}: attacking diagnostics differ from authoritative summary"));
+            }
+        }
+    }
     if result.events.is_empty() { return Ok(()); }
     if result.events.len() != result.event_count as usize { return Err("event count mismatch".into()); }
     let (mut home, mut away) = (FromEvents::default(), FromEvents::default());

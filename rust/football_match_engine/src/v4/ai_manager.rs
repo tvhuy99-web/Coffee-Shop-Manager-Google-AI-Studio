@@ -1,11 +1,33 @@
 use crate::v4::ball_play::EmittedPlayEvent;
 use crate::v4::events::{EventMetadataV4, EventTypeV4, HighlightTier};
-use crate::v4::input::{MatchInputV4, TeamMatchSnapshotV4};
+use crate::v4::input::{MatchInputV4, PlayerMatchSnapshotV4, TeamMatchSnapshotV4};
 use crate::v4::spatial::{TeamSideV4, Vec2, Vec3};
 use crate::v4::state::{
     compute_position_familiarity, MatchStateV4, PlayerPsychologyState, PlayerRuntimeStateV4,
-    TwoPoolFatigueState,
+    PlayerStaticProfile, TwoPoolFatigueState,
 };
+
+fn resolve_bench_profile_idx(
+    state: &mut MatchStateV4,
+    bench_snap: &PlayerMatchSnapshotV4,
+    expected_idx: usize,
+) -> usize {
+    if let Some(existing) = state.player_profiles.get(expected_idx) {
+        if existing.attrs == bench_snap.attributes
+            && existing.preferred_foot == bench_snap.preferred_foot
+            && existing.weak_foot == bench_snap.weak_foot
+        {
+            return expected_idx;
+        }
+    }
+    let idx = state.player_profiles.len();
+    state.player_profiles.push(PlayerStaticProfile {
+        attrs: bench_snap.attributes,
+        preferred_foot: bench_snap.preferred_foot,
+        weak_foot: bench_snap.weak_foot,
+    });
+    idx
+}
 
 pub const MAX_SUBSTITUTIONS: u8 = 5;
 pub const MAX_SUBSTITUTION_WINDOWS: u8 = 3;
@@ -50,16 +72,28 @@ fn apply_manual_substitution_single(
         TeamSideV4::Home => &input.home_team,
         TeamSideV4::Away => &input.away_team,
     };
-    let bench_snap = team_snap
+    let (bench_idx, bench_snap) = team_snap
         .bench
         .iter()
-        .find(|p| p.player_id == player_in_id && !p.injured && p.eligible)
+        .enumerate()
+        .find(|(_, p)| p.player_id == player_in_id && !p.injured && p.eligible)
         .ok_or("incoming player not available on bench")?;
 
     let target_slot = state.players[out_idx].slot_id.clone();
+    let target_slot_idx = state.players[out_idx].slot_idx;
     let is_replacing_gk = state.players[out_idx].is_goalkeeper;
     let out_pos = state.players[out_idx].pos;
     let out_facing = state.players[out_idx].facing_rad;
+    let expected_profile_idx = match side {
+        TeamSideV4::Home => input.home_team.lineup.len() + bench_idx,
+        TeamSideV4::Away => {
+            input.home_team.lineup.len()
+                + input.home_team.bench.len()
+                + input.away_team.lineup.len()
+                + bench_idx
+        }
+    };
+    let profile_idx = resolve_bench_profile_idx(state, bench_snap, expected_profile_idx);
 
     state.players[out_idx].on_pitch = false;
     let fam = compute_position_familiarity(
@@ -71,6 +105,9 @@ fn apply_manual_substitution_single(
         player_id: bench_snap.player_id.clone(),
         side,
         slot_id: target_slot,
+        profile_idx,
+        slot_idx: target_slot_idx,
+        last_moved_m: 0.0,
         pos: out_pos,
         target_pos: out_pos,
         vel: Vec2::default(),
@@ -246,16 +283,29 @@ fn evaluate_side(
         TeamSideV4::Away => &input.away_team,
     };
 
+    let bench_profile_base = match side {
+        TeamSideV4::Home => input.home_team.lineup.len(),
+        TeamSideV4::Away => {
+            input.home_team.lineup.len()
+                + input.home_team.bench.len()
+                + input.away_team.lineup.len()
+        }
+    };
+
     let subs_used = state.team_state(side).substitutions_used;
     let windows_used = state.team_state(side).substitution_windows_used;
 
     if subs_used < MAX_SUBSTITUTIONS && windows_used < MAX_SUBSTITUTION_WINDOWS {
-        if let Some(inj_sub) = try_make_substitution(state, team_snap, side, game_sec, true) {
+        if let Some(inj_sub) =
+            try_make_substitution(state, team_snap, bench_profile_base, side, game_sec, true)
+        {
             events.push(inj_sub);
             return events;
         }
         if game_sec >= 3360 {
-            if let Some(sub_ev) = try_make_substitution(state, team_snap, side, game_sec, false) {
+            if let Some(sub_ev) =
+                try_make_substitution(state, team_snap, bench_profile_base, side, game_sec, false)
+            {
                 events.push(sub_ev);
             }
         }
@@ -267,6 +317,7 @@ fn evaluate_side(
 fn try_make_substitution(
     state: &mut MatchStateV4,
     team_snap: &TeamMatchSnapshotV4,
+    bench_profile_base: usize,
     side: TeamSideV4,
     game_sec: i32,
     injury_only: bool,
@@ -324,10 +375,13 @@ fn try_make_substitution(
         }
     }
 
-    let bench_snap = &team_snap.bench[best_bench_idx?];
+    let bench_idx = best_bench_idx?;
+    let bench_snap = &team_snap.bench[bench_idx];
     let out_id = state.players[out_idx].player_id.clone();
+    let target_slot_idx = state.players[out_idx].slot_idx;
     let out_pos = state.players[out_idx].pos;
     let out_facing = state.players[out_idx].facing_rad;
+    let profile_idx = resolve_bench_profile_idx(state, bench_snap, bench_profile_base + bench_idx);
 
     state.players[out_idx].on_pitch = false;
     let fam = compute_position_familiarity(
@@ -339,6 +393,9 @@ fn try_make_substitution(
         player_id: bench_snap.player_id.clone(),
         side,
         slot_id: target_slot,
+        profile_idx,
+        slot_idx: target_slot_idx,
+        last_moved_m: 0.0,
         pos: out_pos,
         target_pos: out_pos,
         vel: Vec2::default(),

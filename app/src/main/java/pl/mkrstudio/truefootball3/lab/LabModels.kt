@@ -103,6 +103,130 @@ enum class LabWeatherCondition { CLEAR, LIGHT_RAIN, HEAVY_RAIN, WINDY, HOT }
 
 enum class LabPitchQuality { EXCELLENT, GOOD, HEAVY, POOR }
 
+data class LabMatchEvent(
+    val gameSecond: Int,
+    val period: Int,
+    val kind: LabEventType,
+    val periodElapsedSecond: Int = gameSecond,
+    val highlightTier: LabHighlightTier = LabHighlightTier.NONE,
+    val highlightSequenceId: Int? = null,
+    val side: LabTeamSide? = null,
+    val actor: String? = null,
+    val target: String? = null,
+    val ballX: Float = 0f,
+    val ballY: Float = 0f,
+    val ballZ: Float = 0f,
+    val metadata: Map<String, String> = emptyMap(),
+    val simTimeMs: Long = gameSecond.toLong() * 1000L,
+    val periodElapsedMs: Long = periodElapsedSecond.toLong() * 1000L,
+    val dtMs: Long = 0L,
+    val sequence: Int = 0
+)
+
+// --- V4.1 DES Playback, Narration & Checkpoint Shared Models ---
+
+enum class DesHalfStage {
+    PRE_MATCH,
+    IN_HALF,
+    HALF_TIME_BREAK,
+    EXTRA_TIME_BREAK,
+    SHOOTOUT,
+    FULL_TIME;
+
+    companion object {
+        fun fromRustStage(raw: String?): DesHalfStage = when (raw?.trim()?.uppercase(Locale.ROOT)) {
+            "PRE_MATCH" -> PRE_MATCH
+            "IN_HALF" -> IN_HALF
+            "HALF_TIME_BREAK" -> HALF_TIME_BREAK
+            "EXTRA_TIME_BREAK" -> EXTRA_TIME_BREAK
+            "PENALTY_SHOOTOUT", "SHOOTOUT" -> SHOOTOUT
+            "FULL_TIME" -> FULL_TIME
+            else -> PRE_MATCH
+        }
+    }
+}
+
+data class DesClockSnapshot(
+    val simTimeMs: Long,
+    val period: Int,
+    val periodElapsedMs: Long,
+    val ballInPlayMs: Long,
+    val ballOutOfPlayMs: Long,
+    val compensableLostMs: Long,
+    val announcedAddedMs: Long,
+    val additionalAddedMs: Long,
+    val effectiveAddedMs: Long
+)
+
+data class PendingCommandStatus(
+    val commandId: Long,
+    val kind: String,
+    val side: String,
+    val status: String,
+    val acceptedSimTimeMs: Long,
+    val scheduledEffectiveSimTimeMs: Long,
+    val actualEffectiveSimTimeMs: Long?
+)
+
+enum class CuePriority {
+    P0_CRITICAL,
+    P1_HIGH,
+    P2_MEDIUM,
+    P3_AMBIENT
+}
+
+enum class CueState {
+    PLANNED,
+    SYNTHESIZING,
+    READY,
+    PLAYING,
+    COMPLETED,
+    BACKEND_FAILED,
+    CANCELLED
+}
+
+data class CommentaryCue(
+    val cueId: String,
+    val eventIds: List<Int>,
+    val text: String,
+    val anchorSimTimeMs: Long,
+    var durationAudioMs: Long,
+    val priority: CuePriority,
+    val generationToken: Long,
+    var state: CueState = CueState.PLANNED,
+    var wavFilePath: String? = null
+)
+
+enum class TtsHealthStatus {
+    HEALTHY,
+    DEGRADED_BACKLOG,
+    BACKEND_ERROR,
+    UNAVAILABLE
+}
+
+data class PlaybackCheckpointState(
+    val playbackSimTimeMs: Long,
+    val committedRustSimTimeMs: Long,
+    val playbackRate: Float,
+    val paused: Boolean,
+    val viewingMode: String,
+    val includeTurningPointsInShort: Boolean,
+    val lastPresentedEventSeq: Int,
+    val lastCompletedCueId: String?,
+    val inProgressCueId: String?,
+    val inProgressCueAnchorSimMs: Long?,
+    val inProgressCueText: String?,
+    val inProgressCueOffsetMs: Long,
+    val crowdState: String,
+    val lastTransitionSimTimeMs: Long,
+    val lastCrowdRiseSimTimeMs: Long,
+    /** Buffered Rust events in (playbackSimTimeMs, committedRustSimTimeMs] not yet presented (CRITICAL-04). */
+    val unpresentedEventsJson: String = "[]",
+    /** Locked 1.0x unplayed commentary cues for seamless post-kill-process resume (CRITICAL-04 / QA-09). */
+    val pendingCuesJson: String = "[]",
+    val presentationStateJson: String = "{}"
+)
+
 data class LabMatchEnvironment(
     val weather: LabWeatherCondition = LabWeatherCondition.CLEAR,
     val pitchQuality: LabPitchQuality = LabPitchQuality.GOOD,

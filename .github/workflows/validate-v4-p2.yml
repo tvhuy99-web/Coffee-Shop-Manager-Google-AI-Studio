@@ -32,13 +32,17 @@ jobs:
         run: |
           cd rust/football_match_engine
           V4_REALISM_MATCHES=128 V4_REALISM_REPORT_PATH=../../build-evidence/v4_realism_baseline.json cargo test --lib v4::attribute_impact_tests::monte_carlo_realism_baseline_report -- --ignored --nocapture
+      - name: Export fixed-seed per-match attacking diagnosis (V4.1)
+        run: |
+          cd rust/football_match_engine
+          V4_DIAGNOSTICS_REPORT_PATH=../../build-evidence/v4_attacking_diagnostics.json cargo test --lib v4::diagnostics::tests::export_attacking_diagnostics_sample -- --ignored --nocapture
       - name: Validate diagnostic evidence and make gaps visible
-        run: python3 tools/verify_v4_impact_report.py build-evidence/v4_attribute_impact.json build-evidence/v4_realism_baseline.json
+        run: python3 tools/verify_v4_impact_report.py build-evidence/v4_attribute_impact.json build-evidence/v4_realism_baseline.json build-evidence/v4_attacking_diagnostics.json
       - name: Upload attribute impact and realism reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v4-impact-and-realism-report
+          name: v4-impact-realism-and-attack-diagnostics
           path: build-evidence/
           if-no-files-found: warn
           retention-days: 30

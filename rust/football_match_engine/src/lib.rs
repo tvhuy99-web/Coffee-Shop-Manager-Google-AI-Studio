@@ -61,13 +61,13 @@ pub extern "system" fn Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeBr
     v4::JNI_BRIDGE_VERSION
 }
 
-/// Highest supported Match Engine wire protocol version (`4` = V4.0 54-attribute 90-minute protocol).
+/// Highest supported Match Engine wire protocol version (`5` = V4.1 DES 54-attribute 90-minute protocol).
 #[no_mangle]
 pub extern "system" fn Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeEngineProtocolVersion(
     _env: *mut c_void,
     _class: *mut c_void,
 ) -> i32 {
-    v4::ENGINE_PROTOCOL_VERSION_V4
+    v4::ENGINE_PROTOCOL_VERSION_V4 as i32
 }
 
 #[no_mangle]

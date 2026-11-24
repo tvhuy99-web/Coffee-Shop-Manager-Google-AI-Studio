@@ -1,0 +1,38 @@
+DES v1.4 repair pass 4 (v4.1.1-des)
+REPAIRED SOURCE CANDIDATE — RUNTIME VERIFICATION PENDING
+Overlay of full changed/new files from v3 plus repair changes.
+Read docs/DES_V1_4_REPAIR_REPORT.md before integration.
+Static 26/26; production Kotlin harness 6 scenarios passed; Cargo/Gradle/device pending.
+Stale v3 full patch omitted; no repo deletions requested.
+
+Modified vs v3:
+app/src/main/java/pl/mkrstudio/truefootball3/lab/LabGlobalSeedReplayStore.kt
+app/src/main/java/pl/mkrstudio/truefootball3/lab/LabMatchInputFactory.kt
+app/src/main/java/pl/mkrstudio/truefootball3/lab/LabModels.kt
+app/src/main/java/pl/mkrstudio/truefootball3/lab/LabReferenceMatchActivity.kt
+app/src/main/java/pl/mkrstudio/truefootball3/lab/MatchCheckpointStore.kt
+app/src/main/java/pl/mkrstudio/truefootball3/lab/MatchPlaybackController.kt
+app/src/main/java/pl/mkrstudio/truefootball3/lab/NarrationScheduler.kt
+docs/DES_V1_4_FINAL_ACCEPTANCE_REPORT.md
+rust/football_match_engine/src/v4/ball_play.rs
+rust/football_match_engine/src/v4/checkpoint.rs
+rust/football_match_engine/src/v4/mod.rs
+rust/football_match_engine/src/v4/rules.rs
+rust/football_match_engine/src/v4/session.rs
+rust/football_match_engine/src/v4/shooting.rs
+tests/p1_kotlin/Smoke.kt
+tools/verify_v4_des_contract.py
+
+New vs v3:
+.github/workflows/validate-des-repair.yml
+docs/DES_V1_4_REPAIR_REPORT.md
+repair-evidence/kotlin-playback-jvm.log
+repair-evidence/static-contract.log
+tests/des_playback_jvm/Atomic.kt
+tests/des_playback_jvm/Audio.kt
+tests/des_playback_jvm/Context.kt
+tests/des_playback_jvm/Deps.kt
+tests/des_playback_jvm/Json.kt
+tests/des_playback_jvm/Os.kt
+tests/des_playback_jvm/Test.kt
+tools/run_des_playback_jvm.sh

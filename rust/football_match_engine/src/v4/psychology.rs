@@ -7,6 +7,15 @@ use crate::v4::movement::lookup_attrs;
 use crate::v4::spatial::{TeamSideV4, Vec3};
 use crate::v4::state::{InjuryKind, MatchStateV4};
 
+/// Continuous-time exponential decay rate for team momentum (s^-1).
+/// Calibrated so `(-MOMENTUM_DECAY_RATE_PER_SEC * 11.0).exp() ≈ 0.94`,
+/// preserving V4.0 behavior while remaining invariant to DES step length.
+pub const MOMENTUM_DECAY_RATE_PER_SEC: f32 = 0.005625;
+
+/// Reference V4.0 beat duration (seconds) used to convert legacy per-beat
+/// probabilities into continuous-time Poisson hazard rates.
+pub const REFERENCE_BEAT_SEC: f32 = 11.0;
+
 /// Computes deterministic pre-match form multiplier from `consistency`, `big_matches`,
 /// `match_importance`, and the meta/career readiness hook (`professionalism` + `adaptability`).
 pub fn compute_prematch_form_multiplier(
@@ -35,11 +44,12 @@ pub fn compute_prematch_form_multiplier(
 }
 
 /// Updates dynamic in-match psychology (`concentration_level`, `pressure_load`, `confidence`)
-/// and team `momentum` across all active players.
+/// and team `momentum` across all active players over an arbitrary DES step `dt_sec`.
 pub fn update_in_match_psychology(
     state: &mut MatchStateV4,
     input: &MatchInputV4,
     game_second: i32,
+    dt_sec: f32,
 ) {
     let importance = input.match_environment.match_importance as f32 / 100.0;
     let late_half = (2400..=2850).contains(&game_second) || game_second >= 4800;
@@ -48,9 +58,10 @@ pub fn update_in_match_psychology(
     let home_lead = team_leadership_aura(state, input, TeamSideV4::Home);
     let away_lead = team_leadership_aura(state, input, TeamSideV4::Away);
 
-    // Decay momentum gently toward 0 each interval
-    state.home.momentum *= 0.94;
-    state.away.momentum *= 0.94;
+    // Continuous-time exponential decay of team momentum toward 0 (step-length invariant)
+    let decay = (-MOMENTUM_DECAY_RATE_PER_SEC * dt_sec.max(0.0)).exp();
+    state.home.momentum *= decay;
+    state.away.momentum *= decay;
 
     for idx in 0..state.players.len() {
         if !state.players[idx].on_pitch || state.players[idx].sent_off {
@@ -105,13 +116,34 @@ pub fn shift_momentum(state: &mut MatchStateV4, side: TeamSideV4, delta: f32) {
     opp.momentum = (opp.momentum - delta * 0.65).clamp(-1.0, 1.0);
 }
 
+/// Continuous-time pressing foul hazard probability for a DES step of length `dt_sec`.
+/// Converts the legacy V4.0 per-beat probability `(0.046 + p_norm * 0.052 + ref_mod).clamp(0.018, 0.12)`
+/// over `REFERENCE_BEAT_SEC` (11s) into an exact Poisson hazard rate `lambda` and evaluates
+/// `1.0 - (-lambda * dt_sec).exp()`, ensuring invariance under arbitrary step subdivision.
+pub fn pressing_foul_hazard_prob(p_norm: f32, ref_mod: f32, dt_sec: f32) -> f32 {
+    let dt_pos = dt_sec.max(0.0);
+    if dt_pos <= 0.0 {
+        return 0.0;
+    }
+    let p_ref = (0.046 + p_norm.clamp(0.0, 1.0) * 0.052 + ref_mod).clamp(0.018, 0.12);
+    let lambda_per_sec = -(1.0 - p_ref).ln() / REFERENCE_BEAT_SEC;
+    (1.0 - (-lambda_per_sec * dt_pos).exp()).clamp(0.0, 0.25)
+}
+
 /// Checks for a non-contact muscle injury (`InjuryKind::MuscleNonContact`) during high-intensity
-/// effort when aerobic/anaerobic reserves are depleted, governed by `injury_proneness` & `natural_fitness`.
+/// effort when aerobic/anaerobic reserves are depleted, governed by `injury_proneness`,
+/// `natural_fitness`, and continuous-time hazard integration over `dt_sec`.
 pub fn check_muscle_injury(
     state: &mut MatchStateV4,
     input: &MatchInputV4,
+    dt_sec: f32,
     rng: &mut DeterministicRng,
 ) -> Option<EmittedPlayEvent> {
+    let dt_pos = dt_sec.max(0.0);
+    if dt_pos <= 0.0 {
+        return None;
+    }
+
     let pitch_pen = match input.match_environment.pitch_quality {
         PitchQuality::Poor => 1.35,
         PitchQuality::Heavy => 1.18,
@@ -135,8 +167,12 @@ pub fn check_muscle_injury(
         let prone = normalize_attr(attrs.hidden.injury_proneness);
         let nat = normalize_attr(attrs.physical.natural_fitness);
         let exhaustion = ((46.0 - aero).max(0.0) / 46.0) + ((20.0 - ana).max(0.0) / 20.0) * 0.6;
-        let prob = (0.0018 * (0.45 + prone * 1.65) * (1.25 - nat * 0.55) * (0.6 + exhaustion) * pitch_pen)
-            .clamp(0.0, 0.045);
+        let lambda_per_sec = (0.0018 / REFERENCE_BEAT_SEC)
+            * (0.45 + prone * 1.65)
+            * (1.25 - nat * 0.55)
+            * (0.6 + exhaustion)
+            * pitch_pen;
+        let prob = (1.0 - (-lambda_per_sec * dt_pos).exp()).clamp(0.0, 0.045);
 
         if (rng.next_double() as f32) < prob {
             state.players[idx].injury = Some(InjuryKind::MuscleNonContact);
@@ -334,4 +370,35 @@ fn team_leadership_aura(state: &MatchStateV4, input: &MatchInputV4, side: TeamSi
         }
     }
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn momentum_decay_matches_legacy_beat_and_is_step_invariant() {
+        let one_step = (-MOMENTUM_DECAY_RATE_PER_SEC * 11.0_f32).exp();
+        assert!((one_step - 0.94).abs() < 1e-4);
+
+        let split_two = (-MOMENTUM_DECAY_RATE_PER_SEC * 5.5_f32).exp().powi(2);
+        let split_eleven = (-MOMENTUM_DECAY_RATE_PER_SEC * 1.0_f32).exp().powi(11);
+        assert!((one_step - split_two).abs() < 1e-6);
+        assert!((one_step - split_eleven).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pressing_foul_hazard_is_zero_at_zero_dt_and_step_invariant() {
+        assert_eq!(pressing_foul_hazard_prob(0.5, 0.0, 0.0), 0.0);
+        assert_eq!(pressing_foul_hazard_prob(0.5, 0.0, -2.0), 0.0);
+
+        let p_full = pressing_foul_hazard_prob(0.6, 0.005, 11.0);
+        let expected_ref = (0.046 + 0.6 * 0.052 + 0.005_f32).clamp(0.018, 0.12);
+        assert!((p_full - expected_ref).abs() < 1e-5);
+
+        let p1 = pressing_foul_hazard_prob(0.6, 0.005, 3.0);
+        let p2 = pressing_foul_hazard_prob(0.6, 0.005, 8.0);
+        let combined = 1.0 - (1.0 - p1) * (1.0 - p2);
+        assert!((combined - p_full).abs() < 1e-5);
+    }
 }

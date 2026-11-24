@@ -71,7 +71,13 @@ def check_realism(path: Path):
                 "avgShotsOffTargetPerMatch", "avgSavesPerMatch", "avgOwnGoalsPerMatch",
                 "passAccuracyPct", "avgFoulsPerMatch", "avgYellowCardsPerMatch",
                 "avgRedCardsPerMatch", "homeWinRatePct", "drawRatePct", "awayWinRatePct",
-                "matchesPerSec"):
+                "matchesPerSec",
+                "avgPossessionsPerMatch", "avgFinalThirdPossessionsPerMatch",
+                "avgPenaltyAreaPossessionsPerMatch", "avgPenaltyAreaWithoutShotPerMatch",
+                "avgShotPossessionsPerMatch", "avgShotsFromBoxPerMatch",
+                "avgPassInterceptionsPerMatch", "avgPassMisplacementsPerMatch",
+                "avgPassOutOfPlayPerMatch", "avgFirstTouchErrorsPerMatch",
+                "avgDribbleTacklesPerMatch", "avgUnclassifiedTurnoversPerMatch"):
         require(isinstance(metrics[key], (int, float)) and math.isfinite(metrics[key]) and metrics[key] >= 0,
                 f"invalid aggregate metric: {key}")
     outcomes = sum(metrics[key] for key in ("homeWinRatePct", "drawRatePct", "awayWinRatePct"))
@@ -79,16 +85,80 @@ def check_realism(path: Path):
     require(0 <= metrics["passAccuracyPct"] <= 100, "invalid pass accuracy percentage")
     require(metrics["avgShotsBlockedPerMatch"] + metrics["avgShotsOffTargetPerMatch"]
             <= metrics["avgShotsPerMatch"] + 1e-4, "shot breakdown impossible")
+    eps = 1e-4
+    require(metrics["avgFinalThirdPossessionsPerMatch"] <= metrics["avgPossessionsPerMatch"] + eps,
+            "final-third entries exceed total possessions")
+    require(metrics["avgPenaltyAreaPossessionsPerMatch"] <= metrics["avgFinalThirdPossessionsPerMatch"] + eps,
+            "penalty-area entries exceed final-third entries")
+    require(metrics["avgPenaltyAreaWithoutShotPerMatch"] <= metrics["avgPenaltyAreaPossessionsPerMatch"] + eps,
+            "box-without-shot exceeds box possessions")
+    require(metrics["avgShotPossessionsPerMatch"] <= metrics["avgPossessionsPerMatch"] + eps,
+            "shot possessions exceed total possessions")
+    require(metrics["avgShotsFromBoxPerMatch"] <= metrics["avgShotsPerMatch"] + eps,
+            "shots from box exceed total shots")
     print(f"V4 realism evidence valid: {sample['matches']} synthetic 90-minute fixtures; "
           f"mean goals {metrics['avgGoalsPerMatch']:.2f}, shots {metrics['avgShotsPerMatch']:.2f}, "
           f"pass accuracy {metrics['passAccuracyPct']:.1f}%. Advisory, not calibrated.")
+    print(f"V4 attack funnel/match: possessions {metrics['avgPossessionsPerMatch']:.2f}, "
+          f"final third {metrics['avgFinalThirdPossessionsPerMatch']:.2f}, "
+          f"box {metrics['avgPenaltyAreaPossessionsPerMatch']:.2f}, "
+          f"box-without-shot {metrics['avgPenaltyAreaWithoutShotPerMatch']:.2f}, "
+          f"shot possessions {metrics['avgShotPossessionsPerMatch']:.2f}.")
+    print(f"V4 possession losses/match: intercepted passes {metrics['avgPassInterceptionsPerMatch']:.2f}, "
+          f"misplaced passes {metrics['avgPassMisplacementsPerMatch']:.2f}, "
+          f"first touches {metrics['avgFirstTouchErrorsPerMatch']:.2f}, "
+          f"dribble tackles {metrics['avgDribbleTacklesPerMatch']:.2f}, "
+          f"unclassified {metrics['avgUnclassifiedTurnoversPerMatch']:.2f}.")
+
+
+def check_attacking_probe(path: Path):
+    data = json.loads(path.read_text(encoding="utf-8"))
+    require(data.get("schemaVersion") == 1, "attack diagnostics schema must be v1")
+    rows = data.get("matches")
+    require(isinstance(rows, list) and 8 <= len(rows) <= 200, "attack diagnostic sample size invalid")
+    seeds = set()
+    total_box_without_shot = 0
+    for row in rows:
+        require(type(row["seed"]) is int and row["seed"] not in seeds, "duplicate or invalid diagnostic seed")
+        seeds.add(row["seed"])
+        diagnostic = row["diagnostics"]
+        require(diagnostic["schemaVersion"] == 1, "per-match diagnostic schema mismatch")
+        for side in ("home", "away"):
+            d = diagnostic[side]
+            summary = row["summary"][side]
+            for field in ("goals", "shots", "passesAttempted", "passesCompleted"):
+                require(d[field] == summary[field], f"{row['seed']} {side}: mismatch for {field}")
+            require(d["shots"] == d["shotsOnTarget"] + d["shotsOffTarget"] + d["shotsBlocked"],
+                    f"{row['seed']} {side}: invalid shot breakdown")
+            for small, large in (
+                ("finalThirdPossessions", "possessions"),
+                ("penaltyAreaPossessions", "finalThirdPossessions"),
+                ("penaltyAreaWithoutShot", "penaltyAreaPossessions"),
+                ("possessionsWithShot", "possessions"),
+            ):
+                require(0 <= d[small] <= d[large], f"{row['seed']} {side}: invalid funnel {small}")
+            kinds = d["passesByType"]
+            require(sum(p["attempted"] for p in kinds.values()) == d["passesAttempted"],
+                    f"{row['seed']} {side}: pass-kind attempts do not reconcile")
+            require(sum(p["completed"] for p in kinds.values()) == d["passesCompleted"],
+                    f"{row['seed']} {side}: pass-kind successes do not reconcile")
+            require(d["shotsFromBox"] <= d["shots"], "shots from box exceed shots")
+            require(math.isfinite(d["shotXg"]) and d["shotXg"] >= 0, "invalid diagnostic shot xG")
+            for cause, value in d["turnovers"].items():
+                require(type(value) is int and value >= 0, f"invalid {cause} turnover")
+            total_box_without_shot += d["penaltyAreaWithoutShot"]
+    print(f"V4 attacking diagnostics: validated {len(rows)} reproducible synthetic matches; "
+          f"{total_box_without_shot} box possessions without shots observed (not a quality verdict).")
 
 
 def main():
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: verify_v4_impact_report.py ATTRIBUTE_REPORT.json REALISM_REPORT.json")
+    if len(sys.argv) not in (3, 4):
+        raise SystemExit("usage: verify_v4_impact_report.py ATTRIBUTE_REPORT.json REALISM_REPORT.json "
+                         "[ATTACK_DIAGNOSTICS_REPORT.json]")
     check_impact(Path(sys.argv[1]))
     check_realism(Path(sys.argv[2]))
+    if len(sys.argv) == 4:
+        check_attacking_probe(Path(sys.argv[3]))
 
 
 if __name__ == "__main__":

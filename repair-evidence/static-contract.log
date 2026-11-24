@@ -1,0 +1,29 @@
+[PASS] Delimiter balance across 26 .rs and 12 .kt files
+[PASS] Rust JNI_BRIDGE_VERSION == 8
+[PASS] Rust ENGINE_PROTOCOL_VERSION_V4 == 5
+[PASS] Rust EVENT_SCHEMA_VERSION_V4 == 5
+[PASS] Rust lib.rs casts ENGINE_PROTOCOL_VERSION_V4 as i32
+[PASS] Kotlin NativeBridge.isV4DesReady() enforces bridge >= 8 & protocol >= 5
+[PASS] Rust jni_bridge.rs exports all 5 new DES JNI functions
+[PASS] Kotlin NativeBridge.kt declares all 5 new DES external JNI functions
+[PASS] Zero regression: 0 occurrences of `dt_sec.clamp(1.0, 6.0)` in v4/
+[PASS] Zero regression: 0 occurrences of `added_time_cap_seconds` in v4/session.rs
+[PASS] Zero regression: 0 occurrences of `uptimeMillis` in LabAudioDirector.kt
+[PASS] Zero regression: 0 occurrences of fixed `ana_drain = 4.8` in v4/state.rs
+[PASS] Zero regression: 0 occurrences of `transition_beats_remaining` in v4/
+[PASS] Zero regression: 0 occurrences of `sustained_pressure_streak` in v4/
+[PASS] All 15 mandatory DES v1.4 tests exist in v4/tests.rs
+[PASS] SHORT_HIGHLIGHTS includes LabEventType.OWN_GOAL
+[PASS] CRITICAL-01: session.rs schedules & handles BallInFlightArrival, FirstTouchComplete, ShotArrival, EarlyInteractionResolved separately
+[PASS] CRITICAL-02: MatchPlaybackController separates SimulationFrontier vs PresentationFrontier
+[PASS] CRITICAL-03: submitCommandJson does NOT blindly revoke confirmed lookahead cues on delayed tactics
+[PASS] CRITICAL-04: Checkpoint persists unpresentedEventsJson + pendingCuesJson & Activity has tryResumeActiveV4Checkpoint
+[PASS] CRITICAL-05: MatchTtsManager calibrates Vietnamese base rate to 4.2 syl/s (no hardcoded setSpeechRate(1.0f))
+[PASS] CRITICAL-06: NarrationScheduler reflows 1.0x schedule on measured WAV duration
+[PASS] CRITICAL-07: NarrationScheduler enforces strict FIFO audio order & protects all unplayed WAVs
+[PASS] CRITICAL-08: session.rs centralizes world integration in advance_world_for_dt with zero .max(0.05) hack
+[PASS] CRITICAL-09: Checkpoint restores RNG root_seed+state via from_seed_and_state & full MatchDiagnosticsCollectorV4
+[PASS] Six Rust QA test declarations present (static only, not executed)
+------------------------------------------------------------------------
+Summary: 26 passed, 0 failed.
+NOTE: Static contract verification does NOT replace `cargo test`, `kotlinc`, Gradle builds, or real Android device tests.

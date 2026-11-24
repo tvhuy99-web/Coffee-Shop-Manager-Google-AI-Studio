@@ -1,7 +1,15 @@
 package pl.mkrstudio.truefootball3.lab
 
+import org.json.JSONObject
 import pl.mkrstudio.truefootball3.audio.MatchAudioManager
 
+/**
+ * DES v1.4 simulation-time-anchored audio director.
+ *
+ * All hysteresis, crowd decay, crowd-rise cooldown, and per-event SFX cooldown timers operate
+ * strictly on `simTimeMs: Long` (never wall-clock uptime), guaranteeing
+ * playback-rate invariance across 1.0x–3.0x and deterministic checkpoint save/restore.
+ */
 class LabAudioDirector(
     private val audio: MatchAudioManager,
     private val neutralGround: Boolean = false,
@@ -17,34 +25,135 @@ class LabAudioDirector(
         RESOLUTION(5, 0.74f)
     }
 
+    data class DirectorState(
+        val crowdState: CrowdState = CrowdState.CALM,
+        val lastTransitionSimTimeMs: Long = 0L,
+        val lastCrowdRiseSimTimeMs: Long = 0L,
+        val lastCueSimTimeMs: Map<LabEventType, Long> = emptyMap()
+    ) {
+        fun toJson(): JSONObject {
+            val cues = JSONObject()
+            for ((kind, ts) in lastCueSimTimeMs) {
+                cues.put(kind.name, ts)
+            }
+            return JSONObject()
+                .put("crowdState", crowdState.name)
+                .put("lastTransitionSimTimeMs", lastTransitionSimTimeMs)
+                .put("lastCrowdRiseSimTimeMs", lastCrowdRiseSimTimeMs)
+                .put("lastCueSimTimeMs", cues)
+        }
+
+        companion object {
+            fun fromJson(obj: JSONObject?): DirectorState {
+                if (obj == null) return DirectorState()
+                val state = try {
+                    CrowdState.valueOf(obj.optString("crowdState", CrowdState.CALM.name))
+                } catch (_: IllegalArgumentException) {
+                    CrowdState.CALM
+                }
+                val cueMap = HashMap<LabEventType, Long>()
+                val cuesObj = obj.optJSONObject("lastCueSimTimeMs")
+                if (cuesObj != null) {
+                    val keys = cuesObj.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        val kind = try {
+                            LabEventType.valueOf(key)
+                        } catch (_: IllegalArgumentException) {
+                            null
+                        }
+                        if (kind != null) {
+                            cueMap[kind] = cuesObj.optLong(key, 0L)
+                        }
+                    }
+                }
+                return DirectorState(
+                    crowdState = state,
+                    lastTransitionSimTimeMs = obj.optLong("lastTransitionSimTimeMs", 0L),
+                    lastCrowdRiseSimTimeMs = obj.optLong("lastCrowdRiseSimTimeMs", 0L),
+                    lastCueSimTimeMs = cueMap
+                )
+            }
+        }
+    }
+
     private var crowdState: CrowdState = CrowdState.CALM
-    private var lastTransitionMs: Long = 0L
-    private var lastCrowdRiseMs: Long = 0L
-    private val lastCueMs = HashMap<LabEventType, Long>()
+    private var lastTransitionSimTimeMs: Long = 0L
+    private var lastCrowdRiseSimTimeMs: Long = 0L
+    private val lastCueSimTimeMs = HashMap<LabEventType, Long>()
 
     init {
         audio.setStadiumCapacity(stadiumCapacity)
     }
 
     companion object {
-        private const val HYSTERESIS_MS = 2500L
-        private const val DECAY_MS = 6500L
-        private const val CROWD_RISE_COOLDOWN_MS = 3200L
+        const val HYSTERESIS_MS = 2500L
+        const val DECAY_MS = 6500L
+        const val CROWD_RISE_COOLDOWN_MS = 3200L
     }
 
     fun currentCrowdState(): CrowdState = crowdState
+
+    fun lastTransitionSimTimeMs(): Long = lastTransitionSimTimeMs
+
+    fun lastCrowdRiseSimTimeMs(): Long = lastCrowdRiseSimTimeMs
+
+    fun exportState(): DirectorState = DirectorState(
+        crowdState = crowdState,
+        lastTransitionSimTimeMs = lastTransitionSimTimeMs,
+        lastCrowdRiseSimTimeMs = lastCrowdRiseSimTimeMs,
+        lastCueSimTimeMs = HashMap(lastCueSimTimeMs)
+    )
+
+    fun exportStateJson(): String = exportState().toJson().toString()
+
+    fun restoreState(state: DirectorState) {
+        crowdState = state.crowdState
+        lastTransitionSimTimeMs = state.lastTransitionSimTimeMs
+        lastCrowdRiseSimTimeMs = state.lastCrowdRiseSimTimeMs
+        lastCueSimTimeMs.clear()
+        lastCueSimTimeMs.putAll(state.lastCueSimTimeMs)
+        audio.setAmbienceVolume(crowdState.ambienceVolume)
+        LabLogStore.log(
+            "AUDIO",
+            "Restored LabAudioDirector state=$crowdState lastTransitionSimTimeMs=$lastTransitionSimTimeMs"
+        )
+    }
+
+    fun restoreStateJson(json: String?) {
+        if (json.isNullOrBlank()) return
+        try {
+            restoreState(DirectorState.fromJson(JSONObject(json)))
+        } catch (e: Exception) {
+            LabLogStore.error("AUDIO", "Failed to restore LabAudioDirector state JSON", e)
+        }
+    }
+
+    fun onFastForwardSkip(newSimTimeMs: Long) {
+        val delta = newSimTimeMs - lastTransitionSimTimeMs
+        if (delta > DECAY_MS * 2L || delta < 0L) {
+            if (crowdState != CrowdState.CALM) {
+                crowdState = CrowdState.CALM
+                audio.setAmbienceVolume(crowdState.ambienceVolume)
+                LabLogStore.log("AUDIO", "Highlights skip reset CrowdState -> CALM at simTimeMs=$newSimTimeMs")
+            }
+            lastTransitionSimTimeMs = newSimTimeMs
+        }
+    }
 
     fun onEvent(
         kind: LabEventType,
         side: LabTeamSide?,
         minute: Int,
         goalDiffAbs: Int,
-        nowMs: Long,
+        simTimeMs: Long,
         isWoodwork: Boolean = false,
         isPenalty: Boolean = false,
-        isShootoutScored: Boolean? = null
+        isShootoutScored: Boolean? = null,
+        isResumedReplay: Boolean = false
     ) {
-        decayCrowd(nowMs)
+        val safeSimTimeMs = simTimeMs.coerceAtLeast(0L)
+        decayCrowd(safeSimTimeMs)
 
         val targetState = when (kind) {
             LabEventType.GOAL, LabEventType.OWN_GOAL,
@@ -63,24 +172,36 @@ class LabAudioDirector(
         }
 
         val escalate = targetState.rank > crowdState.rank || targetState == CrowdState.RESOLUTION
-        if (targetState != crowdState && (escalate || nowMs - lastTransitionMs >= HYSTERESIS_MS)) {
+        if (targetState != crowdState &&
+            (escalate || safeSimTimeMs - lastTransitionSimTimeMs >= HYSTERESIS_MS)
+        ) {
             val prevRank = crowdState.rank
             crowdState = targetState
-            lastTransitionMs = nowMs
+            lastTransitionSimTimeMs = safeSimTimeMs
             audio.setAmbienceVolume(crowdState.ambienceVolume)
-            LabLogStore.log("AUDIO", "CrowdState -> $crowdState (ambience=${crowdState.ambienceVolume})")
-            if (targetState.rank >= CrowdState.DANGEROUS_ATTACK.rank &&
+            LabLogStore.log(
+                "AUDIO",
+                "CrowdState -> $crowdState (ambience=${crowdState.ambienceVolume}, simTimeMs=$safeSimTimeMs)"
+            )
+            if (!isResumedReplay &&
+                targetState.rank >= CrowdState.DANGEROUS_ATTACK.rank &&
                 targetState != CrowdState.RESOLUTION &&
                 prevRank < targetState.rank &&
-                nowMs - lastCrowdRiseMs >= CROWD_RISE_COOLDOWN_MS
+                (lastCrowdRiseSimTimeMs == 0L || safeSimTimeMs - lastCrowdRiseSimTimeMs >= CROWD_RISE_COOLDOWN_MS)
             ) {
-                LabLogStore.log("AUDIO", "Play Cue.CROWD_RISE (min=$minute)")
+                LabLogStore.log("AUDIO", "Play Cue.CROWD_RISE (min=$minute, simTimeMs=$safeSimTimeMs)")
                 audio.play(MatchAudioManager.Cue.CROWD_RISE)
-                lastCrowdRiseMs = nowMs
+                lastCrowdRiseSimTimeMs = safeSimTimeMs
             }
         }
 
-        if (!allowCooldown(kind, nowMs)) return
+        // Checkpoint/resumed replay updates crowd ambience state idempotently without re-firing one-shot SFX (e.g. goal horns).
+        if (isResumedReplay) {
+            lastCueSimTimeMs[kind] = safeSimTimeMs
+            return
+        }
+
+        if (!allowCooldown(kind, safeSimTimeMs)) return
 
         when (kind) {
             LabEventType.MATCH_STARTED, LabEventType.KICKOFF -> {
@@ -120,7 +241,10 @@ class LabAudioDirector(
             }
             LabEventType.SHOT_OFF_TARGET -> {
                 when {
-                    isWoodwork -> { LabLogStore.log("AUDIO", "Play Cue.POST_CROSSBAR (min=$minute)"); audio.play(MatchAudioManager.Cue.POST_CROSSBAR) }
+                    isWoodwork -> {
+                        LabLogStore.log("AUDIO", "Play Cue.POST_CROSSBAR (min=$minute, simTimeMs=$safeSimTimeMs)")
+                        audio.play(MatchAudioManager.Cue.POST_CROSSBAR)
+                    }
                     isPenalty -> audio.playPenaltyMiss()
                     else -> audio.play(MatchAudioManager.Cue.NEAR_MISS)
                 }
@@ -143,8 +267,19 @@ class LabAudioDirector(
         }
     }
 
-    private fun decayCrowd(nowMs: Long) {
-        if (nowMs - lastTransitionMs < DECAY_MS) return
+    private fun decayCrowd(simTimeMs: Long) {
+        val elapsed = simTimeMs - lastTransitionSimTimeMs
+        // Highlights skip (or backward seek on restore): reset directly to CALM.
+        if (elapsed > DECAY_MS * 2L || elapsed < 0L) {
+            if (crowdState != CrowdState.CALM) {
+                crowdState = CrowdState.CALM
+                audio.setAmbienceVolume(crowdState.ambienceVolume)
+                LabLogStore.log("AUDIO", "CrowdState jump-reset -> CALM (simTimeMs=$simTimeMs)")
+            }
+            lastTransitionSimTimeMs = simTimeMs
+            return
+        }
+        if (elapsed < DECAY_MS) return
         val next = when (crowdState) {
             CrowdState.RESOLUTION, CrowdState.LATE_TENSION -> CrowdState.CALM
             CrowdState.BIG_CHANCE -> CrowdState.DANGEROUS_ATTACK
@@ -155,12 +290,12 @@ class LabAudioDirector(
         }
         if (next != crowdState) {
             crowdState = next
-            lastTransitionMs = nowMs
+            lastTransitionSimTimeMs = simTimeMs
             audio.setAmbienceVolume(crowdState.ambienceVolume)
         }
     }
 
-    private fun allowCooldown(kind: LabEventType, nowMs: Long): Boolean {
+    private fun allowCooldown(kind: LabEventType, simTimeMs: Long): Boolean {
         val cooldown = when (kind) {
             LabEventType.GOAL, LabEventType.OWN_GOAL -> 150L
             LabEventType.PASS_COMPLETED, LabEventType.THROUGH_BALL -> 220L
@@ -168,9 +303,9 @@ class LabAudioDirector(
             LabEventType.SHOT, LabEventType.SHOT_ON_TARGET, LabEventType.SAVE -> 60L
             else -> 80L
         }
-        val prev = lastCueMs[kind]
-        if (prev != null && nowMs - prev < cooldown) return false
-        lastCueMs[kind] = nowMs
+        val prev = lastCueSimTimeMs[kind]
+        if (prev != null && simTimeMs >= prev && simTimeMs - prev < cooldown) return false
+        lastCueSimTimeMs[kind] = simTimeMs
         return true
     }
 }

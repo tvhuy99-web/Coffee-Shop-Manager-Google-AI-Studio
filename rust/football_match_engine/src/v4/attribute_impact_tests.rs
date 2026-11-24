@@ -58,6 +58,8 @@ fn paired_fixture(seed: i64, attribute: &str, value: u8) -> crate::v4::MatchInpu
     if attribute == "big_matches" || attribute == "pressure" {
         input.match_environment.match_importance = 95;
     }
+    input.ruleset = crate::v4::rules::RulesetConfig::from_rules_mode(RulesModeV4::Standard);
+    input.timing_model = crate::v4::rules::TimingModelConfig::des_v1_default();
     input.ai_home_manager = false;
     input.ai_away_manager = false;
     input
@@ -138,8 +140,8 @@ fn goalkeeper_distribution_and_fatigue_attributes_have_directional_effects() {
     let mut tired = TwoPoolFatigueState::from_condition(99);
     let mut fit = tired;
     for _ in 0..9 {
-        tired.apply_interval(5.0, 22.0, true, 4, 12);
-        fit.apply_interval(5.0, 22.0, true, 19, 12);
+        tired.apply_interval(5.0, 22.0, true, false, 4, 12);
+        fit.apply_interval(5.0, 22.0, true, false, 19, 12);
     }
     assert!(fit.aerobic > tired.aerobic + 0.3,
         "higher stamina should reduce aerobic depletion, low={} high={}", tired.aerobic, fit.aerobic);
@@ -337,7 +339,7 @@ fn tackles_won_in_dribble_duels(skill: &str, value: u8) -> u32 {
         };
         let mut rng = DeterministicRng::new(seed * 97);
         let result = execute_dribble_duel(
-            &mut state, &input, striker, Some(defender), context, &mut rng
+            &mut state, &input, striker, Some(defender), context, 1.0, &mut rng
         );
         if result.events.iter().any(|e| e.kind == EventTypeV4::TackleWon) {
             wins += 1;

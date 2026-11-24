@@ -10,11 +10,12 @@ import pl.mkrstudio.truefootball3.audio.TtsSettingsStore
 import kotlin.math.roundToLong
 
 /**
- * Hardened V4 playback coordinator with:
- * - Dynamic per-step reload of `TtsSettingsStore` & `SimulationSettingsStore` (live speed & mode changes)
- * - `pause()`, `resume()`, and `setLiveRateOverride()` controls
- * - `sessionGeneration` token guarding against stale TTS `onDone` callbacks
- * - Per-utterance safety timeout so a stalled Android TTS engine never freezes the match
+ * V4 viewing-mode timeline filter and legacy sequence playback helper.
+ *
+ * Under DES v1.4, live interactive V4 playback is unified inside [MatchPlaybackController] and
+ * [NarrationScheduler]. This class retains the authoritative [filterEventsForViewingMode] and
+ * [isHighlightEvent] helpers (now including `"OWN_GOAL"` in [LabViewingMode.SHORT_HIGHLIGHTS])
+ * as well as backward-compatible offline sequence playback.
  */
 class LabV4PlaybackCoordinator(
     private val context: Context,
@@ -35,6 +36,41 @@ class LabV4PlaybackCoordinator(
         private const val MIN_AUDIO_GAP_MS = 120L
         private const val BASE_TEXT_READ_MS_PER_CHAR = 52f
 
+        fun isMandatoryBoundaryEvent(kind: String): Boolean {
+            return kind == "MATCH_STARTED" ||
+                kind == "HALF_TIME" ||
+                kind == "EXTRA_TIME_HALF_TIME" ||
+                kind == "FULL_TIME" ||
+                kind == "EXTRA_TIME_STARTED" ||
+                kind == "PENALTY_SHOOTOUT_STARTED" ||
+                kind == "PENALTY_SHOOTOUT_ENDED"
+        }
+
+        fun isHighlightEvent(
+            ev: JSONObject,
+            viewingMode: LabViewingMode,
+            includeTurningPointsInShort: Boolean = true
+        ): Boolean {
+            val kind = ev.optString("kind", "")
+            if (isMandatoryBoundaryEvent(kind)) return true
+            val tier = ev.optString("highlightTier", "NONE")
+            return when (viewingMode) {
+                LabViewingMode.FULL_MATCH -> true
+                LabViewingMode.EXTENDED_HIGHLIGHTS -> tier == "EXTENDED" || tier == "GOAL_KEY"
+                LabViewingMode.SHORT_HIGHLIGHTS -> {
+                    if (kind == "GOAL" || kind == "OWN_GOAL" || kind == "PENALTY_SHOOTOUT_KICK") {
+                        true
+                    } else if (includeTurningPointsInShort &&
+                        (kind == "PENALTY_AWARDED" || kind == "PENALTY_KICK" || kind == "RED_CARD")
+                    ) {
+                        true
+                    } else {
+                        false
+                    }
+                }
+            }
+        }
+
         fun filterEventsForViewingMode(
             allEvents: JSONArray,
             viewingMode: LabViewingMode,
@@ -54,36 +90,18 @@ class LabV4PlaybackCoordinator(
             for (i in list.indices) {
                 val ev = list[i]
                 val kind = ev.optString("kind", "")
-                val tier = ev.optString("highlightTier", "NONE")
                 val seqId = if (ev.has("highlightSequenceId") && !ev.isNull("highlightSequenceId")) {
                     ev.optInt("highlightSequenceId", -1)
                 } else {
                     -1
                 }
 
-                if (kind == "MATCH_STARTED" || kind == "HALF_TIME" || kind == "FULL_TIME" ||
-                    kind == "EXTRA_TIME_STARTED" || kind == "PENALTY_SHOOTOUT_STARTED" ||
-                    kind == "PENALTY_SHOOTOUT_ENDED"
-                ) {
+                if (isMandatoryBoundaryEvent(kind)) {
                     includedIndices.add(i)
                     continue
                 }
 
-                val matches = when (viewingMode) {
-                    LabViewingMode.FULL_MATCH -> true
-                    LabViewingMode.EXTENDED_HIGHLIGHTS -> tier == "EXTENDED" || tier == "GOAL_KEY"
-                    LabViewingMode.SHORT_HIGHLIGHTS -> {
-                        if (kind == "GOAL" || kind == "PENALTY_SHOOTOUT_KICK") {
-                            true
-                        } else if (includeTurningPointsInShort &&
-                            (kind == "PENALTY_AWARDED" || kind == "PENALTY_KICK" || kind == "RED_CARD")
-                        ) {
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                }
+                val matches = isHighlightEvent(ev, viewingMode, includeTurningPointsInShort)
 
                 if (matches) {
                     includedIndices.add(i)
@@ -165,7 +183,7 @@ class LabV4PlaybackCoordinator(
 
             // Reload TTS & Simulation settings dynamically on EVERY step so live changes take effect immediately
             val simSettings = SimulationSettingsStore(context).load()
-            val ttsSettings = TtsSettingsStore(context).load()
+            val ttsSettings = TtsSettingsStore(context).reloadSettings()
             val ttsRate = (liveRateOverride ?: (ttsSettings.ratePercent / 100f)).coerceIn(0.5f, 5.0f)
             val useTts = ttsSettings.enabled && ttsManager != null && ttsManager.isEnabled()
 

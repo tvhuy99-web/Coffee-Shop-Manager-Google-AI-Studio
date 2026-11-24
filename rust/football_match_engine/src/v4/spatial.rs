@@ -53,6 +53,20 @@ impl TeamSideV4 {
     }
 }
 
+/// Identifies which of the four pitch perimeter lines a ball ray intersects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum PitchBoundarySide {
+    /// `x = 0.0` (Home defends this goal line).
+    HomeGoalLine,
+    /// `x = PITCH_LENGTH_M` (`105.0`, Away defends this goal line).
+    AwayGoalLine,
+    /// `y = 0.0`.
+    LeftTouchline,
+    /// `y = PITCH_WIDTH_M` (`68.0`).
+    RightTouchline,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct Vec2 {
     pub x: f32,
@@ -247,4 +261,141 @@ pub fn point_to_segment_distance_m(point: Vec2, a: Vec2, b: Vec2) -> f32 {
     let t = ((ap_x * ab_x + ap_y * ab_y) / ab_len_sq).clamp(0.0, 1.0);
     let proj = Vec2::new(a.x + ab_x * t, a.y + ab_y * t);
     point.distance(proj)
+}
+
+/// Pure analytic ray-vs-pitch-boundary intersection for DES continuous interaction.
+///
+/// Computes the earliest time `t` in `[0.0, max_t]` when `p(t) = p0 + v * t` hits or
+/// exits across `x = 0.0` (`HomeGoalLine`), `x = 105.0` (`AwayGoalLine`),
+/// `y = 0.0` (`LeftTouchline`), or `y = 68.0` (`RightTouchline`).
+/// Goal lines take deterministic precedence over touchlines on exact corner ties.
+pub fn ray_pitch_boundary_hit_time(
+    p0: Vec2,
+    v: Vec2,
+    max_t: f32,
+) -> Option<(f32, PitchBoundarySide)> {
+    if !max_t.is_finite() || max_t < 0.0 {
+        return None;
+    }
+
+    // Immediate out-of-bounds check (goal lines prioritized over touchlines).
+    if p0.x < 0.0 {
+        return Some((0.0, PitchBoundarySide::HomeGoalLine));
+    }
+    if p0.x > PITCH_LENGTH_M {
+        return Some((0.0, PitchBoundarySide::AwayGoalLine));
+    }
+    if p0.y < 0.0 {
+        return Some((0.0, PitchBoundarySide::LeftTouchline));
+    }
+    if p0.y > PITCH_WIDTH_M {
+        return Some((0.0, PitchBoundarySide::RightTouchline));
+    }
+
+    const EPS: f32 = 1e-6;
+    let mut best: Option<(f32, PitchBoundarySide)> = None;
+
+    let mut consider = |t: f32, side: PitchBoundarySide| {
+        if t.is_finite() && t >= 0.0 && t <= max_t {
+            match best {
+                None => best = Some((t, side)),
+                Some((best_t, _)) if t < best_t => best = Some((t, side)),
+                _ => {}
+            }
+        }
+    };
+
+    if v.x < -EPS {
+        consider((0.0 - p0.x) / v.x, PitchBoundarySide::HomeGoalLine);
+    } else if v.x > EPS {
+        consider((PITCH_LENGTH_M - p0.x) / v.x, PitchBoundarySide::AwayGoalLine);
+    }
+
+    if v.y < -EPS {
+        consider((0.0 - p0.y) / v.y, PitchBoundarySide::LeftTouchline);
+    } else if v.y > EPS {
+        consider((PITCH_WIDTH_M - p0.y) / v.y, PitchBoundarySide::RightTouchline);
+    }
+
+    best
+}
+
+/// Returns `true` if `(y, z)` lies within the FIFA goal mouth opening:
+/// `y` in `[GOAL_LEFT_POST_Y, GOAL_RIGHT_POST_Y]` and `0.0 <= z <= GOAL_HEIGHT_M`.
+#[inline]
+pub fn is_in_goal_mouth(y: f32, z: f32) -> bool {
+    y >= GOAL_LEFT_POST_Y && y <= GOAL_RIGHT_POST_Y && z >= 0.0 && z <= GOAL_HEIGHT_M
+}
+
+/// Computes the closest approach time `t_closest` in `[0.0, max_t.max(0.0)]` and minimum
+/// horizontal distance `dist_m` between a linearly moving ball `p_ball(t) = p_ball0 + v_ball * t`
+/// and a player located at `p_player`.
+pub fn closest_approach_time(
+    p_ball0: Vec2,
+    v_ball: Vec2,
+    p_player: Vec2,
+    max_t: f32,
+) -> (f32, f32) {
+    let clamped_max_t = if max_t.is_finite() {
+        max_t.max(0.0)
+    } else {
+        0.0
+    };
+    let dx = p_ball0.x - p_player.x;
+    let dy = p_ball0.y - p_player.y;
+    let v_sq = v_ball.x * v_ball.x + v_ball.y * v_ball.y;
+
+    let t_closest = if v_sq <= 1e-8 || clamped_max_t <= 0.0 {
+        0.0
+    } else {
+        let t_raw = -(dx * v_ball.x + dy * v_ball.y) / v_sq;
+        t_raw.clamp(0.0, clamped_max_t)
+    };
+
+    let ball_at_t = Vec2::new(
+        p_ball0.x + v_ball.x * t_closest,
+        p_ball0.y + v_ball.y * t_closest,
+    );
+    (t_closest, ball_at_t.distance(p_player))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ray_pitch_boundary_hits_earliest_side() {
+        let hit = ray_pitch_boundary_hit_time(Vec2::new(95.0, 34.0), Vec2::new(20.0, 0.0), 2.0);
+        let (t, side) = hit.expect("expected AwayGoalLine hit");
+        assert_eq!(side, PitchBoundarySide::AwayGoalLine);
+        assert!((t - 0.5).abs() < 1e-4);
+
+        let touch = ray_pitch_boundary_hit_time(Vec2::new(50.0, 64.0), Vec2::new(5.0, 8.0), 2.0);
+        let (t2, side2) = touch.expect("expected RightTouchline hit");
+        assert_eq!(side2, PitchBoundarySide::RightTouchline);
+        assert!((t2 - 0.5).abs() < 1e-4);
+
+        // Beyond max_t returns None
+        assert!(ray_pitch_boundary_hit_time(Vec2::new(50.0, 34.0), Vec2::new(5.0, 0.0), 1.0).is_none());
+    }
+
+    #[test]
+    fn goal_mouth_bounds_check() {
+        assert!(is_in_goal_mouth(PITCH_HALF_WIDTH_M, 1.2));
+        assert!(is_in_goal_mouth(GOAL_LEFT_POST_Y, GOAL_HEIGHT_M));
+        assert!(!is_in_goal_mouth(GOAL_LEFT_POST_Y - 0.05, 1.0));
+        assert!(!is_in_goal_mouth(PITCH_HALF_WIDTH_M, GOAL_HEIGHT_M + 0.05));
+    }
+
+    #[test]
+    fn closest_approach_time_analytic() {
+        let (t, dist) = closest_approach_time(
+            Vec2::new(10.0, 20.0),
+            Vec2::new(10.0, 0.0),
+            Vec2::new(25.0, 23.0),
+            3.0,
+        );
+        assert!((t - 1.5).abs() < 1e-4);
+        assert!((dist - 3.0).abs() < 1e-4);
+    }
 }

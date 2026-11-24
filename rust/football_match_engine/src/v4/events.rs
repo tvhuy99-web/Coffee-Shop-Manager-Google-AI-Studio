@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::fingerprints;
 use crate::v4::input::SimulationMode;
+use crate::v4::rules::CommandLifecycleStatus;
 use crate::v4::spatial::{quantize_mm, TeamSideV4, Vec3};
 use crate::v4::state::InjuryKind;
 
@@ -199,6 +200,15 @@ pub struct MatchEventV4 {
     /// Seconds elapsed in this specific period, excluding preceding halves' added time.
     #[serde(default)]
     pub period_elapsed_second: i32,
+    /// Monotonic DES simulation timestamp in milliseconds.
+    #[serde(default)]
+    pub sim_time_ms: i64,
+    /// Milliseconds elapsed in this specific period, excluding preceding halves' added time.
+    #[serde(default)]
+    pub period_elapsed_ms: i64,
+    /// DES interval duration in milliseconds that led to this event.
+    #[serde(default)]
+    pub dt_ms: i64,
     pub kind: EventTypeV4,
     pub highlight_tier: HighlightTier,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -219,6 +229,7 @@ impl MatchEventV4 {
         fingerprint_event_parts(
             self.sequence,
             self.game_second,
+            self.sim_time_ms,
             self.period,
             self.kind,
             self.highlight_tier,
@@ -238,6 +249,7 @@ impl MatchEventV4 {
 pub fn fingerprint_event_parts(
     sequence: u32,
     game_second: i32,
+    sim_time_ms: i64,
     period: i32,
     kind: EventTypeV4,
     highlight_tier: HighlightTier,
@@ -251,6 +263,7 @@ pub fn fingerprint_event_parts(
     let mut h = fingerprints::start();
     h = fingerprints::mix_i32(h, sequence as i32);
     h = fingerprints::mix_i32(h, game_second);
+    h = fingerprints::mix_i64(h, sim_time_ms);
     h = fingerprints::mix_i32(h, period);
     h = fingerprints::mix_i32(h, kind as i32);
     h = fingerprints::mix_i32(h, highlight_tier.code());
@@ -347,10 +360,13 @@ pub struct MatchResultV4 {
     pub input_fingerprint: String,
     pub event_timeline_fingerprint: String,
     pub event_count: u32,
-    /// Accepted player commands with precise applied-beat ordering for deterministic replay.
+    /// Accepted player commands with precise DES timeline ordering for deterministic replay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command_timeline: Vec<crate::v4::session::AppliedCommandV4>,
     pub summary: MatchSummaryV4,
+    /// Optional for backward-compatible JSON readers; always populated by V4.1 DES.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<crate::v4::diagnostics::MatchDiagnosticsV4>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<MatchEventV4>,
 }
@@ -367,7 +383,34 @@ pub struct TeamRosterStateV4 {
     pub interval_substitution_allowed: bool,
 }
 
-/// Interactive step response returned by `MatchSessionV4::advance_steps` / JNI.
+/// Coarse session lifecycle stage surfaced on `SessionStepResultV4`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SessionStageV4 {
+    #[default]
+    PreMatch,
+    InHalf,
+    HalfTimeBreak,
+    ExtraTimeBreak,
+    PenaltyShootout,
+    FullTime,
+}
+
+/// Lightweight status summary for pending tactical or substitution commands in the DES queue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingCommandSummaryV4 {
+    pub command_id: u64,
+    pub command_type: String,
+    pub side: TeamSideV4,
+    pub accepted_sim_time_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_effective_sim_time_ms: Option<i64>,
+    pub status: CommandLifecycleStatus,
+}
+
+/// Interactive step response returned by `MatchSessionV4::advance_steps` /
+/// `advance_until_ms` / `start_next_period` / JNI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStepResultV4 {
@@ -376,13 +419,28 @@ pub struct SessionStepResultV4 {
     pub game_second: i32,
     /// Independent playing time for the active half/extra-time period.
     pub period_elapsed_second: i32,
-    /// Number of full simulation beats already applied (command replay boundary).
+    pub sim_time_ms: i64,
+    pub period_elapsed_ms: i64,
+    pub stage: SessionStageV4,
+    pub dead_ball_state: String,
+    pub stop_reason: String,
+    pub ball_in_play_ms: i64,
+    pub ball_out_of_play_ms: i64,
+    pub compensable_lost_ms: i64,
+    pub announced_added_ms: i64,
+    pub additional_added_ms: i64,
+    pub effective_added_ms: i64,
+    pub steps_executed: u32,
+    pub state_generation: u64,
+    /// Number of simulation steps already applied (command replay boundary).
     pub completed_beats: u64,
     pub home_goals: u16,
     pub away_goals: u16,
     pub is_full_time: bool,
     pub total_events: u32,
     pub new_events: Vec<MatchEventV4>,
+    #[serde(default)]
+    pub pending_commands: Vec<PendingCommandSummaryV4>,
     pub home_roster: TeamRosterStateV4,
     pub away_roster: TeamRosterStateV4,
 }

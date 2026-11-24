@@ -3,7 +3,7 @@ use crate::v4::attributes::{normalize_attr, normalize_attr_elite};
 use crate::v4::ball_play::{BallPlayOutcome, EmittedPlayEvent};
 use crate::v4::events::{EventMetadataV4, EventTypeV4, HighlightTier};
 use crate::v4::goalkeeper::{resolve_gk_aerial_claim, resolve_gk_shot_reaction, GkAerialOutcome, GkShotOutcome};
-use crate::v4::input::MatchInputV4;
+use crate::v4::input::{MatchInputV4, WeatherCondition};
 use crate::v4::movement::lookup_attrs;
 use crate::v4::own_goal::{maybe_own_goal, DeflectionCause};
 use crate::v4::shooting::{resolve_shot_v4, ShotKindV4};
@@ -15,6 +15,10 @@ use crate::v4::state::{BallControlState, MatchStateV4};
 
 /// Executes a Corner Kick using `corners`, `crossing`, `heading`, `jumping_reach`,
 /// `marking`, `command_of_area`, `aerial_reach`, and `punching`.
+///
+/// Prioritizes designated takers from `SetPiecePlanV4::corner_taker_slot_ids` before falling
+/// back to the highest-rated specialist. Stoppage duration is left at `0` so the DES
+/// `DeadBallState` clock accounts for actual dead-ball time without double counting.
 pub fn execute_corner_v4(
     state: &mut MatchStateV4,
     input: &MatchInputV4,
@@ -26,7 +30,17 @@ pub fn execute_corner_v4(
     let seq_id = state.next_highlight_sequence_id;
     state.next_highlight_sequence_id = state.next_highlight_sequence_id.saturating_add(1);
 
-    let taker_idx = pick_best_specialist(state, input, att_side, |a| a.technical.corners);
+    let plan = match att_side {
+        TeamSideV4::Home => &input.home_team.set_piece_plan,
+        TeamSideV4::Away => &input.away_team.set_piece_plan,
+    };
+    let taker_idx = pick_planned_or_best_specialist(
+        state,
+        input,
+        att_side,
+        &plan.corner_taker_slot_ids,
+        |a| a.technical.corners,
+    );
     let taker_id = state.players[taker_idx].player_id.clone();
     let taker_attrs = *lookup_attrs(input, &state.players[taker_idx]);
 
@@ -88,7 +102,7 @@ pub fn execute_corner_v4(
             return BallPlayOutcome {
                 next_side: def_side,
                 next_carrier_idx: gk_idx,
-                stoppage_seconds: 10,
+                stoppage_seconds: 0,
                 events,
             };
         }
@@ -116,7 +130,7 @@ pub fn execute_corner_v4(
             return BallPlayOutcome {
                 next_side: def_side,
                 next_carrier_idx: clear_idx,
-                stoppage_seconds: 10,
+                stoppage_seconds: 0,
                 events,
             };
         }
@@ -161,7 +175,7 @@ pub fn execute_corner_v4(
         );
         events.append(&mut shot_outcome.events);
         shot_outcome.events = events;
-        shot_outcome.stoppage_seconds += 10;
+        shot_outcome.stoppage_seconds = 0;
         shot_outcome
     } else {
         // The defending player has actually reached the delivered ball.
@@ -180,7 +194,7 @@ pub fn execute_corner_v4(
             return BallPlayOutcome {
                 next_side: def_side,
                 next_carrier_idx: pick_best_specialist(state, input, def_side, |a| a.technical.passing),
-                stoppage_seconds: 35,
+                stoppage_seconds: 0,
                 events,
             };
         }
@@ -191,7 +205,7 @@ pub fn execute_corner_v4(
         BallPlayOutcome {
             next_side: def_side,
             next_carrier_idx: def_idx,
-            stoppage_seconds: 10,
+            stoppage_seconds: 0,
             events,
         }
     }
@@ -199,6 +213,10 @@ pub fn execute_corner_v4(
 
 /// Executes a Direct or Lofted Free Kick (`freeKickExecuted = true`) using
 /// `free_kicks`, `technique`, `long_shots`, `crossing`, and `heading`.
+///
+/// Prioritizes designated takers from `SetPiecePlanV4::close_free_kick_taker_slot_ids`
+/// (when `dist_m <= 28.0`) or `far_free_kick_taker_slot_ids` (when `dist_m > 28.0`)
+/// before falling back to the highest-rated specialist.
 pub fn execute_free_kick_v4(
     state: &mut MatchStateV4,
     input: &MatchInputV4,
@@ -212,7 +230,22 @@ pub fn execute_free_kick_v4(
     state.next_highlight_sequence_id = state.next_highlight_sequence_id.saturating_add(1);
 
     let dist_m = distance_to_attacking_goal(att_side, foul_pos);
-    let taker_idx = pick_best_specialist(state, input, att_side, |a| a.technical.free_kicks);
+    let plan = match att_side {
+        TeamSideV4::Home => &input.home_team.set_piece_plan,
+        TeamSideV4::Away => &input.away_team.set_piece_plan,
+    };
+    let planned_slots = if dist_m <= 28.0 {
+        &plan.close_free_kick_taker_slot_ids
+    } else {
+        &plan.far_free_kick_taker_slot_ids
+    };
+    let taker_idx = pick_planned_or_best_specialist(
+        state,
+        input,
+        att_side,
+        planned_slots,
+        |a| a.technical.free_kicks,
+    );
     let taker_id = state.players[taker_idx].player_id.clone();
     let taker_attrs = *lookup_attrs(input, &state.players[taker_idx]);
 
@@ -273,7 +306,7 @@ pub fn execute_free_kick_v4(
             return BallPlayOutcome {
                 next_side: def_side,
                 next_carrier_idx: gk_idx,
-                stoppage_seconds: 15,
+                stoppage_seconds: 0,
                 events,
             };
         }
@@ -335,7 +368,7 @@ pub fn execute_free_kick_v4(
             return BallPlayOutcome {
                 next_side: def_side,
                 next_carrier_idx: pick_best_specialist(state, input, def_side, |a| a.technical.passing),
-                stoppage_seconds: 35,
+                stoppage_seconds: 0,
                 events,
             };
         }
@@ -363,7 +396,7 @@ pub fn execute_free_kick_v4(
         return BallPlayOutcome {
             next_side: def_side,
             next_carrier_idx: gk_idx,
-            stoppage_seconds: 12,
+            stoppage_seconds: 0,
             events,
         };
     }
@@ -376,24 +409,51 @@ pub fn execute_free_kick_v4(
     BallPlayOutcome {
         next_side: att_side,
         next_carrier_idx: taker_idx,
-        stoppage_seconds: 8,
+        stoppage_seconds: 0,
         events,
     }
 }
 
-/// Executes an in-match Penalty Kick (`penalties`, `composure`, `pressure` vs `reflexes`, `one_on_ones`).
+/// Executes an in-match Penalty Kick (`penalties`, `composure`, `pressure` vs `reflexes`, `one_on_ones`, `handling`)
+/// with IFAB standard `allow_penalty_rebound = true`.
 pub fn execute_penalty_kick_v4(
     state: &mut MatchStateV4,
     input: &MatchInputV4,
     att_side: TeamSideV4,
     rng: &mut DeterministicRng,
 ) -> BallPlayOutcome {
-    let mut events = Vec::with_capacity(4);
+    execute_penalty_kick_v4_with_rules(state, input, att_side, true, rng)
+}
+
+/// Executes an in-match Penalty Kick with explicit ruleset control over live rebounds (`allow_penalty_rebound`).
+///
+/// Prioritizes designated takers from `SetPiecePlanV4::penalty_taker_slot_ids` before falling
+/// back to the highest-rated specialist. When a save is parried rather than held cleanly and
+/// `allow_penalty_rebound == true`, leaves the ball in `BallControlState::Loose` to open a
+/// live rebound contest instead of forcing `Controlled`.
+pub fn execute_penalty_kick_v4_with_rules(
+    state: &mut MatchStateV4,
+    input: &MatchInputV4,
+    att_side: TeamSideV4,
+    allow_penalty_rebound: bool,
+    rng: &mut DeterministicRng,
+) -> BallPlayOutcome {
+    let mut events = Vec::with_capacity(5);
     let def_side = att_side.opposite();
     let seq_id = state.next_highlight_sequence_id;
     state.next_highlight_sequence_id = state.next_highlight_sequence_id.saturating_add(1);
 
-    let taker_idx = pick_best_specialist(state, input, att_side, |a| a.technical.penalties);
+    let plan = match att_side {
+        TeamSideV4::Home => &input.home_team.set_piece_plan,
+        TeamSideV4::Away => &input.away_team.set_piece_plan,
+    };
+    let taker_idx = pick_planned_or_best_specialist(
+        state,
+        input,
+        att_side,
+        &plan.penalty_taker_slot_ids,
+        |a| a.technical.penalties,
+    );
     let gk_idx = find_gk_idx(state, def_side);
     let taker_id = state.players[taker_idx].player_id.clone();
     let gk_id = state.players[gk_idx].player_id.clone();
@@ -451,12 +511,13 @@ pub fn execute_penalty_kick_v4(
         metadata: meta.clone(),
     });
 
+    let goal_center = attacking_goal_center(att_side);
+
     if scored {
         state.team_state_mut(att_side).shots_on_target += 1;
         state.team_state_mut(att_side).goals += 1;
         state.players[taker_idx].goals += 1;
         state.players[taker_idx].rating_tenths = (state.players[taker_idx].rating_tenths + 7).min(100);
-        let goal_center = attacking_goal_center(att_side);
         events.push(EmittedPlayEvent {
             kind: EventTypeV4::Goal,
             tier: HighlightTier::GoalKey,
@@ -470,31 +531,94 @@ pub fn execute_penalty_kick_v4(
         BallPlayOutcome {
             next_side: def_side,
             next_carrier_idx: pick_best_specialist(state, input, def_side, |a| a.technical.passing),
-            stoppage_seconds: 40,
+            stoppage_seconds: 0,
             events,
         }
     } else {
         state.team_state_mut(att_side).shots_on_target += 1;
         state.team_state_mut(def_side).saves += 1;
-        meta.outcome = Some("PENALTY_SAVED".into());
-        events.push(EmittedPlayEvent {
-            kind: EventTypeV4::Save,
-            tier: HighlightTier::GoalKey,
-            seq_id: Some(seq_id),
-            side: Some(def_side),
-            actor: Some(gk_id.clone()),
-            target: Some(taker_id),
-            ball_pos: spot_pos,
-            metadata: meta,
-        });
-        state.ball.control = BallControlState::Controlled;
-        state.ball.owner_side = Some(def_side);
-        state.ball.owner_player_id = Some(gk_id);
-        BallPlayOutcome {
-            next_side: def_side,
-            next_carrier_idx: gk_idx,
-            stoppage_seconds: 25,
-            events,
+
+        let handling = normalize_attr(gk_attrs.goalkeeping.handling);
+        let wet_slip = match input.match_environment.weather {
+            WeatherCondition::HeavyRain => 0.14f32,
+            WeatherCondition::LightRain => 0.06f32,
+            _ => 0.0f32,
+        };
+        let hold_prob = (0.26 + handling * 0.44 - wet_slip).clamp(0.12, 0.78);
+        let held_cleanly = !allow_penalty_rebound || (rng.next_double() as f32) < hold_prob;
+
+        if held_cleanly {
+            meta.outcome = Some("PENALTY_SAVED".into());
+            events.push(EmittedPlayEvent {
+                kind: EventTypeV4::Save,
+                tier: HighlightTier::GoalKey,
+                seq_id: Some(seq_id),
+                side: Some(def_side),
+                actor: Some(gk_id.clone()),
+                target: Some(taker_id),
+                ball_pos: Vec3::new(goal_center.x, goal_center.y, 1.0),
+                metadata: meta,
+            });
+            state.ball.pos = Vec3::ground(goal_center.x, goal_center.y).clamp_to_pitch();
+            state.ball.control = BallControlState::Controlled;
+            state.ball.owner_side = Some(def_side);
+            state.ball.owner_player_id = Some(gk_id.clone());
+            state.ball.last_touch_side = Some(def_side);
+            state.ball.last_touch_player_id = Some(gk_id);
+            BallPlayOutcome {
+                next_side: def_side,
+                next_carrier_idx: gk_idx,
+                stoppage_seconds: 0,
+                events,
+            }
+        } else {
+            meta.outcome = Some("PENALTY_PARRIED_REBOUND".into());
+            events.push(EmittedPlayEvent {
+                kind: EventTypeV4::Save,
+                tier: HighlightTier::GoalKey,
+                seq_id: Some(seq_id),
+                side: Some(def_side),
+                actor: Some(gk_id.clone()),
+                target: Some(taker_id),
+                ball_pos: Vec3::new(goal_center.x, goal_center.y, 1.0),
+                metadata: meta,
+            });
+            let rebound_dist = 4.5 + (rng.next_double() as f32) * 4.5;
+            let rebound_x = match att_side {
+                TeamSideV4::Home => (PITCH_LENGTH_M - rebound_dist).clamp(0.0, PITCH_LENGTH_M),
+                TeamSideV4::Away => rebound_dist.clamp(0.0, PITCH_LENGTH_M),
+            };
+            let rebound_y = (PITCH_HALF_WIDTH_M + (rng.next_double() as f32 - 0.5) * 10.0)
+                .clamp(16.0, 52.0);
+            let rebound_pos = Vec3::ground(rebound_x, rebound_y).clamp_to_pitch();
+
+            events.push(EmittedPlayEvent {
+                kind: EventTypeV4::LooseBall,
+                tier: HighlightTier::GoalKey,
+                seq_id: Some(seq_id),
+                side: Some(def_side),
+                actor: Some(gk_id.clone()),
+                target: None,
+                ball_pos: rebound_pos,
+                metadata: EventMetadataV4 {
+                    in_box: Some(true),
+                    outcome: Some("PENALTY_REBOUND".into()),
+                    ..EventMetadataV4::default()
+                },
+            });
+
+            state.ball.pos = rebound_pos;
+            state.ball.control = BallControlState::Loose;
+            state.ball.owner_side = None;
+            state.ball.owner_player_id = None;
+            state.ball.last_touch_side = Some(def_side);
+            state.ball.last_touch_player_id = Some(gk_id);
+            BallPlayOutcome {
+                next_side: att_side,
+                next_carrier_idx: taker_idx,
+                stoppage_seconds: 0,
+                events,
+            }
         }
     }
 }
@@ -533,6 +657,26 @@ fn resolve_aerial_duel(
 
     let win_prob = (0.42 + (att_score - def_score) * 0.55).clamp(0.14, 0.72);
     (rng.next_double() as f32) < win_prob
+}
+
+fn pick_planned_or_best_specialist<F>(
+    state: &MatchStateV4,
+    input: &MatchInputV4,
+    side: TeamSideV4,
+    planned_slot_ids: &[String],
+    metric: F,
+) -> usize
+where
+    F: Fn(&crate::v4::attributes::PlayerAttributes54) -> u8,
+{
+    for slot_id in planned_slot_ids {
+        if let Some(idx) = state.players.iter().position(|p| {
+            p.side == side && p.on_pitch && !p.sent_off && p.slot_id == *slot_id
+        }) {
+            return idx;
+        }
+    }
+    pick_best_specialist(state, input, side, metric)
 }
 
 fn pick_best_specialist<F>(

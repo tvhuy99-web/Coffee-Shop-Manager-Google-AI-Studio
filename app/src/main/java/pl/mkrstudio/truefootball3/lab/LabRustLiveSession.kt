@@ -1,12 +1,12 @@
 package pl.mkrstudio.truefootball3.lab
 
-import org.json.JSONObject
 import org.json.JSONArray
+import org.json.JSONObject
 import java.io.Closeable
 
 /**
  * Unified live interactive Rust match session wrapper supporting both
- * Match Engine 3.0 and Match Engine 4.0 behind the same Kotlin interface.
+ * Match Engine 3.0 and Match Engine 4.0 / 4.1 DES behind the same Kotlin interface.
  */
 class LabRustLiveSession private constructor(
     @Volatile private var handle: Long,
@@ -35,6 +35,26 @@ class LabRustLiveSession private constructor(
             }
         }
 
+        /**
+         * Restores a live V4.1 DES session from a verified Rust checkpoint JSON snapshot
+         * via `NativeBridge.nativeImportV4Checkpoint`.
+         */
+        fun importFromCheckpoint(
+            checkpointJson: String,
+            initialHomeInstructions: JSONObject? = null
+        ): LabRustLiveSession? {
+            if (!NativeBridge.isV4DesReady() || checkpointJson.isBlank()) return null
+            val h = NativeBridge.importV4Checkpoint(checkpointJson)
+            LabLogStore.log(
+                "JNI",
+                "nativeImportV4Checkpoint(V4) -> handle=$h (checkpointBytes=${checkpointJson.length})"
+            )
+            if (h <= 0L) return null
+            val instructions = initialHomeInstructions?.let { JSONObject(it.toString()) }
+                ?: extractV4HomeInstructionsFromCheckpoint(checkpointJson)
+            return LabRustLiveSession(h, LabEngineVersion.V4, instructions)
+        }
+
         private fun defaultV4Instructions(): JSONObject = JSONObject()
             .put("pressingIntensity", 50)
             .put("tempo", 50)
@@ -57,9 +77,47 @@ class LabRustLiveSession private constructor(
                 defaultV4Instructions()
             }
         }
+
+        private fun extractV4HomeInstructionsFromCheckpoint(checkpointJson: String): JSONObject {
+            return try {
+                val payload = JSONObject(checkpointJson).optJSONObject("payload")
+                val stateObj = payload?.optJSONObject("state")
+                val stateInstructions = stateObj?.optJSONObject("activeHomeTi")
+                    ?: stateObj?.optJSONObject("home")?.optJSONObject("instructions")
+                val inputInstructions = payload
+                    ?.optJSONObject("input")
+                    ?.optJSONObject("homeTeam")
+                    ?.optJSONObject("teamInstructions")
+                val resolved = stateInstructions ?: inputInstructions
+                if (resolved != null) JSONObject(resolved.toString()) else defaultV4Instructions()
+            } catch (_: Exception) {
+                defaultV4Instructions()
+            }
+        }
     }
 
     val isOpen: Boolean get() = handle != 0L
+
+    /** Builds a schema-valid Rust MatchCommandV4::UpdateTactics JSON payload from current instructions. */
+    @Synchronized
+    fun buildV4UpdateTacticsCommandJson(side: String, commandType: String, value: Int): String {
+        val clamped = value.coerceIn(0, 100)
+        val instructions = JSONObject(v4HomeInstructions.toString())
+        when (commandType) {
+            "CHANGE_PRESSING" -> instructions.put("pressingIntensity", clamped)
+            "CHANGE_TEMPO" -> instructions.put("tempo", clamped)
+            "CHANGE_LINE_HEIGHT" -> instructions.put("lineHeight", clamped)
+            "CHANGE_MENTALITY" -> instructions.put("mentality", clamped)
+            "CHANGE_WIDTH" -> instructions.put("width", clamped)
+            "CHANGE_TIME_WASTING" -> instructions.put("timeWasting", clamped)
+            else -> instructions.put("tempo", clamped)
+        }
+        return JSONObject()
+            .put("type", "UPDATE_TACTICS")
+            .put("side", side)
+            .put("instructions", instructions)
+            .toString()
+    }
 
     @Synchronized
     fun submitTeamInstruction(gameSecond: Int, side: String, commandType: String, value: Int): Boolean {
@@ -169,6 +227,72 @@ class LabRustLiveSession private constructor(
             LabEngineVersion.V4 -> NativeBridge.advanceV4Session(handle, maxSteps)
         }
         return JSONObject(raw)
+    }
+
+    /**
+     * Advances the V4.1 DES session up to [targetSimTimeMs] (bounded by [maxStepsGuard])
+     * and returns the raw `SessionStepResultV4` JSON response from Rust.
+     */
+    @Synchronized
+    fun advanceUntilMs(targetSimTimeMs: Long, maxStepsGuard: Int = 500): String {
+        if (handle == 0L) return """{"ok":false,"error":"session closed"}"""
+        if (engineVersion != LabEngineVersion.V4) {
+            return """{"ok":false,"error":"advanceUntilMs is only supported for V4 DES sessions"}"""
+        }
+        return NativeBridge.advanceV4SessionUntilMs(handle, targetSimTimeMs, maxStepsGuard)
+    }
+
+    /**
+     * Explicitly transitions the V4.1 DES session from half-time / extra-time break into the next period.
+     */
+    @Synchronized
+    fun startNextPeriod(): String {
+        if (handle == 0L) return """{"ok":false,"error":"session closed"}"""
+        if (engineVersion != LabEngineVersion.V4) {
+            return """{"ok":false,"error":"startNextPeriod is only supported for V4 DES sessions"}"""
+        }
+        val raw = NativeBridge.startNextPeriod(handle)
+        LabLogStore.log("JNI", "nativeStartNextPeriod(V4) handle=$handle bytes=${raw.length}")
+        return raw
+    }
+
+    /**
+     * Exports a self-verifying Rust `MatchCheckpointV4` JSON snapshot of the active V4.1 DES session.
+     */
+    @Synchronized
+    fun exportCheckpointJson(): String {
+        if (handle == 0L) return """{"ok":false,"error":"session closed"}"""
+        if (engineVersion != LabEngineVersion.V4) {
+            return """{"ok":false,"error":"exportCheckpointJson is only supported for V4 DES sessions"}"""
+        }
+        return NativeBridge.exportV4Checkpoint(handle)
+    }
+
+    /**
+     * Submits a raw V4.1 DES command JSON payload and returns the structured JSON response from Rust.
+     */
+    @Synchronized
+    fun submitCommandJson(commandJson: String): String {
+        if (handle == 0L) return """{"ok":false,"error":"session closed"}"""
+        if (engineVersion != LabEngineVersion.V4) {
+            return """{"ok":false,"error":"submitCommandJson is only supported for V4 DES sessions"}"""
+        }
+        val raw = NativeBridge.submitV4CommandJson(handle, commandJson)
+        try {
+            val res = JSONObject(raw)
+            if (res.optBoolean("ok", false)) {
+                val req = JSONObject(commandJson)
+                if (req.optString("type") == "UPDATE_TACTICS" && req.optString("side") == "HOME") {
+                    req.optJSONObject("instructions")?.let {
+                        v4HomeInstructions = JSONObject(it.toString())
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Keep raw Rust response untouched even if command JSON is non-tactical or malformed.
+        }
+        LabLogStore.log("CMD", "submitCommandJson(V4) bytes=${commandJson.length}")
+        return raw
     }
 
     @Synchronized

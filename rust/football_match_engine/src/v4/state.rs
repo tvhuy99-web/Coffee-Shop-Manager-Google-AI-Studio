@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use crate::clock::ClockState;
-use crate::v4::attributes::normalize_attr;
+use crate::clock::{ClockState, DesClockState};
+use crate::v4::attributes::{normalize_attr, PlayerAttributes54};
 use crate::v4::input::{
-    MatchInputV4, PlayerMatchSnapshotV4, TeamInstructionsV4, TeamMatchSnapshotV4,
+    MatchInputV4, PlayerMatchSnapshotV4, PreferredFoot, TeamInstructionsV4, TeamMatchSnapshotV4,
 };
-use crate::v4::spatial::{TeamSideV4, Vec2, Vec3};
+use crate::v4::rules::DeadBallState;
+use crate::v4::spatial::{TeamSideV4, Vec2, Vec3, PITCH_LENGTH_M, PITCH_WIDTH_M};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -42,6 +43,23 @@ impl Default for BallStateV4 {
     }
 }
 
+/// Cached static player profile indexed by `PlayerRuntimeStateV4::profile_idx` for O(1) hot-loop lookups.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerStaticProfile {
+    pub attrs: PlayerAttributes54,
+    pub preferred_foot: PreferredFoot,
+    pub weak_foot: u8,
+}
+
+/// Precomputed in-possession and out-of-possession pitch anchors indexed by `PlayerRuntimeStateV4::slot_idx`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlotAnchorPair {
+    pub in_poss_pos: Vec2,
+    pub out_poss_pos: Vec2,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TwoPoolFatigueState {
@@ -63,35 +81,62 @@ impl TwoPoolFatigueState {
         }
     }
 
+    /// Continuous-time two-pool fatigue integration over an arbitrary DES interval `dt_sec`
+    /// and actual distance covered `distance_m`.
+    ///
+    /// Strictly step-length invariant: no fixed per-call penalty constants (`4.8` / `0.08`).
+    /// During `is_dead_ball == true` or low-intensity movement, anaerobic reserves recover
+    /// proportionally to `dt_sec` and `natural_fitness`.
     pub fn apply_interval(
         &mut self,
-        duration_sec: f32,
+        dt_sec: f32,
         distance_m: f32,
         is_high_intensity: bool,
+        is_dead_ball: bool,
         stamina: u8,
         natural_fitness: u8,
     ) {
+        let dt = dt_sec.max(0.0);
+        let dist = distance_m.max(0.0);
+        if dt <= 0.0 && dist <= 0.0 {
+            return;
+        }
+
         let stam = normalize_attr(stamina);
         let nat = normalize_attr(natural_fitness);
         let aerobic_efficiency = 1.24 - (stam * 0.52);
-        let base_aerobic_drain = (distance_m * 0.0021 + duration_sec * 0.0038) * aerobic_efficiency;
+
+        if is_dead_ball {
+            let idle_aerobic_drain = (dist * 0.0011 + dt * 0.0007) * aerobic_efficiency;
+            self.aerobic = (self.aerobic - idle_aerobic_drain).clamp(5.0, 100.0);
+
+            let recovery = dt * (0.42 + nat * 0.52);
+            self.anaerobic = (self.anaerobic + recovery).clamp(0.0, 100.0);
+            self.distance_m += dist;
+            return;
+        }
+
+        let base_aerobic_drain = (dist * 0.0021 + dt * 0.0038) * aerobic_efficiency;
         let intensity_aerobic_drain = if is_high_intensity {
-            0.08 * aerobic_efficiency
+            (dt * 0.011 + dist * 0.0014) * aerobic_efficiency
         } else {
             0.0
         };
-        self.aerobic = (self.aerobic - base_aerobic_drain - intensity_aerobic_drain).clamp(5.0, 100.0);
+        self.aerobic =
+            (self.aerobic - base_aerobic_drain - intensity_aerobic_drain).clamp(5.0, 100.0);
 
         if is_high_intensity {
-            let ana_drain = (4.8 + distance_m * 0.14) * (1.20 - stam * 0.35);
+            let ana_drain = (dt * 0.85 + dist * 0.16) * (1.20 - stam * 0.35);
             self.anaerobic = (self.anaerobic - ana_drain).clamp(0.0, 100.0);
-            self.sprint_count = self.sprint_count.saturating_add(1);
-            self.high_intensity_actions = self.high_intensity_actions.saturating_add(1);
+            if dist >= 1.5 || dt >= 0.4 {
+                self.sprint_count = self.sprint_count.saturating_add(1);
+                self.high_intensity_actions = self.high_intensity_actions.saturating_add(1);
+            }
         } else {
-            let recovery = duration_sec * (0.24 + nat * 0.38);
+            let recovery = dt * (0.24 + nat * 0.38);
             self.anaerobic = (self.anaerobic + recovery).clamp(0.0, 100.0);
         }
-        self.distance_m += distance_m.max(0.0);
+        self.distance_m += dist;
     }
 
     pub fn apply_half_time_recovery(&mut self, natural_fitness: u8) {
@@ -147,6 +192,12 @@ pub struct PlayerRuntimeStateV4 {
     pub player_id: String,
     pub side: TeamSideV4,
     pub slot_id: String,
+    #[serde(default)]
+    pub profile_idx: usize,
+    #[serde(default)]
+    pub slot_idx: usize,
+    #[serde(default)]
+    pub last_moved_m: f32,
     pub pos: Vec2,
     pub target_pos: Vec2,
     pub vel: Vec2,
@@ -191,7 +242,7 @@ pub struct TeamRuntimeStateV4 {
     pub substitution_windows_used: u8,
     pub momentum: f32,
     pub phase: TacticalPhaseV4,
-    pub sustained_pressure_streak: u8,
+    pub sustained_pressure_ms: i32,
 }
 
 impl TeamRuntimeStateV4 {
@@ -220,22 +271,28 @@ impl TeamRuntimeStateV4 {
             substitution_windows_used: 0,
             momentum: 0.0,
             phase: TacticalPhaseV4::OutOfPossession,
-            sustained_pressure_streak: 0,
+            sustained_pressure_ms: 0,
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MatchStateV4 {
     pub clock: ClockState,
+    pub des_clock: DesClockState,
+    pub dead_ball: Option<DeadBallState>,
     pub ball: BallStateV4,
     pub home: TeamRuntimeStateV4,
     pub away: TeamRuntimeStateV4,
     pub active_home_ti: TeamInstructionsV4,
     pub active_away_ti: TeamInstructionsV4,
-    pub transition_beats_remaining: u8,
+    pub transition_remaining_ms: i32,
     pub last_ai_eval_second: i32,
     pub players: Vec<PlayerRuntimeStateV4>,
+    pub player_profiles: Vec<PlayerStaticProfile>,
+    pub home_slot_anchors: Vec<SlotAnchorPair>,
+    pub away_slot_anchors: Vec<SlotAnchorPair>,
     pub next_highlight_sequence_id: u32,
     pub shootout_home_goals: u8,
     pub shootout_away_goals: u8,
@@ -244,22 +301,59 @@ pub struct MatchStateV4 {
 impl MatchStateV4 {
     pub fn from_input(input: &MatchInputV4) -> Self {
         let mut players = Vec::with_capacity(32);
-        init_team_players(TeamSideV4::Home, &input.home_team, &mut players);
-        init_team_players(TeamSideV4::Away, &input.away_team, &mut players);
+        let mut player_profiles = Vec::with_capacity(
+            input.home_team.lineup.len()
+                + input.home_team.bench.len()
+                + input.away_team.lineup.len()
+                + input.away_team.bench.len(),
+        );
+        let home_slot_anchors = build_slot_anchors(TeamSideV4::Home, &input.home_team);
+        let away_slot_anchors = build_slot_anchors(TeamSideV4::Away, &input.away_team);
+
+        init_team_players(
+            TeamSideV4::Home,
+            &input.home_team,
+            &home_slot_anchors,
+            &mut players,
+            &mut player_profiles,
+        );
+        init_team_players(
+            TeamSideV4::Away,
+            &input.away_team,
+            &away_slot_anchors,
+            &mut players,
+            &mut player_profiles,
+        );
+
+        let ruleset = input.effective_ruleset();
+        let mut des_clock = DesClockState::default();
+        des_clock.period_regulation_ms = ruleset.half_duration_ms;
+
         Self {
             clock: ClockState::default(),
+            des_clock,
+            dead_ball: None,
             ball: BallStateV4::default(),
             home: TeamRuntimeStateV4::new(TeamSideV4::Home),
             away: TeamRuntimeStateV4::new(TeamSideV4::Away),
             active_home_ti: input.home_team.team_instructions.clone(),
             active_away_ti: input.away_team.team_instructions.clone(),
-            transition_beats_remaining: 0,
+            transition_remaining_ms: 0,
             last_ai_eval_second: 0,
             players,
+            player_profiles,
+            home_slot_anchors,
+            away_slot_anchors,
             next_highlight_sequence_id: 1,
             shootout_home_goals: 0,
             shootout_away_goals: 0,
         }
+    }
+
+    /// Synchronizes the legacy `ClockState` projection from the authoritative `DesClockState`.
+    #[inline]
+    pub fn sync_legacy_clock(&mut self) {
+        self.clock = self.des_clock.to_legacy_clock_state();
     }
 
     pub fn team_state(&self, side: TeamSideV4) -> &TeamRuntimeStateV4 {
@@ -289,38 +383,91 @@ impl MatchStateV4 {
             TeamSideV4::Away => &mut self.active_away_ti,
         }
     }
+
+    /// O(1) lookup for a player's static profile, falling back to profile 0 if out of range.
+    #[inline]
+    pub fn player_profile(&self, profile_idx: usize) -> &PlayerStaticProfile {
+        self.player_profiles
+            .get(profile_idx)
+            .unwrap_or(&self.player_profiles[0])
+    }
+
+    /// O(1) lookup for a slot's precomputed in-possession or out-of-possession pitch anchor.
+    #[inline]
+    pub fn slot_anchor(&self, side: TeamSideV4, slot_idx: usize, in_poss: bool) -> Vec2 {
+        let anchors = match side {
+            TeamSideV4::Home => &self.home_slot_anchors,
+            TeamSideV4::Away => &self.away_slot_anchors,
+        };
+        if let Some(pair) = anchors.get(slot_idx) {
+            if in_poss {
+                pair.in_poss_pos
+            } else {
+                pair.out_poss_pos
+            }
+        } else {
+            Vec2::new(PITCH_LENGTH_M * 0.5, PITCH_WIDTH_M * 0.5)
+        }
+    }
+}
+
+fn build_slot_anchors(side: TeamSideV4, team: &TeamMatchSnapshotV4) -> Vec<SlotAnchorPair> {
+    team.tactical_slots
+        .iter()
+        .map(|s| SlotAnchorPair {
+            in_poss_pos: Vec2::from_normalized_slot(side, s.in_x as f32, s.in_y as f32),
+            out_poss_pos: Vec2::from_normalized_slot(side, s.out_x as f32, s.out_y as f32),
+        })
+        .collect()
 }
 
 fn init_team_players(
     side: TeamSideV4,
     team: &TeamMatchSnapshotV4,
-    out: &mut Vec<PlayerRuntimeStateV4>,
+    anchors: &[SlotAnchorPair],
+    out_players: &mut Vec<PlayerRuntimeStateV4>,
+    out_profiles: &mut Vec<PlayerStaticProfile>,
 ) {
     let facing_rad = match side {
         TeamSideV4::Home => 0.0,
         TeamSideV4::Away => std::f32::consts::PI,
     };
+
     for player in &team.lineup {
+        let profile_idx = out_profiles.len();
+        out_profiles.push(PlayerStaticProfile {
+            attrs: player.attributes,
+            preferred_foot: player.preferred_foot,
+            weak_foot: player.weak_foot,
+        });
+
         let slot_id = team
             .assignments
             .iter()
             .find(|a| a.player_id == player.player_id)
             .map(|a| a.slot_id.as_str())
             .unwrap_or("CM");
-        let slot = team.tactical_slots.iter().find(|s| s.slot_id == slot_id);
-        let pos = match slot {
-            Some(s) => Vec2::from_normalized_slot(side, s.out_x as f32, s.out_y as f32),
-            None => Vec2::center_spot(),
-        };
+        let slot_idx = team
+            .tactical_slots
+            .iter()
+            .position(|s| s.slot_id == slot_id)
+            .unwrap_or(0);
+        let pos = anchors
+            .get(slot_idx)
+            .map(|pair| pair.out_poss_pos)
+            .unwrap_or_else(Vec2::center_spot);
         let familiarity = compute_position_familiarity(
             &player.primary_position,
             &player.secondary_position,
             slot_id,
         );
-        out.push(PlayerRuntimeStateV4 {
+        out_players.push(PlayerRuntimeStateV4 {
             player_id: player.player_id.clone(),
             side,
             slot_id: slot_id.to_string(),
+            profile_idx,
+            slot_idx,
+            last_moved_m: 0.0,
             pos,
             target_pos: pos,
             vel: Vec2::default(),
@@ -337,6 +484,15 @@ fn init_team_players(
             own_goals: 0,
             assists: 0,
             rating_tenths: 60,
+        });
+    }
+
+    // Pre-register bench static profiles so substitutes can reference them in O(1).
+    for player in &team.bench {
+        out_profiles.push(PlayerStaticProfile {
+            attrs: player.attributes,
+            preferred_foot: player.preferred_foot,
+            weak_foot: player.weak_foot,
         });
     }
 }

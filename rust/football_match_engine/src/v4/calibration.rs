@@ -2,11 +2,12 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+use crate::v4::diagnostics::DurationDistributionMs;
 use crate::v4::error::V4Error;
 use crate::v4::input::{MatchInputV4, SimulationMode};
 use crate::v4::session::{simulate_batch_fast_v4, simulate_v4};
 
-/// Aggregated Monte Carlo statistical & throughput benchmark report for Match Engine V4.0.
+/// Aggregated Monte Carlo statistical & throughput benchmark report for Match Engine V4.1 / DES v1.4.
 /// Target football realism bands (90-minute regulation):
 /// - Goals/match: 2.65 – 2.95
 /// - Shots/match: 23 – 27
@@ -27,15 +28,38 @@ pub struct MonteCarloReportV4 {
     pub avg_fouls_per_match: f32,
     pub avg_yellow_cards_per_match: f32,
     pub avg_red_cards_per_match: f32,
+    /// Phase 1 read-only attacking funnel diagnostics; exploratory, not realism gates.
+    pub avg_possessions_per_match: f32,
+    pub avg_final_third_possessions_per_match: f32,
+    pub avg_penalty_area_possessions_per_match: f32,
+    pub avg_penalty_area_without_shot_per_match: f32,
+    pub avg_shot_possessions_per_match: f32,
+    pub avg_shots_from_box_per_match: f32,
+    pub avg_pass_interceptions_per_match: f32,
+    pub avg_pass_misplacements_per_match: f32,
+    pub avg_pass_out_of_play_per_match: f32,
+    pub avg_first_touch_errors_per_match: f32,
+    pub avg_dribble_tackles_per_match: f32,
+    pub avg_unclassified_turnovers_per_match: f32,
     pub home_win_rate_pct: f32,
     pub draw_rate_pct: f32,
     pub away_win_rate_pct: f32,
+    /// DES v1.4 aggregate timing, event-density, and dead-ball distribution metrics (Section X).
+    pub avg_ball_in_play_min: f32,
+    pub avg_ball_out_of_play_min: f32,
+    pub avg_effective_added_min: f32,
+    pub avg_des_steps_per_match: f32,
+    pub avg_early_interceptions_per_match: f32,
+    pub avg_one_touch_passes_per_match: f32,
+    pub goal_celebration_dist: DurationDistributionMs,
+    pub throw_in_dist: DurationDistributionMs,
+    pub corner_dist: DurationDistributionMs,
     pub elapsed_ms: u128,
     pub matches_per_sec: f32,
 }
 
 /// Runs a parallel `FastBatch` Monte Carlo simulation over `inputs` via Rayon and
-/// computes full statistical balance + performance throughput metrics.
+/// computes full statistical balance + DES v1.4 timing/distribution + performance throughput metrics.
 pub fn run_monte_carlo_v4(inputs: Vec<MatchInputV4>) -> Result<MonteCarloReportV4, V4Error> {
     if inputs.is_empty() {
         return Err(V4Error::InvalidInput("Monte Carlo input batch cannot be empty".into()));
@@ -55,6 +79,16 @@ pub fn run_monte_carlo_v4(inputs: Vec<MatchInputV4>) -> Result<MonteCarloReportV
     let mut total_fouls = 0u64;
     let mut total_yellows = 0u64;
     let mut total_reds = 0u64;
+    let mut possession_funnel = [0u64; 12];
+    let mut total_ball_in_play_ms = 0i128;
+    let mut total_ball_out_of_play_ms = 0i128;
+    let mut total_effective_added_ms = 0i128;
+    let mut total_des_steps = 0u64;
+    let mut total_early_interceptions = 0u64;
+    let mut total_one_touch_passes = 0u64;
+    let mut goal_celebration_dists = Vec::new();
+    let mut throw_in_dists = Vec::new();
+    let mut corner_dists = Vec::new();
     let mut home_wins = 0usize;
     let mut draws = 0usize;
     let mut away_wins = 0usize;
@@ -75,6 +109,35 @@ pub fn run_monte_carlo_v4(inputs: Vec<MatchInputV4>) -> Result<MonteCarloReportV
         total_fouls += (h.fouls + a.fouls) as u64;
         total_yellows += (h.yellow_cards + a.yellow_cards) as u64;
         total_reds += (h.red_cards + a.red_cards) as u64;
+        let diagnostic = res.diagnostics.as_ref().ok_or_else(|| {
+            V4Error::InvalidInput("V4 result missing Phase 1 diagnostics".into())
+        })?;
+        diagnostic.validate_basic().map_err(V4Error::InvalidInput)?;
+        for d in [&diagnostic.home, &diagnostic.away] {
+            possession_funnel[0] += d.possessions as u64;
+            possession_funnel[1] += d.final_third_possessions as u64;
+            possession_funnel[2] += d.penalty_area_possessions as u64;
+            possession_funnel[3] += d.penalty_area_without_shot as u64;
+            possession_funnel[4] += d.possessions_with_shot as u64;
+            possession_funnel[5] += d.shots_from_box as u64;
+            possession_funnel[6] += d.turnovers.pass_intercepted as u64;
+            possession_funnel[7] += d.turnovers.pass_misplaced as u64;
+            possession_funnel[8] += d.turnovers.pass_out_of_play as u64;
+            possession_funnel[9] += d.turnovers.first_touch_error as u64;
+            possession_funnel[10] += d.turnovers.dribble_tackled as u64;
+            possession_funnel[11] += d.turnovers.other_unclassified as u64;
+        }
+        let des = &diagnostic.des;
+        total_ball_in_play_ms += des.ball_in_play_ms as i128;
+        total_ball_out_of_play_ms += des.ball_out_of_play_ms as i128;
+        total_effective_added_ms += (des.announced_added_ms + des.additional_added_ms) as i128;
+        total_des_steps = total_des_steps.saturating_add(des.des_steps_total);
+        total_early_interceptions += des.early_interceptions_detected as u64;
+        total_one_touch_passes += des.one_touch_passes as u64;
+        goal_celebration_dists.push(des.dead_ball_distributions.goal_celebration);
+        throw_in_dists.push(des.dead_ball_distributions.throw_in);
+        corner_dists.push(des.dead_ball_distributions.corner);
+
         if h.goals > a.goals {
             home_wins += 1;
         } else if h.goals == a.goals {
@@ -86,6 +149,7 @@ pub fn run_monte_carlo_v4(inputs: Vec<MatchInputV4>) -> Result<MonteCarloReportV
     }
 
     let n = count.max(1) as f32;
+    let n_f64 = count.max(1) as f64;
     let secs = (elapsed_ms as f32 / 1000.0).max(0.001);
 
     Ok(MonteCarloReportV4 {
@@ -100,9 +164,30 @@ pub fn run_monte_carlo_v4(inputs: Vec<MatchInputV4>) -> Result<MonteCarloReportV
         avg_fouls_per_match: total_fouls as f32 / n,
         avg_yellow_cards_per_match: total_yellows as f32 / n,
         avg_red_cards_per_match: total_reds as f32 / n,
+        avg_possessions_per_match: possession_funnel[0] as f32 / n,
+        avg_final_third_possessions_per_match: possession_funnel[1] as f32 / n,
+        avg_penalty_area_possessions_per_match: possession_funnel[2] as f32 / n,
+        avg_penalty_area_without_shot_per_match: possession_funnel[3] as f32 / n,
+        avg_shot_possessions_per_match: possession_funnel[4] as f32 / n,
+        avg_shots_from_box_per_match: possession_funnel[5] as f32 / n,
+        avg_pass_interceptions_per_match: possession_funnel[6] as f32 / n,
+        avg_pass_misplacements_per_match: possession_funnel[7] as f32 / n,
+        avg_pass_out_of_play_per_match: possession_funnel[8] as f32 / n,
+        avg_first_touch_errors_per_match: possession_funnel[9] as f32 / n,
+        avg_dribble_tackles_per_match: possession_funnel[10] as f32 / n,
+        avg_unclassified_turnovers_per_match: possession_funnel[11] as f32 / n,
         home_win_rate_pct: (home_wins as f32 / n) * 100.0,
         draw_rate_pct: (draws as f32 / n) * 100.0,
         away_win_rate_pct: (away_wins as f32 / n) * 100.0,
+        avg_ball_in_play_min: (total_ball_in_play_ms as f64 / 60_000.0 / n_f64) as f32,
+        avg_ball_out_of_play_min: (total_ball_out_of_play_ms as f64 / 60_000.0 / n_f64) as f32,
+        avg_effective_added_min: (total_effective_added_ms as f64 / 60_000.0 / n_f64) as f32,
+        avg_des_steps_per_match: total_des_steps as f32 / n,
+        avg_early_interceptions_per_match: total_early_interceptions as f32 / n,
+        avg_one_touch_passes_per_match: total_one_touch_passes as f32 / n,
+        goal_celebration_dist: DurationDistributionMs::merge_summaries(&goal_celebration_dists),
+        throw_in_dist: DurationDistributionMs::merge_summaries(&throw_in_dists),
+        corner_dist: DurationDistributionMs::merge_summaries(&corner_dists),
         elapsed_ms,
         matches_per_sec: n / secs,
     })

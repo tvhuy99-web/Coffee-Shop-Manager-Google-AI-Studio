@@ -15,13 +15,28 @@ class LabMatchInputFactory(context: Context, assetPath: String = "england_v2/clu
 
     companion object {
         const val ENGINE_VERSION = "v3.17.0-realism-1"
-        const val ENGINE_VERSION_V4 = "v4.0.0"
-        const val ENGINE_PROTOCOL_V4 = 4
+        const val ENGINE_VERSION_V4 = "v4.1.1-des"
+        const val ENGINE_PROTOCOL_V4 = 5
     }
 
     fun name(playerId: String?): String {
         if (playerId.isNullOrEmpty()) return ""
         return playerNames[playerId] ?: playerId
+    }
+
+    /** Restore names from the immutable input, without regenerating either squad. */
+    fun registerPlayerNames(inputJson: String) {
+        val input = JSONObject(inputJson)
+        for (teamKey in listOf("homeTeam", "awayTeam")) {
+            val team = input.optJSONObject(teamKey) ?: continue
+            for (key in listOf("lineup", "bench")) {
+                val players = team.optJSONArray(key) ?: continue
+                for (i in 0 until players.length()) {
+                    val player = players.getJSONObject(i)
+                    playerNames[player.getString("playerId")] = player.optString("displayName", player.getString("playerId"))
+                }
+            }
+        }
     }
 
     fun describeLineupAndSetPieces(teamName: String, tactics: LabTacticalPresets.TacticalConfig): String {
