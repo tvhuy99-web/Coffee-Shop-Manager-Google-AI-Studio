@@ -160,6 +160,10 @@ pub struct PlayerPsychologyState {
     pub concentration_level: f32,
     pub pressure_load: f32,
     pub confidence: f32,
+    /// Transient actor-specific response to resolved football outcomes.
+    /// Separate from legacy career-influenced confidence and team momentum.
+    #[serde(default)]
+    pub personal_confidence_delta:f32,
     /// Sampled once at match initialization; independent of career readiness.
     /// It affects decision uncertainty, not the player's permanent attributes.
     #[serde(default="neutral_match_form")]
@@ -176,6 +180,7 @@ impl PlayerPsychologyState {
             concentration_level: (0.78 + normalize_attr(player.attributes.mental.concentration) * 0.22)
                 .clamp(0.4, 1.0),
             pressure_load: 0.0,
+            personal_confidence_delta:0.0,
             match_form_multiplier:1.0,
             confidence: ((player.morale as f32 * 0.5 + player.form as f32 * 0.5) / 100.0
                 * (0.90 + readiness * 0.10))

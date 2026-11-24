@@ -12,6 +12,11 @@ use crate::v4::state::{InjuryKind, MatchStateV4, PlayerPsychologyState};
 /// preserving V4.0 behavior while remaining invariant to DES step length.
 pub const MOMENTUM_DECAY_RATE_PER_SEC: f32 = 0.005625;
 
+/// Initial modeling prior: personal feedback relaxes on the existing
+/// momentum time scale, but is an independent actor-specific state.
+pub const PERSONAL_CONFIDENCE_DECAY_RATE_PER_SEC:f32=MOMENTUM_DECAY_RATE_PER_SEC;
+pub const PERSONAL_CONFIDENCE_BOUND:f32=0.12;
+
 /// Reference V4.0 beat duration (seconds) used to convert legacy per-beat
 /// probabilities into continuous-time Poisson hazard rates.
 pub const REFERENCE_BEAT_SEC: f32 = 11.0;
@@ -92,11 +97,13 @@ pub fn update_in_match_psychology(
     let decay = (-MOMENTUM_DECAY_RATE_PER_SEC * dt_sec.max(0.0)).exp();
     state.home.momentum *= decay;
     state.away.momentum *= decay;
+    let personal_decay=(-PERSONAL_CONFIDENCE_DECAY_RATE_PER_SEC*dt_sec.max(0.0)).exp();
 
     for idx in 0..state.players.len() {
         if !state.players[idx].on_pitch || state.players[idx].sent_off {
             continue;
         }
+        state.players[idx].psychology.personal_confidence_delta*=personal_decay;
         let side = state.players[idx].side;
         let opp = side.opposite();
         let goal_diff = state.team_state(side).goals as i32 - state.team_state(opp).goals as i32;
@@ -135,6 +142,30 @@ pub fn update_in_match_psychology(
         state.players[idx].psychology.composure_delta =
             (mom_effect + det_rally - state.players[idx].psychology.pressure_load * 0.18)
                 .clamp(-0.28, 0.25);
+    }
+}
+
+/// Apply feedback once at the resolved outcome emission boundary.
+/// Only the event actor is affected; related events for a tackle name
+/// different actors. No inference of blame from a failed pass, rebound,
+/// foul, missed chance, or an unresolved intention. No RNG or score edits.
+pub(crate) fn observe_personal_outcome(
+    state:&mut MatchStateV4,kind:EventTypeV4,side:Option<TeamSideV4>,
+    actor:Option<&str>,metadata:&EventMetadataV4,
+) {
+    let (direction,weight)=match kind {
+        EventTypeV4::Goal|EventTypeV4::Save=>(1.0,0.50),
+        EventTypeV4::TackleWon|EventTypeV4::DribbleWon=>(1.0,0.20),
+        EventTypeV4::DribbleLost if metadata.outcome.as_deref()==Some("TACKLED")=>(-1.0,0.20),
+        _=>return,
+    };
+    let (Some(side),Some(id))=(side,actor) else{return;};
+    if let Some(p)=state.players.iter_mut().find(|p|p.side==side && p.player_id==id && p.on_pitch && !p.sent_off) {
+        let prior=p.psychology.personal_confidence_delta;
+        let target=direction*PERSONAL_CONFIDENCE_BOUND;
+        // Convex update: diminishing response near the bounded extremes.
+        p.psychology.personal_confidence_delta=(prior+weight*(target-prior))
+            .clamp(-PERSONAL_CONFIDENCE_BOUND,PERSONAL_CONFIDENCE_BOUND);
     }
 }
 

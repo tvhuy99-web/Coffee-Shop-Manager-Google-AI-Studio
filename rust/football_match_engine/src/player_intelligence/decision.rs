@@ -247,7 +247,11 @@ pub(crate) fn decision_uncertainty(state:&MatchStateV4,idx:usize,pressure_norm:f
     // Neutral delta preserves 4.0.19. Keep permanent composure in the
     // base spatial-pressure term; no direct change to action success.
     let contextual=1.0-p.psychology.composure_delta.clamp(-0.28,0.25);
-    (base*contextual/(form*focus)).clamp(0.002,0.04)
+    // Personal confidence is residual to shared team context; only
+    // observed actor-specific outcomes affect this additional term.
+    let bound=crate::v4::psychology::PERSONAL_CONFIDENCE_BOUND;
+    let personal=1.0-p.psychology.personal_confidence_delta.clamp(-bound,bound);
+    (base*contextual*personal/(form*focus)).clamp(0.002,0.04)
 }
 
 /// DES entry point returning the chosen action along with `decision_delay_ms` and `is_one_touch`.

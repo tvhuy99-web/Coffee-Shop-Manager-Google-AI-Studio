@@ -3433,6 +3433,12 @@ impl MatchSessionV4 {
 
         self.diagnostics.on_event(kind, side, ball_pos, &metadata);
 
+        // Use the authoritative emission boundary, not retained commentary.
+        // Shootout kicks are a separate phase and do not feed open-play PI.
+        if self.state.des_clock.period!=Period::Shootout {
+            crate::v4::psychology::observe_personal_outcome(&mut self.state,kind,side,actor.as_deref(),&metadata);
+        }
+
         if self.retain_events {
             self.events.push(MatchEventV4 {
                 sequence: self.event_count,
@@ -4020,5 +4026,91 @@ mod pi_clock_contract_tests {
             assert!((session.state.players[idx].fatigue.distance_m-before-traveled).abs()<0.01);
         }
         assert!((s.state.players[idx].fatigue.distance_m-split.state.players[idx].fatigue.distance_m).abs()<0.01);
+    }
+}
+
+
+#[cfg(test)]
+mod pi_personal_feedback_tests {
+    use super::*;
+    use crate::v4::input::{SimulationMode,RulesModeV4};
+    use crate::v4::tests::make_v4_input;
+    use crate::player_intelligence::decision_uncertainty;
+    use crate::v4::psychology::{update_in_match_psychology,PERSONAL_CONFIDENCE_BOUND};
+
+    #[test]
+    fn pi_psychology_personal_outcome_actor_and_mode_parity() {
+        let mut full=MatchSessionV4::new(make_v4_input(22801,SimulationMode::FullEvent,RulesModeV4::Standard)).unwrap();
+        let mut fast=MatchSessionV4::new(make_v4_input(22801,SimulationMode::FastBatch,RulesModeV4::Standard)).unwrap();
+        let a=full.state.players.iter().position(|p|p.side==TeamSideV4::Home&&!p.is_goalkeeper).unwrap();
+        let b=full.state.players.iter().position(|p|p.side==TeamSideV4::Away&&!p.is_goalkeeper).unwrap();
+        let mate=full.state.players.iter().position(|p|p.side==TeamSideV4::Home&&!p.is_goalkeeper&&p.player_id!=full.state.players[a].player_id).unwrap();
+        let aid=full.state.players[a].player_id.clone();
+        let bid=full.state.players[b].player_id.clone();
+        for sess in [&mut full,&mut fast] {
+            let rng_before=sess.rng.state();
+            let before_a=decision_uncertainty(&sess.state,a,0.4);
+            let before_b=decision_uncertainty(&sess.state,b,0.4);
+            // These are fixture emissions, not generated match evidence.
+            // A real clean tackle emits these two events, one per actor.
+            sess.emit(EventTypeV4::DribbleLost,HighlightTier::None,None,Some(TeamSideV4::Home),Some(aid.clone()),Some(bid.clone()),
+                EventMetadataV4{outcome:Some("TACKLED".into()),..EventMetadataV4::default()});
+            sess.emit(EventTypeV4::TackleWon,HighlightTier::None,None,Some(TeamSideV4::Away),Some(bid.clone()),Some(aid.clone()),EventMetadataV4::default());
+            assert!((sess.state.players[a].psychology.personal_confidence_delta+0.024).abs()<1e-6);
+            assert!((sess.state.players[b].psychology.personal_confidence_delta-0.024).abs()<1e-6);
+            assert_eq!(sess.state.players[mate].psychology.personal_confidence_delta,0.0);
+            assert!(decision_uncertainty(&sess.state,a,0.4)>before_a);
+            assert!(decision_uncertainty(&sess.state,b,0.4)<before_b);
+            let prior=sess.state.players[a].psychology;
+            for kind in [EventTypeV4::Shot,EventTypeV4::ShotOnTarget,EventTypeV4::PassFailed,EventTypeV4::LooseBall,EventTypeV4::Foul,EventTypeV4::OwnGoal,EventTypeV4::Carry] {
+                sess.emit(kind,HighlightTier::None,None,Some(TeamSideV4::Home),Some(aid.clone()),None,EventMetadataV4::default());
+            }
+            // Actor/side mismatch must not influence a different team.
+            sess.emit(EventTypeV4::Goal,HighlightTier::None,None,Some(TeamSideV4::Away),Some(aid.clone()),None,EventMetadataV4::default());
+            assert_eq!(sess.state.players[a].psychology,prior);
+            assert_eq!(sess.rng.state(),rng_before);
+            assert_eq!(sess.state.home.momentum,0.0);
+            assert_eq!(sess.state.home.goals,0);
+        }
+        assert_eq!(full.timeline_fingerprint,fast.timeline_fingerprint);
+        assert_eq!(full.state.players[a].psychology,fast.state.players[a].psychology);
+        assert_eq!(full.state.players[b].psychology,fast.state.players[b].psychology);
+        assert!(!full.events.is_empty());
+        assert!(fast.events.is_empty());
+        let ck=full.export_checkpoint().unwrap();
+        let restored=MatchSessionV4::from_checkpoint(serde_json::from_str(&serde_json::to_string(&ck).unwrap()).unwrap()).unwrap();
+        assert_eq!(ck.checksum_hex,restored.export_checkpoint().unwrap().checksum_hex);
+    }
+
+    #[test]
+    fn pi_psychology_personal_feedback_decay_and_bounds() {
+        let input=make_v4_input(22802,SimulationMode::FullEvent,RulesModeV4::Standard);
+        let mut s=MatchSessionV4::new(input.clone()).unwrap();
+        let idx=s.state.players.iter().position(|p|p.side==TeamSideV4::Home&&!p.is_goalkeeper).unwrap();
+        let id=s.state.players[idx].player_id.clone();
+        for _ in 0..100 {
+            s.emit(EventTypeV4::Goal,HighlightTier::None,None,Some(TeamSideV4::Home),Some(id.clone()),None,EventMetadataV4::default());
+        }
+        let initial=s.state.players[idx].psychology.personal_confidence_delta;
+        assert!(initial>0.0&&initial<=PERSONAL_CONFIDENCE_BOUND);
+        let mut split=s.state.clone();
+        update_in_match_psychology(&mut s.state,&input,1200,120.0);
+        for k in 1..=120 {update_in_match_psychology(&mut split,&input,1080+k,1.0);}
+        let recovered=s.state.players[idx].psychology.personal_confidence_delta;
+        assert!(recovered>0.0&&recovered<initial);
+        assert!((recovered-split.players[idx].psychology.personal_confidence_delta).abs()<1e-6);
+        for _ in 0..100 {
+            s.emit(EventTypeV4::DribbleLost,HighlightTier::None,None,Some(TeamSideV4::Home),Some(id.clone()),None,
+                EventMetadataV4{outcome:Some("TACKLED".into()),..EventMetadataV4::default()});
+        }
+        let negative=s.state.players[idx].psychology.personal_confidence_delta;
+        assert!(negative<0.0&&negative>=-PERSONAL_CONFIDENCE_BOUND);
+        update_in_match_psychology(&mut s.state,&input,1320,120.0);
+        let recovering=s.state.players[idx].psychology.personal_confidence_delta;
+        assert!(negative<recovering&&recovering<0.0);
+        s.state.des_clock.begin_period(Period::Shootout,0);
+        s.emit(EventTypeV4::Goal,HighlightTier::None,None,Some(TeamSideV4::Home),Some(id),None,EventMetadataV4::default());
+        assert_eq!(recovering,s.state.players[idx].psychology.personal_confidence_delta);
+        println!("PI_PSYCHOLOGY personal_feedback initial={initial} recovered={recovered} negative={negative} recovering={recovering}");
     }
 }
