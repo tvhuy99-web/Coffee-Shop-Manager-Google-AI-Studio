@@ -2643,7 +2643,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.2");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.3");
 }
 
 
@@ -2681,4 +2681,43 @@ fn pi_on_ball_prefers_useful_progress_to_empty_switch() {
     }
     println!("PI_ON_BALL_CHOICE useful={} empty_switch={}",useful,empty);
     assert!(useful>empty && useful>64,"clear progressive option should beat a pointless switch");
+}
+
+
+#[test]
+fn pi_on_ball_shot_vs_continuation_scenario() {
+    use crate::v4::state::MatchStateV4;
+    use crate::v4::movement::evaluate_local_context;
+    use crate::player_intelligence::{perceive_evaluate_and_decide_des,PlannedActionV4};
+    let input=make_v4_input_teams(19302,SimulationMode::FullEvent,RulesModeV4::Standard,
+        make_v4_team("H","H",18),make_v4_team("A","A",13));
+    let mut state=MatchStateV4::from_input(&input);
+    let car=state.players.iter().position(|p|p.player_id=="H06").unwrap();
+    let mate=state.players.iter().position(|p|p.player_id=="H07").unwrap();
+    for (i,p) in state.players.iter_mut().enumerate() {
+        if p.side==TeamSideV4::Home {
+            p.on_pitch=i==car || i==mate;
+            p.pos=if i==car {Vec2::new(86.0,50.0)} else {Vec2::new(96.0,34.0)};
+        } else {
+            p.pos=Vec2::new(if p.is_goalkeeper {104.0} else {100.0},if p.is_goalkeeper {34.0} else {66.0});
+        }
+    }
+    let mut bad_shots=0;
+    let mut close_shots=0;
+    for clear in [false,true] {
+        if clear {
+            state.players[car].pos=Vec2::new(101.0,34.0);
+            state.players[mate].on_pitch=false;
+        }
+        let ctx=evaluate_local_context(&state,&input,TeamSideV4::Home,state.players[car].pos);
+        for seed in 1..=128 {
+            let mut rng=DeterministicRng::new(seed*7919);
+            let plan=perceive_evaluate_and_decide_des(&state,&input,&input.timing_model,car,ctx,&mut rng);
+            if matches!(plan.action,PlannedActionV4::Shoot{..}) {
+                if clear {close_shots+=1;} else {bad_shots+=1;}
+            }
+        }
+    }
+    println!("PI_SHOT_CHOICE speculative={} clear={}",bad_shots,close_shots);
+    assert!(close_shots>64 && close_shots>bad_shots,"clear chance must be preferred over speculative shooting");
 }

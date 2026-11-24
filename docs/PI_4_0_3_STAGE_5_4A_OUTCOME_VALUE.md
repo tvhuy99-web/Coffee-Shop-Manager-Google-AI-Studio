@@ -1,0 +1,9 @@
+# PI 4.0.3 — stage 5.4A corrective outcome-state value
+
+The 4.0.2 population at d243a33b8c19c6ea57a157112a91ba17da88a94c passed 13 functional jobs but is NOT behaviorally accepted: 712.253 passes, 11.013 switches, 163.724 shots, 13.465 goals, 64.032% accuracy, 50.044 live minutes. Source: https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45360384297. Stage 5.4B is deferred.
+
+Root issue: the previous shot estimate used shot quality as unconditional goal probability, whereas actual execution branches through block, on-target, then GK concede probability. It also compared terminal goals to relative positional gains without the value of the current controlled possession or the opponent's ensuing possession. This is an inconsistent horizon and scale.
+
+Policy now estimates sequential shot outcome probabilities (neutral GK prior; no hidden GK attribute knowledge), non-scoring continuation and opponent possession. Every alternative compares expected successor state value minus the same current possession value, with modest time/energy costs; a goal is 1.0 on that scale. Continuation value is a bounded territorial/pressure heuristic, not learned xT or a measured goal probability. Pass and carry retain prior skill/risk estimates; clearance values opponent possession further from our own goal; uncertainty is on the same scale. Retain switch classification and correlated pass uncertainty. No edits to shooting, passing, GK execution, movement or timing. No hard limits on goals/shots or population feedback.
+
+Add shot opportunity unit and direct scenario tests; repeat identical 1396-match cohort and all existing regressions. Prior full runtime 129 pass, 3 fail (goal/kickoff, QA10, passing attribute impact). The 50-attribute structural gate passed. Do not relax those gates. Verify behavior before further policy changes, and isolate remaining execution bugs separately.

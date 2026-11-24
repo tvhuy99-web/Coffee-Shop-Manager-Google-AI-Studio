@@ -8,7 +8,7 @@ use crate::v4::spatial::{attacking_progress_m, distance_to_attacking_goal, is_in
 use crate::v4::state::{MatchStateV4, TacticalPhaseV4};
 use super::intent::{CandidateOption, DecisionPlanV4, PassKindV4, PlannedActionV4};
 use super::timing::evaluate_one_touch_intent;
-use super::utility::{ActionValue, is_switch, position_gain, turnover_cost};
+use super::utility::{ActionValue, is_switch, possession_value, turnover_cost, shot_goal_probability, shot_value};
 use crate::v4::spatial::Vec2;
 
 /// DES entry point returning the chosen action along with `decision_delay_ms` and `is_one_touch`.
@@ -54,9 +54,10 @@ pub fn perceive_evaluate_and_decide_des(
     let tempo = ti.tempo as f32 / 100.0;
     let time_wasting = ti.time_wasting as f32 / 100.0;
     let loss = turnover_cost(carrier_progress) * (1.15 - 0.30 * risk_appetite);
+    let current_value = possession_value(carrier_progress,carrier.pos.y,pressure_norm);
     let urgency = 0.75 + 0.5 * tempo;
     let counter = if att_phase == TacticalPhaseV4::AttackingTransition {
-        (ti.transition_risk as f32 / 100.0) * (0.04 + 0.04 * def_ti.line_height as f32 / 100.0)
+        (ti.transition_risk as f32 / 100.0) * (0.008 + 0.008 * def_ti.line_height as f32 / 100.0)
     } else { 0.0 };
     let readiness = (carrier.fatigue.anaerobic / 100.0).clamp(0.25,1.0);
 
@@ -122,15 +123,14 @@ pub fn perceive_evaluate_and_decide_des(
         let success = (0.76 + 0.18 * skill + 0.07 * touch - 0.46 * lane_risk
             - 0.16 * target_pressure - 0.12 * pressure_norm
             - 0.12 * (dist_m / 65.0) - 0.07 * (1.0 - readiness)).clamp(0.06,0.98);
-        let improvement = position_gain(carrier_progress, carrier.pos.y, mate_progress, mate.pos.y,
-            pressure_norm, target_pressure);
-        let support = if mate_ctx.overload && !carrier_ctx.overload { 0.045 * teamwork } else { 0.0 };
+        let destination = possession_value(mate_progress,mate.pos.y,target_pressure);
+        let support = if mate_ctx.overload && !carrier_ctx.overload { 0.010 * teamwork } else { 0.0 };
         let transition = counter * (progress_gain / 22.0).clamp(0.0,1.0);
         let cross_option = if kind == PassKindV4::Cross {
-            0.05 * normalize_attr(mate_attrs.technical.heading)
+            0.012 * normalize_attr(mate_attrs.technical.heading)
         } else { 0.0 };
-        let safe_recycle = 0.035 * time_wasting * (1.0 - target_pressure);
-        let gk_cost = if mate.is_goalkeeper && carrier_progress > 35.0 { 0.12 } else { 0.0 };
+        let safe_recycle = 0.008 * time_wasting * (1.0 - target_pressure);
+        let gk_cost = if mate.is_goalkeeper && carrier_progress > 35.0 { 0.025 } else { 0.0 };
         let offside_penalty = offside_line.map_or(0.0, |line| {
             let beyond_m = (mate_progress - line - 0.001).max(0.0);
             if beyond_m <= 0.0 { 0.0 } else {
@@ -139,10 +139,10 @@ pub fn perceive_evaluate_and_decide_des(
         });
         let utility = ActionValue {
             success,
-            benefit: 0.15 + improvement + support + transition + cross_option + safe_recycle,
-            loss,
-            cost: urgency * (0.018 + dist_m / 20.0 * 0.025) + gk_cost + offside_penalty,
-        }.expected();
+            benefit: destination + support + transition + cross_option + safe_recycle,
+            loss: (loss + turnover_cost(mate_progress)) * 0.5,
+            cost: urgency * (0.003 + dist_m / 20.0 * 0.004) + gk_cost + offside_penalty,
+        }.expected() - current_value;
         let risk = 1.0 - success;
 
         candidates.push(CandidateOption {
@@ -171,13 +171,25 @@ pub fn perceive_evaluate_and_decide_des(
         let distance_quality = if in_box {
             (0.38 - goal_dist * 0.013).clamp(0.08,0.38)
         } else { (0.14 - (goal_dist - 16.5).max(0.0) * 0.0065).clamp(0.02,0.14) };
-        let success = (distance_quality * central * (0.72 + 0.56 * fin)
-            * (1.0 - pressure_norm * (0.36 - composure * 0.12))
-            * (0.8 + 0.2 * readiness)).clamp(0.01,0.70);
-        let shot_utility = ActionValue {
-            success, benefit: 1.45, loss: loss * 0.35,
-            cost: 0.018 * urgency + 0.05 * time_wasting,
-        }.expected();
+        // The policy estimates the same *sequence* of outcomes as execution,
+        // without using RNG or the opponent's hidden attribute values.
+        let one_v_one = in_box && goal_dist<=16.5 && carrier_ctx.nearest_defender_dist_m>=3.8;
+        let shot_quality = (distance_quality * central * (0.72 + 0.56 * fin)
+            * (1.0 - pressure_norm * (0.30 - composure * 0.14))
+            * (0.8 + 0.2 * readiness) * if one_v_one {1.32} else {1.0}).clamp(0.015,0.72);
+        let goal_center=crate::v4::spatial::attacking_goal_center(att_side);
+        let (block_risk,_)=evaluate_passing_lane(state,input,att_side,carrier.pos,goal_center,false);
+        let unblocked=if one_v_one {1.0} else {1.0-0.60*block_risk};
+        let on_target=(0.34+0.34*fin-pressure_norm*(0.30-composure*0.14)*0.55).clamp(0.18,0.78);
+        // Neutral keeper prior, not omniscient knowledge of GK attributes.
+        let conditional_goal=(shot_quality*(1.38-0.60*0.72)).clamp(0.06,0.82);
+        let success=shot_goal_probability(unblocked,on_target,conditional_goal);
+        // Only a non-scoring on-target shot can plausibly yield a rebound
+        // or corner. A rough continuation prior, not guaranteed retention.
+        let retain_if_miss=(unblocked*on_target*(1.0-conditional_goal)*0.25
+            / (1.0-success).max(0.01)).clamp(0.0,1.0);
+        let shot_utility=shot_value(success,retain_if_miss,current_value,
+            turnover_cost(99.5),current_value,0.004*urgency+0.01*time_wasting);
         candidates.push(CandidateOption {
             action: PlannedActionV4::Shoot {
                 distance_m: goal_dist,
@@ -201,14 +213,14 @@ pub fn perceive_evaluate_and_decide_des(
         let (corridor_risk, _) = evaluate_passing_lane(state,input,att_side,carrier.pos,target,false);
         let target_pressure = end_ctx.pressure / 100.0;
         let progress = attacking_progress_m(att_side,target);
-        let gain = position_gain(carrier_progress,carrier.pos.y,progress,target.y,pressure_norm,target_pressure);
+        let destination = possession_value(progress,target.y,target_pressure);
         let success = (0.70 + 0.20 * drib + 0.08 * agility + 0.05 * accel
             - 0.40 * corridor_risk - 0.25 * pressure_norm - 0.15 * target_pressure
             - 0.12 * (1.0-readiness)).clamp(0.06,0.98);
         let drib_utility = ActionValue {
-            success, benefit: 0.15 + gain + counter * ((progress-carrier_progress)/12.0).clamp(0.0,1.0),
-            loss, cost: urgency * 0.052 + 0.035*(1.0-readiness),
-        }.expected();
+            success, benefit: destination + counter * ((progress-carrier_progress)/12.0).clamp(0.0,1.0),
+            loss: (loss+turnover_cost(progress))*0.5, cost: urgency * 0.008 + 0.006*(1.0-readiness),
+        }.expected()-current_value;
         candidates.push(CandidateOption {
             action: PlannedActionV4::Dribble {
                 defender_idx: carrier_ctx.nearest_defender_idx,
@@ -225,8 +237,10 @@ pub fn perceive_evaluate_and_decide_des(
             - 0.15 * pressure_norm).clamp(0.05,0.98);
         candidates.push(CandidateOption {
             action: PlannedActionV4::Clearance,
-            utility: ActionValue { success, benefit: loss * pressure_norm * 0.72,
-                loss, cost: 0.04 }.expected(),
+            // A clearance generally hands possession to the opponent,
+            // but farther from our goal if it succeeds.
+            utility: -(success*turnover_cost((carrier_progress+32.0).min(100.0))
+                +(1.0-success)*loss)-current_value-0.006,
             risk: 1.0 - success,
         });
     }
@@ -237,17 +251,18 @@ pub fn perceive_evaluate_and_decide_des(
         action: PlannedActionV4::HoldAndRecycle,
         utility: ActionValue {
             success: hold_success,
-            benefit: 0.10 + 0.055 * (1.0-pressure_norm) * composure
-                + 0.055 * time_wasting + if carrier_ctx.overload {0.025*teamwork} else {0.0},
-            loss, cost: urgency * 0.055,
-        }.expected(),
+            benefit: current_value + 0.006 * (1.0-pressure_norm) * composure
+                + 0.012 * time_wasting + if carrier_ctx.overload {0.004*teamwork} else {0.0},
+            loss, cost: urgency * 0.012,
+        }.expected()-current_value,
         risk: 1.0 - hold_success,
     });
 
     let mental_pressure = normalize_attr(attrs.hidden.pressure);
-    let noise_amplitude = (0.12 * (1.0-decisions*0.78)
-        + 0.06 * pressure_norm * (1.0-(composure*0.5+mental_pressure*0.5)*0.65))
-        .clamp(0.01,0.18);
+    // Uncertainty is expressed in the same goal-equivalent units.
+    let noise_amplitude = (0.025 * (1.0-decisions*0.78)
+        + 0.012 * pressure_norm * (1.0-(composure*0.5+mental_pressure*0.5)*0.65))
+        .clamp(0.002,0.04);
     // Shared category uncertainty avoids an automatic lottery advantage
     // from having ten passing options versus one carry or one shot.
     let pass_noise = (rng.next_double() as f32 - 0.5) * 2.0 * noise_amplitude;
@@ -258,7 +273,7 @@ pub fn perceive_evaluate_and_decide_des(
         let noise = if matches!(cand.action, PlannedActionV4::Pass { .. }) {
             pass_noise * 0.85 + jitter * 0.15
         } else { jitter };
-        let creative_risk = flair * 0.025 * cand.risk;
+        let creative_risk = flair * 0.004 * cand.risk;
         let score = cand.utility + creative_risk + noise;
         if score > best_score {
             best_score = score;
