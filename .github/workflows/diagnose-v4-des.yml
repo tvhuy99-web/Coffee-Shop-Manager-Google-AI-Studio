@@ -197,6 +197,8 @@ jobs:
         run: |
           cargo test --lib pi_timing_ -- --nocapture
           cargo test --lib pi_checkpoint_ -- --nocapture
+          cargo test --lib pi_clock_ -- --nocapture
+          cargo test --lib qa10_mid_interval_tactical_event_preserves_total_movement_and_fatigue -- --nocapture
           cargo test --lib des_checkpoint_roundtrip_exact_continuation_all_states -- --nocapture
       - name: Verify actual full-event replay and batch parity
         working-directory: rust/football_match_engine

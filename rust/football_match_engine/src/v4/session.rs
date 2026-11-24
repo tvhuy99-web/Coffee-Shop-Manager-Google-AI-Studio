@@ -814,13 +814,23 @@ impl MatchSessionV4 {
         Ok(self.build_step_result(executed, stop_reason))
     }
 
-    /// Advances the DES clock until `target_sim_time_ms` is reached (or until a period break,
-    /// full time, or `max_steps_guard` is hit).
+    /// Processes scheduled DES events up to the requested time, stopping
+    /// at a period break, full time, or the step guard. This is an
+    /// event-aligned API: the returned sim_time_ms can be less than the
+    /// requested horizon if the next event lies beyond it.
+    /// Polling must not invent a movement interval or consume policy RNG.
+    /// TARGET_TIME_REACHED denotes an exhausted horizon, not necessarily
+    /// equality of the actual event clock and the requested horizon.
+    /// A stale (past) target is a no-op during an active period.
     pub fn advance_until_ms(
         &mut self,
         target_sim_time_ms: i64,
         max_steps_guard: usize,
     ) -> Result<SessionStepResultV4, V4Error> {
+        if matches!(self.stage,HalfStageV4::InHalf{..})
+            && target_sim_time_ms<self.state.des_clock.sim_time_ms {
+            return Ok(self.build_step_result(0,"TARGET_TIME_REACHED"));
+        }
         let guard = max_steps_guard.clamp(1, 10_000);
         let mut executed = 0u32;
         let mut stop_reason = "TARGET_TIME_REACHED";
@@ -844,7 +854,7 @@ impl MatchSessionV4 {
                 continue;
             }
             if let Some(next_ms) = self.scheduler.peek_next_valid_time_ms() {
-                if next_ms > target_sim_time_ms && self.state.des_clock.sim_time_ms <= target_sim_time_ms {
+                if next_ms > target_sim_time_ms {
                     stop_reason = "TARGET_TIME_REACHED";
                     break;
                 }
@@ -875,6 +885,17 @@ impl MatchSessionV4 {
         }
 
         Ok(self.build_step_result(executed, stop_reason))
+    }
+
+    /// Test-only explicit integration boundary. The dispatcher ignores
+    /// a tactical command with no matching entry. This exercises the same
+    /// clock and movement path as a real mid-interval tactical event,
+    /// without changing instructions or injecting an event into production.
+    #[cfg(test)]
+    pub(super) fn schedule_test_clock_probe(&mut self,at:i64)->Result<(),V4Error> {
+        self.scheduler.schedule(at,EventPriority::PeriodBoundary,CancellationScope::PeriodScoped,
+            DesEventPayload::TacticalCommandEffective{command_index:u32::MAX,side:TeamSideV4::Home})
+            .map(|_|()).map_err(|e|V4Error::InvalidClock(e.into()))
     }
 
     /// Runs the match to Full Time (used by `simulate_v4`, `FastBatch`, and interactive `finish`).
@@ -3922,5 +3943,81 @@ mod pi_defense_commitment_tests {
         assert_eq!(s.timeline_fingerprint,r.timeline_fingerprint);
         assert_eq!(s.rng.state(),r.rng.state());
         assert_eq!(s.tackle_ready_at,r.tackle_ready_at);
+    }
+}
+
+
+#[cfg(test)]
+mod pi_clock_contract_tests {
+    use super::*;
+    use crate::v4::input::{SimulationMode,RulesModeV4};
+    use crate::v4::tests::make_v4_input;
+
+    #[test]
+    fn pi_clock_stale_and_between_event_polls_do_not_advance() {
+        let mut s=MatchSessionV4::new(make_v4_input(19901,SimulationMode::FullEvent,RulesModeV4::Standard)).unwrap();
+        s.advance_until_ms(60_000,1000).unwrap();
+        // Process any same-time scheduled events before selecting a
+        // strictly interior polling horizon.
+        while s.scheduler.peek_next_valid_time_ms()==Some(s.sim_time_ms()) {
+            s.step_one_des_event(false).unwrap();
+        }
+        let now=s.sim_time_ms();
+        let next=s.scheduler.peek_next_valid_time_ms().unwrap();
+        assert!(now>0 && next>now);
+        let before=s.export_checkpoint().unwrap();
+        for target in [now-1,now+(next-now)/2] {
+            // Equal timestamps may legally dispatch due events; here none
+            // remains due at now.
+            let step=s.advance_until_ms(target,1000).unwrap();
+            assert_eq!(step.steps_executed,0);
+            assert_eq!(step.sim_time_ms,now);
+            assert_eq!(step.ball_in_play_ms+step.ball_out_of_play_ms,now);
+        }
+        let after=s.export_checkpoint().unwrap();
+        assert_eq!(before.payload.rng,after.payload.rng);
+        assert_eq!(before.payload.stats.timeline_fingerprint,after.payload.stats.timeline_fingerprint);
+        assert_eq!(before.payload.scheduler.total_popped(),after.payload.scheduler.total_popped());
+        assert_eq!(before.payload.state.des_clock.sim_time_ms,after.payload.state.des_clock.sim_time_ms);
+    }
+
+    #[test]
+    fn pi_clock_split_committed_carry_accounts_distance_and_time_once() {
+        let mut s=MatchSessionV4::new(make_v4_input(18002,SimulationMode::FullEvent,RulesModeV4::Standard)).unwrap();
+        s.step_one_des_event(true).unwrap();
+        s.scheduler.invalidate_live_play();
+        let idx=s.carrier_idx;
+        for p in &mut s.state.players {
+            if p.side!=s.possession_side {p.pos=Vec2::new(95.0,5.0);p.vel=Vec2::default();}
+        }
+        s.state.players[idx].pos=Vec2::new(40.0,34.0);
+        s.state.players[idx].vel=Vec2::default();
+        s.state.ball.pos=Vec3::ground(40.0,34.0);
+        s.start_timed_dribble(idx).unwrap();
+        let carry=s.pending_carry.clone().unwrap();
+        assert!(carry.challenger.is_none());
+        let start=s.sim_time_ms();
+        let end=carry.resolves_at_ms;
+        let mid=start+(end-start)/2;
+        let before=s.state.players[idx].fatigue.distance_m;
+        let live_before=s.state.des_clock.ball_in_play_ms;
+        let mut split=MatchSessionV4::from_checkpoint(s.export_checkpoint().unwrap()).unwrap();
+        split.schedule_test_clock_probe(mid).unwrap();
+        split.step_one_des_event(false).unwrap();
+        assert_eq!(split.sim_time_ms(),mid);
+        assert!(split.pending_carry.is_some());
+        assert!(split.state.players[idx].pos.distance(carry.motion.position_at(mid))<0.002);
+        let mid_distance=carry.motion.candidate.pos.distance(carry.motion.position_at(mid));
+        assert!((split.state.players[idx].fatigue.distance_m-before-mid_distance).abs()<0.01);
+        for session in [&mut s,&mut split] {
+            session.step_one_des_event(false).unwrap();
+            assert_eq!(session.sim_time_ms(),end);
+            assert!(session.pending_carry.is_none());
+            assert_eq!(session.state.des_clock.ball_in_play_ms-live_before,end-start);
+            assert!(session.state.players[idx].pos.distance(carry.motion.position_at(end))<0.002);
+            let traveled=carry.motion.candidate.pos.distance(carry.motion.position_at(end));
+            assert!((session.state.players[idx].fatigue.distance_m-before-traveled).abs()<0.01);
+        }
+        assert!((s.state.players[idx].fatigue.distance_m-split.state.players[idx].fatigue.distance_m).abs()<0.01);
     }
 }

@@ -2349,8 +2349,16 @@ fn qa10_mid_interval_tactical_event_preserves_total_movement_and_fatigue() {
     let input = make_v4_input(202610, SimulationMode::FullEvent, RulesModeV4::Standard);
     let mut s_base = MatchSessionV4::new(input.clone()).expect("base");
     let mut s_cmd = MatchSessionV4::new(input).expect("cmd");
-    s_base.advance_until_ms(600_000, 1000).expect("advance base");
-    s_cmd.advance_until_ms(600_000, 1000).expect("advance cmd");
+    // Compare actual identical time horizons, not two different final
+    // event timestamps that happen to precede the same requested time.
+    // These are explicit test-only scheduler boundaries in BOTH sessions.
+    for s in [&mut s_base,&mut s_cmd] {
+        s.schedule_test_clock_probe(600_000).expect("initial probe");
+        s.schedule_test_clock_probe(650_000).expect("final probe");
+        let step=s.advance_until_ms(600_000,1000).expect("advance to command horizon");
+        assert_eq!(step.sim_time_ms,600_000);
+        assert_eq!(step.ball_in_play_ms+step.ball_out_of_play_ms,600_000);
+    }
     let mut instr = s_cmd.export_checkpoint().expect("c").payload.input.home_team.team_instructions;
     instr.tempo = (instr.tempo + 5).min(100);
     s_cmd
@@ -2361,6 +2369,11 @@ fn qa10_mid_interval_tactical_event_preserves_total_movement_and_fatigue() {
         .expect("submit tactics");
     let step_b = s_base.advance_until_ms(650_000, 500).expect("b2");
     let step_c = s_cmd.advance_until_ms(650_000, 500).expect("c2");
+    for step in [&step_b,&step_c] {
+        assert_eq!(step.sim_time_ms,650_000,"QA-10: common actual horizon");
+        assert_eq!(step.ball_in_play_ms+step.ball_out_of_play_ms,step.sim_time_ms,
+            "QA-10: no unaccounted or double-counted time");
+    }
     assert_eq!(
         step_b.ball_in_play_ms + step_b.ball_out_of_play_ms,
         step_c.ball_in_play_ms + step_c.ball_out_of_play_ms,
@@ -2648,7 +2661,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.13");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.14");
 }
 
 
