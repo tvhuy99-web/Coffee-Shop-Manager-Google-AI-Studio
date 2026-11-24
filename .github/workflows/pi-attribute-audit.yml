@@ -18,7 +18,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Check direct skill effects at matched opportunities
         working-directory: rust/football_match_engine
-        run: cargo test --release --lib pi_attribute_isolated_ -- --nocapture
+        run: |
+          cargo test --release --lib pi_attribute_isolated_ -- --nocapture
+          cargo test --release --lib pi_psychology_ -- --nocapture
   attribute_audit:
     runs-on: ubuntu-latest
     timeout-minutes: 35

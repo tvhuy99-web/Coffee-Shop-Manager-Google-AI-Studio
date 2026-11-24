@@ -2664,7 +2664,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.17");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.18");
 }
 
 
@@ -3207,4 +3207,96 @@ fn pi_attribute_isolated_prematch_contexts() {
     assert_eq!(standard[0],standard[1]);
     assert_eq!(standard[1],standard[2]);
     assert!(final_match[0]<final_match[1] && final_match[1]<final_match[2]);
+}
+
+
+#[test]
+fn pi_psychology_match_form_uses_one_draw_and_excludes_career_readiness() {
+    use crate::v4::psychology::{sample_prematch_form,compute_prematch_form_multiplier};
+    for seed in 1..=128i64 {
+        let attrs=PlayerAttributes54::uniform(12).unwrap();
+        for name in ["professionalism","adaptability"] {
+            let mut low=DeterministicRng::new(seed);
+            let mut high=DeterministicRng::new(seed);
+            let l=pi_audit_profile("hidden",name,5);
+            let h=pi_audit_profile("hidden",name,18);
+            let (form_l,_)=sample_prematch_form(&l,95,&mut low);
+            let (form_h,_)=sample_prematch_form(&h,95,&mut high);
+            assert_eq!(form_l.to_bits(),form_h.to_bits());
+            assert_eq!(low.next_double(),high.next_double());
+        }
+        let mut paired=DeterministicRng::new(seed);
+        let mut legacy=DeterministicRng::new(seed);
+        let (_,legacy_value)=sample_prematch_form(&attrs,95,&mut paired);
+        assert_eq!(legacy_value,compute_prematch_form_multiplier(&attrs,95,&mut legacy));
+        assert_eq!(paired.next_double(),legacy.next_double());
+    }
+}
+
+#[test]
+fn pi_psychology_matchday_form_and_focus_reach_policy() {
+    use crate::v4::psychology::update_in_match_psychology;
+    use crate::player_intelligence::decision_uncertainty;
+    let input=make_v4_input(22501,SimulationMode::FullEvent,RulesModeV4::Standard);
+    let session=MatchSessionV4::new(input.clone()).unwrap();
+    let checkpoint=session.export_checkpoint().unwrap();
+    let mut state=checkpoint.payload.state.clone();
+    let idx=state.players.iter().position(|p|p.side==TeamSideV4::Home&&!p.is_goalkeeper).unwrap();
+    let form=state.players[idx].psychology.match_form_multiplier;
+    assert!((0.84..=1.16).contains(&form));
+    // Verify initialization uses the exact per-player seeded sample,
+    // independent of any later tactical decisions.
+    let mut rng=DeterministicRng::new(input.seed);
+    for p in &state.players {
+        let attrs=crate::v4::movement::lookup_attrs(&input,p);
+        let (expected,_)=crate::v4::psychology::sample_prematch_form(attrs,input.match_environment.match_importance,&mut rng);
+        assert_eq!(p.psychology.match_form_multiplier.to_bits(),expected.to_bits());
+    }
+    let json=serde_json::to_string(&checkpoint).unwrap();
+    let restored=MatchSessionV4::from_checkpoint(serde_json::from_str(&json).unwrap()).unwrap();
+    assert_eq!(checkpoint.checksum_hex,restored.export_checkpoint().unwrap().checksum_hex);
+    state.players[idx].psychology.match_form_multiplier=1.0;
+    state.players[idx].fatigue.aerobic=98.0;
+    update_in_match_psychology(&mut state,&input,600,0.0);
+    let fresh=decision_uncertainty(&state,idx,0.4);
+    state.players[idx].psychology.match_form_multiplier=1.16;
+    let good=decision_uncertainty(&state,idx,0.4);
+    state.players[idx].psychology.match_form_multiplier=0.84;
+    let bad=decision_uncertainty(&state,idx,0.4);
+    assert!(good<fresh && fresh<bad);
+    state.players[idx].psychology.match_form_multiplier=1.0;
+    state.players[idx].fatigue.aerobic=35.0;
+    update_in_match_psychology(&mut state,&input,4800,0.0);
+    let tired=decision_uncertainty(&state,idx,0.4);
+    assert!(tired>fresh);
+    state.players[idx].psychology.confidence=0.15;
+    assert_eq!(tired,decision_uncertainty(&state,idx,0.4));
+    println!("PI_PSYCHOLOGY uncertainty good={good} fresh={fresh} bad={bad} fatigued={tired}");
+}
+
+#[test]
+fn pi_psychology_contextual_form_changes_actual_policy_choices() {
+    use crate::v4::state::MatchStateV4;
+    use crate::v4::movement::evaluate_local_context;
+    use crate::player_intelligence::perceive_evaluate_and_decide_des;
+    let input=make_v4_input(22502,SimulationMode::FullEvent,RulesModeV4::Standard);
+    let mut state=MatchStateV4::from_input(&input);
+    let idx=state.players.iter().position(|p|p.player_id=="H06").unwrap();
+    state.players[idx].pos=Vec2::new(52.5,34.0);
+    state.ball.pos=Vec3::ground(52.5,34.0);
+    let ctx=evaluate_local_context(&state,&input,TeamSideV4::Home,state.players[idx].pos);
+    let mut low=state.clone();
+    let mut high=state.clone();
+    low.players[idx].psychology.match_form_multiplier=0.84;
+    high.players[idx].psychology.match_form_multiplier=1.16;
+    let mut different=0;
+    for seed in 1..=512i64 {
+        let mut l=DeterministicRng::new(seed*7907);
+        let mut h=DeterministicRng::new(seed*7907);
+        let a=perceive_evaluate_and_decide_des(&low,&input,&input.timing_model,idx,ctx,&mut l);
+        let b=perceive_evaluate_and_decide_des(&high,&input,&input.timing_model,idx,ctx,&mut h);
+        if a.action!=b.action {different+=1;}
+    }
+    println!("PI_PSYCHOLOGY paired_action_changes={different}/512");
+    assert!(different>0,"match-day form must reach actual policy selection in a fixed observation");
 }

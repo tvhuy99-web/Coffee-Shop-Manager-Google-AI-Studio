@@ -23,6 +23,15 @@ pub fn compute_prematch_form_multiplier(
     match_importance: u8,
     rng: &mut DeterministicRng,
 ) -> f32 {
+    sample_prematch_form(attrs,match_importance,rng).1
+}
+
+/// One draw, two explicitly separated outputs:
+/// (football match-day form, legacy career-influenced confidence factor).
+/// Only the first is consumed by match decision uncertainty.
+pub(crate) fn sample_prematch_form(
+    attrs:&PlayerAttributes54,match_importance:u8,rng:&mut DeterministicRng
+)->(f32,f32) {
     let cons = normalize_attr(attrs.hidden.consistency);
     let big = normalize_attr(attrs.hidden.big_matches);
     let readiness = attrs.career_readiness_hook();
@@ -40,10 +49,12 @@ pub fn compute_prematch_form_multiplier(
     };
 
     let career_stability = (readiness - 0.5) * 0.04;
-    (1.0 + variance + big_delta + career_stability).clamp(0.84, 1.16)
+    let match_only=(1.0+variance+big_delta).clamp(0.84,1.16);
+    let legacy=(1.0+variance+big_delta+career_stability).clamp(0.84,1.16);
+    (match_only,legacy)
 }
 
-/// Updates dynamic in-match psychology (`concentration_level`, `pressure_load`, `confidence`)
+/// Updates dynamic in-match psychology (`concentration_level`, `pressure_load`, `composure_delta`)
 /// and team `momentum` across all active players over an arbitrary DES step `dt_sec`.
 pub fn update_in_match_psychology(
     state: &mut MatchStateV4,

@@ -215,6 +215,7 @@ jobs:
           cargo test --lib pi_on_ball_ -- --nocapture
           cargo test --lib pi_pass_forecast_ -- --nocapture
           cargo test --lib pi_pass_reaim_ -- --nocapture
+          cargo test --lib pi_psychology_ -- --nocapture
       - name: Check old interface and offside awareness
         working-directory: rust/football_match_engine
         run: |

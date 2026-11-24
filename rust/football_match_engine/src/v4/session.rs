@@ -30,7 +30,7 @@ use crate::v4::movement::{advance_off_ball_movement_with_report, evaluate_local_
 use crate::player_intelligence::{perceive_evaluate_and_decide_des, DecisionPlanV4, CarryIntentV4, carry_target, PassKindV4, PlannedActionV4, PI_POLICY_ID};
 use crate::v4::psychology::{
     check_muscle_injury, compute_post_match_morale_delta,
-    compute_prematch_form_multiplier,
+    sample_prematch_form,
     shift_momentum, update_in_match_psychology,
 };
 use crate::v4::rules::{
@@ -169,7 +169,8 @@ impl MatchSessionV4 {
         let importance = input.match_environment.match_importance;
         for idx in 0..state.players.len() {
             let attrs = *lookup_attrs(&input, &state.players[idx]);
-            let form_mult = compute_prematch_form_multiplier(&attrs, importance, &mut rng);
+            let (match_form,form_mult)=sample_prematch_form(&attrs,importance,&mut rng);
+            state.players[idx].psychology.match_form_multiplier=match_form;
             state.players[idx].psychology.confidence =
                 (state.players[idx].psychology.confidence * form_mult).clamp(0.15, 1.0);
         }

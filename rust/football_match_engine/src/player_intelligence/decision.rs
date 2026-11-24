@@ -224,6 +224,25 @@ pub(crate) fn reconsider_short_pass(state:&MatchStateV4,input:&MatchInputV4,idx:
     best
 }
 
+/// Match-day form and concentration affect precision of judgment,
+/// not kick quality, actual reach or the expected utility of a goal.
+/// Career-influenced confidence is deliberately not used here.
+pub(crate) fn decision_uncertainty(state:&MatchStateV4,idx:usize,pressure_norm:f32)->f32 {
+    let p=&state.players[idx];
+    let attrs=player_attrs(state,p);
+    let decisions=normalize_attr(attrs.mental.decisions);
+    let composure=normalize_attr(attrs.mental.composure);
+    let mental_pressure=normalize_attr(attrs.hidden.pressure);
+    let base=0.025*(1.0-decisions*0.78)
+        +0.012*pressure_norm.clamp(0.0,1.0)*(1.0-(composure*0.5+mental_pressure*0.5)*0.65);
+    // Relative to fresh concentration of this player, so this does not
+    // add a second permanent concentration rating to the base model.
+    let fresh=0.74+0.26*normalize_attr(attrs.mental.concentration);
+    let focus=(p.psychology.concentration_level/fresh).clamp(0.35,1.0);
+    let form=p.psychology.match_form_multiplier.clamp(0.84,1.16);
+    (base/(form*focus)).clamp(0.002,0.04)
+}
+
 /// DES entry point returning the chosen action along with `decision_delay_ms` and `is_one_touch`.
 pub fn perceive_evaluate_and_decide_des(
     state: &MatchStateV4,
@@ -350,11 +369,9 @@ pub fn perceive_evaluate_and_decide_des(
         risk: 1.0 - hold_success,
     });
 
-    let mental_pressure = normalize_attr(attrs.hidden.pressure);
-    // Uncertainty is expressed in the same goal-equivalent units.
-    let noise_amplitude = (0.025 * (1.0-decisions*0.78)
-        + 0.012 * pressure_norm * (1.0-(composure*0.5+mental_pressure*0.5)*0.65))
-        .clamp(0.002,0.04);
+    // Same action-value scale, same correlated noise draws. Only the
+    // amplitude now reflects match-day form and current mental focus.
+    let noise_amplitude=decision_uncertainty(state,carrier_idx,pressure_norm);
     // Shared category uncertainty avoids an automatic lottery advantage
     // from having ten passing options versus one carry or one shot.
     let pass_noise = (rng.next_double() as f32 - 0.5) * 2.0 * noise_amplitude;
