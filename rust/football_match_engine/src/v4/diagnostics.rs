@@ -229,6 +229,18 @@ pub struct DesMatchDiagnosticsV4 {
     pub pass_risk_decreased: u32,
     #[serde(default)]
     pub pass_risk_stable: u32,
+    #[serde(default)]
+    pub reaim_reviews: u32,
+    #[serde(default)]
+    pub reaim_choices: u32,
+    #[serde(default)]
+    pub reaim_releases: u32,
+    #[serde(default)]
+    pub reaim_planned_ms: i64,
+    #[serde(default)]
+    pub reaim_risk_pairs: u32,
+    #[serde(default)]
+    pub reaim_risk_reduction_sum: f64,
     pub dead_ball_distributions: DeadBallDistributionsV4,
     pub avg_player_distance_m: f32,
     pub tactical_commands_delayed: u32,
@@ -474,6 +486,18 @@ struct DesDiagnosticsAccumulator {
     pass_risk_decreased: u32,
     #[serde(default)]
     pass_risk_stable: u32,
+    #[serde(default)]
+    reaim_reviews: u32,
+    #[serde(default)]
+    reaim_choices: u32,
+    #[serde(default)]
+    reaim_releases: u32,
+    #[serde(default)]
+    reaim_planned_ms: i64,
+    #[serde(default)]
+    reaim_risk_pairs: u32,
+    #[serde(default)]
+    reaim_risk_reduction_sum: f64,
     avg_player_distance_m: f32,
     tactical_commands_delayed: u32,
     goal_celebration_samples: Vec<i64>,
@@ -538,6 +562,12 @@ impl DesDiagnosticsAccumulator {
             pass_risk_increased: self.pass_risk_increased,
             pass_risk_decreased: self.pass_risk_decreased,
             pass_risk_stable: self.pass_risk_stable,
+            reaim_reviews: self.reaim_reviews,
+            reaim_choices: self.reaim_choices,
+            reaim_releases: self.reaim_releases,
+            reaim_planned_ms: self.reaim_planned_ms,
+            reaim_risk_pairs: self.reaim_risk_pairs,
+            reaim_risk_reduction_sum: self.reaim_risk_reduction_sum,
             dead_ball_distributions: DeadBallDistributionsV4 {
                 goal_celebration: DurationDistributionMs::from_samples(&mut self.goal_celebration_samples),
                 throw_in: DurationDistributionMs::from_samples(&mut self.throw_in_samples),
@@ -678,6 +708,17 @@ impl MatchDiagnosticsCollectorV4 {
         *time=time.saturating_add(dt_ms.max(0));
         *distance+=moved.max(0.0);
     }
+
+    pub(crate) fn record_reaim_review(&mut self) {self.des.reaim_reviews+=1;}
+    pub(crate) fn record_reaim_choice(&mut self,delay:i64,old:Option<f32>,new:Option<f32>) {
+        self.des.reaim_choices+=1;
+        self.des.reaim_planned_ms=self.des.reaim_planned_ms.saturating_add(delay);
+        if let (Some(a),Some(b))=(old,new) {
+            self.des.reaim_risk_pairs+=1;
+            self.des.reaim_risk_reduction_sum+=f64::from(a)-f64::from(b);
+        }
+    }
+    pub(crate) fn record_reaim_release(&mut self) {self.des.reaim_releases+=1;}
 
     pub(crate) fn record_pass_risk_drift(&mut self,initial:f32,release:f32) {
         let a=f64::from(initial.clamp(0.0,1.0));

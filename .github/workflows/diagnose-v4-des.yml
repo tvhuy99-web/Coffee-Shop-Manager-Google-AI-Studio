@@ -70,7 +70,7 @@ jobs:
                       outlets[field] += des.get(field,0)
                   for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM","preparationContacts","preparationTurnovers","preparationFouls","carryFouls","tackleOpportunities","tackleCommitChoices","tackleContainChoices","tackleFrontOpportunities","tackleFrontCommits","tackleSideOpportunities","tackleSideCommits","tackleRearOpportunities","tackleRearCommits","tackleExpectedCleanSum","tackleExpectedFoulSum"):
                       defense[field] += des.get(field,0)
-                  for field in ("passRiskPairs","passRiskInitialSum","passRiskReleaseSum","passRiskAbsChangeSum","passRiskIncreased","passRiskDecreased","passRiskStable"):
+                  for field in ("passRiskPairs","passRiskInitialSum","passRiskReleaseSum","passRiskAbsChangeSum","passRiskIncreased","passRiskDecreased","passRiskStable","reaimReviews","reaimChoices","reaimReleases","reaimPlannedMs","reaimRiskPairs","reaimRiskReductionSum"):
                       drift[field] += des.get(field,0)
                   outcomes["penaltyPhases"] += des["deadBallDistributions"]["penalty"]["count"]
                   for side in ("home", "away"):
@@ -122,6 +122,15 @@ jobs:
                   "increasedPct":100*drift["passRiskIncreased"]/max(1,drift["passRiskPairs"]),
                   "decreasedPct":100*drift["passRiskDecreased"]/max(1,drift["passRiskPairs"]),
                   "stablePct":100*drift["passRiskStable"]/max(1,drift["passRiskPairs"])
+              },sort_keys=True))
+              assert drift["reaimReleases"] <= drift["reaimChoices"] <= drift["reaimReviews"]
+              print("PI_PASS_REAIM",json.dumps({
+                  "reviewsPerMatch":drift["reaimReviews"]/n,
+                  "choicesPerMatch":drift["reaimChoices"]/n,
+                  "releasesPerMatch":drift["reaimReleases"]/n,
+                  "choicePct":100*drift["reaimChoices"]/max(1,drift["reaimReviews"]),
+                  "plannedExtraMsPerChoice":drift["reaimPlannedMs"]/max(1,drift["reaimChoices"]),
+                  "meanRiskReductionAtRevision":drift["reaimRiskReductionSum"]/max(1,drift["reaimRiskPairs"])
               },sort_keys=True))
               for row in report["matches"]:
                   if not row["ok"] or row.get("diagnosticError"):
@@ -203,6 +212,7 @@ jobs:
         run: |
           cargo test --lib pi_on_ball_ -- --nocapture
           cargo test --lib pi_pass_forecast_ -- --nocapture
+          cargo test --lib pi_pass_reaim_ -- --nocapture
       - name: Check old interface and offside awareness
         working-directory: rust/football_match_engine
         run: |

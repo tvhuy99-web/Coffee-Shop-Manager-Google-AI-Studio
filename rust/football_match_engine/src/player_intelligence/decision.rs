@@ -40,51 +40,36 @@ pub(crate) fn observe_pass_risk(state:&MatchStateV4,input:&MatchInputV4,idx:usiz
         .lane_risk(state,input,&input.timing_model,carrier.pos,target_idx,kind))
 }
 
-/// DES entry point returning the chosen action along with `decision_delay_ms` and `is_one_touch`.
-pub fn perceive_evaluate_and_decide_des(
-    state: &MatchStateV4,
-    input: &MatchInputV4,
-    timing: &TimingModelConfig,
-    carrier_idx: usize,
-    carrier_ctx: LocalSpatialContext,
-    rng: &mut DeterministicRng,
-) -> DecisionPlanV4 {
-    let carrier = &state.players[carrier_idx];
-    let att_side = carrier.side;
-    let def_side = att_side.opposite();
-    let attrs = player_attrs(state, carrier);
-    let ti = state.active_instructions(att_side);
-    let def_ti = state.active_instructions(def_side);
-    let att_phase = state.team_state(att_side).phase;
-
-    let vision = normalize_attr(attrs.mental.vision);
-    let decisions = normalize_attr(attrs.mental.decisions);
-    let composure = normalize_attr(attrs.mental.composure);
-    let concentration = normalize_attr(attrs.mental.concentration);
-    let flair = normalize_attr(attrs.mental.flair);
-    let teamwork = normalize_attr(attrs.mental.teamwork);
-    let pressure_norm = (carrier_ctx.pressure / 100.0).clamp(0.0, 1.0);
-
-    let perception_quality = perception_quality(state,carrier_idx,pressure_norm);
-
-    let max_vision_range_m = 22.0 + perception_quality * 40.0;
-    let carrier_progress = attacking_progress_m(att_side, carrier.pos);
-    let goal_dist = distance_to_attacking_goal(att_side, carrier.pos);
-    let in_box = is_in_attacking_penalty_box(att_side, carrier.pos);
-
-    // All choices share a scale of expected positional/opportunity value.
-    // Tactical preferences affect risk and time, not hard action quotas.
-    let risk_appetite = (ti.build_up_risk as f32 / 100.0).clamp(0.0, 1.0);
-    let tempo = ti.tempo as f32 / 100.0;
-    let time_wasting = ti.time_wasting as f32 / 100.0;
-    let loss = turnover_cost(carrier_progress) * (1.15 - 0.30 * risk_appetite);
-    let current_value = possession_value(carrier_progress,carrier.pos.y,pressure_norm);
-    let urgency = 0.75 + 0.5 * tempo;
-    let counter = if att_phase == TacticalPhaseV4::AttackingTransition {
-        (ti.transition_risk as f32 / 100.0) * (0.008 + 0.008 * def_ti.line_height as f32 / 100.0)
-    } else { 0.0 };
-    let readiness = (carrier.fatigue.anaerobic / 100.0).clamp(0.25,1.0);
-
+/// Shared candidate scoring. The observation policy controls which pass
+/// kinds are noticed. No random draw occurs inside the scorer itself.
+fn collect_pass_candidates(
+    state:&MatchStateV4,input:&MatchInputV4,timing:&TimingModelConfig,
+    carrier_idx:usize,carrier_ctx:LocalSpatialContext,mut notice:impl FnMut(PassKindV4)->bool,
+)->Vec<CandidateOption> {
+    let carrier=&state.players[carrier_idx];
+    let att_side=carrier.side;
+    let attrs=player_attrs(state,carrier);
+    let ti=state.active_instructions(att_side);
+    let def_ti=state.active_instructions(att_side.opposite());
+    let att_phase=state.team_state(att_side).phase;
+    let vision=normalize_attr(attrs.mental.vision);
+    let decisions=normalize_attr(attrs.mental.decisions);
+    let concentration=normalize_attr(attrs.mental.concentration);
+    let teamwork=normalize_attr(attrs.mental.teamwork);
+    let pressure_norm=(carrier_ctx.pressure/100.0).clamp(0.0,1.0);
+    let perception_quality=perception_quality(state,carrier_idx,pressure_norm);
+    let max_vision_range_m=22.0+perception_quality*40.0;
+    let carrier_progress=attacking_progress_m(att_side,carrier.pos);
+    let risk_appetite=(ti.build_up_risk as f32/100.0).clamp(0.0,1.0);
+    let tempo=ti.tempo as f32/100.0;
+    let time_wasting=ti.time_wasting as f32/100.0;
+    let loss=turnover_cost(carrier_progress)*(1.15-0.30*risk_appetite);
+    let current_value=possession_value(carrier_progress,carrier.pos.y,pressure_norm);
+    let urgency=0.75+0.5*tempo;
+    let counter=if att_phase==TacticalPhaseV4::AttackingTransition{
+        (ti.transition_risk as f32/100.0)*(0.008+0.008*def_ti.line_height as f32/100.0)
+    }else{0.0};
+    let readiness=(carrier.fatigue.anaerobic/100.0).clamp(0.25,1.0);
     let pass_forecast=PassForecast::new(state,att_side,perception_quality);
     let mut candidates: Vec<CandidateOption> = Vec::with_capacity(14);
     let offside_line = offside_reference_progress_m(state, att_side, carrier.pos);
@@ -119,12 +104,7 @@ pub fn perceive_evaluate_and_decide_des(
             PassKindV4::Short
         };
 
-        if matches!(kind, PassKindV4::Through | PassKindV4::Switch) {
-            let notice_prob = (0.30 + vision * 0.65 - pressure_norm * 0.20).clamp(0.15, 0.96);
-            if (rng.next_double() as f32) > notice_prob {
-                continue;
-            }
-        }
+        if !notice(kind) {continue;}
 
         let (lane_risk, interceptor_idx) = evaluate_passing_lane(
             state,
@@ -186,6 +166,111 @@ pub fn perceive_evaluate_and_decide_des(
             risk,
         });
     }
+
+
+    candidates
+}
+
+/// Final re-aim of the same prepared ground-kick family. No new shot,
+/// carry or aerial kick is substituted into a committed short pass.
+/// The extra preparation time is charged by DES, not silently waived.
+#[derive(Debug,Clone,Copy)]
+pub(crate) struct PassReaim {
+    pub action:PlannedActionV4,
+    pub delay_ms:i64,
+    pub utility_gain:f32,
+}
+
+pub(crate) fn reconsider_short_pass(state:&MatchStateV4,input:&MatchInputV4,idx:usize,
+    ctx:LocalSpatialContext,action:PlannedActionV4)->Option<PassReaim> {
+    let PlannedActionV4::Pass{target_idx,kind:PassKindV4::Short,..}=action else{return None;};
+    let carrier=state.players.get(idx)?;
+    let original=state.players.get(target_idx)?;
+    let options=collect_pass_candidates(state,input,&input.timing_model,idx,ctx,|kind|kind==PassKindV4::Short);
+    let baseline=options.iter().find(|o|matches!(o.action,PlannedActionV4::Pass{target_idx:t,..} if t==target_idx))?;
+    let attrs=player_attrs(state,carrier);
+    let technique=normalize_attr(attrs.technical.technique);
+    let agility=normalize_attr(attrs.physical.agility);
+    let decisions=normalize_attr(attrs.mental.decisions);
+    let pressure=(ctx.pressure/100.0).clamp(0.0,1.0);
+    let awareness=perception_quality(state,idx,pressure);
+    let progress=attacking_progress_m(carrier.side,carrier.pos);
+    let loss=turnover_cost(progress);
+    let urgency=0.75+0.5*state.active_instructions(carrier.side).tempo as f32/100.0;
+    let old_dx=original.pos.x-carrier.pos.x;
+    let old_dy=original.pos.y-carrier.pos.y;
+    let old_len=carrier.pos.distance(original.pos).max(0.01);
+    let mut best:Option<PassReaim>=None;
+    for opt in options.iter() {
+        let PlannedActionV4::Pass{target_idx:to,..}=opt.action else{continue;};
+        if to==target_idx {continue;}
+        let mate=&state.players[to];
+        let len=carrier.pos.distance(mate.pos).max(0.01);
+        let dot=((old_dx*(mate.pos.x-carrier.pos.x)+old_dy*(mate.pos.y-carrier.pos.y))/(old_len*len)).clamp(-1.0,1.0);
+        let angle=dot.acos();
+        // A change of aim consumes perceptual processing and foot/body
+        // preparation time, increasing with the required rotation.
+        let delay_ms=(100.0+150.0*(1.0-decisions)
+            +angle*(110.0+130.0*(1.0-agility))+90.0*(1.0-technique)).round() as i64;
+        let time=delay_ms as f32/1000.0;
+        // Same goal-equivalent value units as the original decision. Extra
+        // exposure under pressure and perception uncertainty are real costs.
+        let cost=urgency*0.004*time+loss*pressure*0.18*time+0.008*(1.0-awareness);
+        let gain=opt.utility-baseline.utility-cost;
+        if gain>0.0 && best.map_or(true,|b|gain>b.utility_gain) {
+            best=Some(PassReaim{action:opt.action,delay_ms,utility_gain:gain});
+        }
+    }
+    best
+}
+
+/// DES entry point returning the chosen action along with `decision_delay_ms` and `is_one_touch`.
+pub fn perceive_evaluate_and_decide_des(
+    state: &MatchStateV4,
+    input: &MatchInputV4,
+    timing: &TimingModelConfig,
+    carrier_idx: usize,
+    carrier_ctx: LocalSpatialContext,
+    rng: &mut DeterministicRng,
+) -> DecisionPlanV4 {
+    let carrier = &state.players[carrier_idx];
+    let att_side = carrier.side;
+    let def_side = att_side.opposite();
+    let attrs = player_attrs(state, carrier);
+    let ti = state.active_instructions(att_side);
+    let def_ti = state.active_instructions(def_side);
+    let att_phase = state.team_state(att_side).phase;
+
+    let vision = normalize_attr(attrs.mental.vision);
+    let decisions = normalize_attr(attrs.mental.decisions);
+    let composure = normalize_attr(attrs.mental.composure);
+    let flair = normalize_attr(attrs.mental.flair);
+    let teamwork = normalize_attr(attrs.mental.teamwork);
+    let pressure_norm = (carrier_ctx.pressure / 100.0).clamp(0.0, 1.0);
+
+    let carrier_progress = attacking_progress_m(att_side, carrier.pos);
+    let goal_dist = distance_to_attacking_goal(att_side, carrier.pos);
+    let in_box = is_in_attacking_penalty_box(att_side, carrier.pos);
+
+    // All choices share a scale of expected positional/opportunity value.
+    // Tactical preferences affect risk and time, not hard action quotas.
+    let risk_appetite = (ti.build_up_risk as f32 / 100.0).clamp(0.0, 1.0);
+    let tempo = ti.tempo as f32 / 100.0;
+    let time_wasting = ti.time_wasting as f32 / 100.0;
+    let loss = turnover_cost(carrier_progress) * (1.15 - 0.30 * risk_appetite);
+    let current_value = possession_value(carrier_progress,carrier.pos.y,pressure_norm);
+    let urgency = 0.75 + 0.5 * tempo;
+    let counter = if att_phase == TacticalPhaseV4::AttackingTransition {
+        (ti.transition_risk as f32 / 100.0) * (0.008 + 0.008 * def_ti.line_height as f32 / 100.0)
+    } else { 0.0 };
+    let readiness = (carrier.fatigue.anaerobic / 100.0).clamp(0.25,1.0);
+
+    let mut candidates=collect_pass_candidates(state,input,timing,carrier_idx,carrier_ctx,|kind|{
+        if matches!(kind,PassKindV4::Through|PassKindV4::Switch) {
+            let notice_prob=(0.30+vision*0.65-pressure_norm*0.20).clamp(0.15,0.96);
+            (rng.next_double() as f32)<=notice_prob
+        }else{true}
+    });
 
     if !carrier.is_goalkeeper && goal_dist <= 28.5 {
         let fin = if in_box {

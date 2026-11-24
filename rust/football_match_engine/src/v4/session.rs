@@ -1988,7 +1988,7 @@ impl MatchSessionV4 {
             .map_err(|e|V4Error::InvalidClock(e.into()))?;
         let observed_pass_risk=crate::player_intelligence::observe_pass_risk(&self.state,&self.input,idx,ctx,plan.action);
         self.pending_decision=Some(PendingDecisionV4{player_id:id,side,started_at_ms:now,executes_at_ms:at,
-            plan,release_at_ms,challenger,observed_pass_risk});
+            plan,release_at_ms,challenger,observed_pass_risk,final_aim_committed:false});
         Ok(())
     }
 
@@ -2143,14 +2143,38 @@ impl MatchSessionV4 {
             }
             _=>{}
         }
-        // Observe only a valid pass reaching its release event. A cancelled
-        // preparation never becomes a paired sample. No new decision or RNG.
-        if let Some(initial)=pending.observed_pass_risk {
-            let ctx=evaluate_local_context(&self.state,&self.input,side,pos);
-            if let Some(release)=crate::player_intelligence::observe_pass_risk(&self.state,&self.input,idx,ctx,plan.action) {
-                self.diagnostics.record_pass_risk_drift(initial,release);
+        // Audit the original intended release before deciding whether
+        // there is a better compatible ground kick. No reroll of the
+        // original action-family decision or the original timing draw.
+        let ctx=evaluate_local_context(&self.state,&self.input,side,pos);
+        let release_risk=if pending.observed_pass_risk.is_some() {
+            crate::player_intelligence::observe_pass_risk(&self.state,&self.input,idx,ctx,plan.action)
+        }else{None};
+        if let (Some(initial),Some(release))=(pending.observed_pass_risk,release_risk) {
+            self.diagnostics.record_pass_risk_drift(initial,release);
+        }
+        if !plan.is_one_touch && !pending.final_aim_committed &&
+            matches!(plan.action,PlannedActionV4::Pass{kind:PassKindV4::Short,..}) {
+            self.diagnostics.record_reaim_review();
+            if let Some(reaim)=crate::player_intelligence::reconsider_short_pass(
+                &self.state,&self.input,idx,ctx,plan.action) {
+                let updated_risk=crate::player_intelligence::observe_pass_risk(
+                    &self.state,&self.input,idx,ctx,reaim.action);
+                self.diagnostics.record_reaim_choice(reaim.delay_ms,release_risk,updated_risk);
+                plan.action=reaim.action;
+                let release_at_ms=now_ms.saturating_add(reaim.delay_ms);
+                let (at,challenger)=self.preparation_contest(idx,release_at_ms);
+                self.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
+                    DesEventPayload::ActionExecute{player_id:player_id.into(),side})
+                    .map_err(|e|V4Error::InvalidClock(e.into()))?;
+                self.pending_decision=Some(PendingDecisionV4{
+                    player_id:player_id.into(),side,started_at_ms:now_ms,executes_at_ms:at,
+                    plan,release_at_ms,challenger,observed_pass_risk:updated_risk,final_aim_committed:true,
+                });
+                return Ok(());
             }
         }
+        if pending.final_aim_committed {self.diagnostics.record_reaim_release();}
         let prev_possession = self.possession_side;
         let (next_side, next_carrier, entered_dead_ball, next_delay_ms) =
             self.step_live_action_des(self.carrier_idx, plan)?;
@@ -3880,7 +3904,7 @@ mod pi_defense_commitment_tests {
         let ctx=evaluate_local_context(&s.state,&s.input,side,s.state.players[car].pos);
         let plan=perceive_evaluate_and_decide_des(&s.state,&s.input,&s.input.timing_model,car,ctx,&mut s.rng);
         s.pending_decision=Some(PendingDecisionV4{player_id:id.clone(),side,started_at_ms:now,
-            executes_at_ms:at,plan,release_at_ms:release,challenger:chase,observed_pass_risk:None});
+            executes_at_ms:at,plan,release_at_ms:release,challenger:chase,observed_pass_risk:None,final_aim_committed:false});
         s.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
             DesEventPayload::ActionExecute{player_id:id.clone(),side}).unwrap();
         let ck=s.export_checkpoint().unwrap();

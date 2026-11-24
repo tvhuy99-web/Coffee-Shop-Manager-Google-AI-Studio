@@ -2648,7 +2648,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.12");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.13");
 }
 
 
@@ -2819,4 +2819,36 @@ fn pi_checkpoint_observed_pass_risk_accounting_roundtrip() {
     crate::v4::checkpoint::verify_checkpoint(&parsed).unwrap();
     let restored=MatchSessionV4::from_checkpoint(parsed).unwrap().export_checkpoint().unwrap();
     assert_eq!(ck.checksum_hex,restored.checksum_hex);
+}
+
+
+#[test]
+fn pi_pass_reaim_prefers_open_compatible_lane_and_charges_time() {
+    use crate::v4::state::MatchStateV4;
+    use crate::v4::movement::evaluate_local_context;
+    use crate::player_intelligence::{reconsider_short_pass,PlannedActionV4,PassKindV4};
+    let input=make_v4_input_teams(19801,SimulationMode::FullEvent,RulesModeV4::Standard,
+        make_v4_team("H","H",18),make_v4_team("A","A",13));
+    let mut state=MatchStateV4::from_input(&input);
+    let car=state.players.iter().position(|p|p.player_id=="H06").unwrap();
+    let original=state.players.iter().position(|p|p.player_id=="H07").unwrap();
+    let alternative=state.players.iter().position(|p|p.player_id=="H08").unwrap();
+    let defender=state.players.iter().position(|p|p.side==TeamSideV4::Away&&!p.is_goalkeeper).unwrap();
+    for (i,p) in state.players.iter_mut().enumerate() {
+        p.vel=Vec2::default();
+        if p.side==TeamSideV4::Home {
+            p.on_pitch=i==car||i==original||i==alternative;
+            p.pos=if i==car{Vec2::new(42.0,34.0)}else if i==original{Vec2::new(57.0,34.0)}else{Vec2::new(58.0,44.0)};
+        }else{p.pos=Vec2::new(92.0,66.0);}
+    }
+    state.players[defender].pos=Vec2::new(49.0,34.0);
+    let ctx=evaluate_local_context(&state,&input,TeamSideV4::Home,state.players[car].pos);
+    let action=PlannedActionV4::Pass{target_idx:original,kind:PassKindV4::Short,
+        distance_m:15.0,progress_gain_m:15.0,lane_risk:0.0,interceptor_idx:None};
+    let change=reconsider_short_pass(&state,&input,car,ctx,action).expect("blocked old lane and open alternate");
+    assert!(matches!(change.action,PlannedActionV4::Pass{target_idx,kind:PassKindV4::Short,..} if target_idx==alternative));
+    assert!(change.delay_ms>0 && change.utility_gain>0.0);
+    state.players[alternative].on_pitch=false;
+    assert!(reconsider_short_pass(&state,&input,car,ctx,action).is_none());
+    assert!(reconsider_short_pass(&state,&input,car,ctx,PlannedActionV4::HoldAndRecycle).is_none());
 }

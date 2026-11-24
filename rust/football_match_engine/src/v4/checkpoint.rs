@@ -177,6 +177,9 @@ pub struct PendingDecisionV4 {
     pub release_at_ms: i64,
     #[serde(default)]
     pub observed_pass_risk: Option<f32>,
+    /// Final aiming preparation is committed; do not repeatedly restart it.
+    #[serde(default)]
+    pub final_aim_committed: bool,
     #[serde(default)]
     pub challenger: Option<crate::v4::interaction::PassContactMotion>,
 }

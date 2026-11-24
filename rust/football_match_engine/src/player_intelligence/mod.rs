@@ -19,7 +19,7 @@ mod on_ball;
 pub(crate) use on_ball::carry_target;
 
 pub use decision::{perceive_evaluate_and_decide, perceive_evaluate_and_decide_des};
-pub(crate) use decision::observe_pass_risk;
+pub(crate) use decision::{observe_pass_risk,reconsider_short_pass};
 pub use goalkeeper::choose_gk_distribution;
 pub use intent::{CandidateOption, CarryIntentV4, DecisionPlanV4, PassKindV4, PlannedActionV4};
 pub use off_ball::{select_movement_target, MovementObservation};
