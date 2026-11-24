@@ -67,7 +67,7 @@ jobs:
                       carry[field] += des.get(field,0)
                   for field in ("outletSamples","openOutletsTotal","noOpenOutletSamples","holdDecisionSamples","holdWithOpenOutletSamples"):
                       outlets[field] += des.get(field,0)
-                  for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM","preparationContacts","preparationTurnovers","preparationFouls","carryFouls","tackleOpportunities","tackleCommitChoices","tackleContainChoices"):
+                  for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM","preparationContacts","preparationTurnovers","preparationFouls","carryFouls","tackleOpportunities","tackleCommitChoices","tackleContainChoices","tackleFrontOpportunities","tackleFrontCommits","tackleSideOpportunities","tackleSideCommits","tackleRearOpportunities","tackleRearCommits","tackleExpectedCleanSum","tackleExpectedFoulSum"):
                       defense[field] += des.get(field,0)
                   outcomes["penaltyPhases"] += des["deadBallDistributions"]["penalty"]["count"]
                   for side in ("home", "away"):
@@ -101,6 +101,14 @@ jobs:
                   "holdWithOpenOutletPct": 100*outlets["holdWithOpenOutletSamples"]/max(1,outlets["holdDecisionSamples"])
               },sort_keys=True))
               print("PI_DEFENSE_EVIDENCE",json.dumps({k:v/n for k,v in sorted(defense.items())},sort_keys=True))
+              assert defense["tackleOpportunities"] == sum(defense["tackle"+g+"Opportunities"] for g in ("Front","Side","Rear"))
+              assert defense["tackleCommitChoices"] == sum(defense["tackle"+g+"Commits"] for g in ("Front","Side","Rear"))
+              assert defense["tackleOpportunities"] == defense["tackleCommitChoices"] + defense["tackleContainChoices"]
+              print("PI_TACKLE_GEOMETRY",json.dumps({
+                  "commitPctByApproach":{g:100*defense["tackle"+g+"Commits"]/max(1,defense["tackle"+g+"Opportunities"]) for g in ("Front","Side","Rear")},
+                  "perCommittedCandidateCleanPrior":defense["tackleExpectedCleanSum"]/max(1,defense["tackleCommitChoices"]),
+                  "perCommittedCandidateFoulPrior":defense["tackleExpectedFoulSum"]/max(1,defense["tackleCommitChoices"])
+              },sort_keys=True))
               print("PI_CONTEST_OUTCOMES",json.dumps({k:v/n for k,v in sorted(outcomes.items())},sort_keys=True))
               for row in report["matches"]:
                   if not row["ok"] or row.get("diagnosticError"):

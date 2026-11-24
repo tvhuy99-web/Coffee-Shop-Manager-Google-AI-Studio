@@ -199,6 +199,22 @@ pub struct DesMatchDiagnosticsV4 {
     pub tackle_commit_choices: u32,
     #[serde(default)]
     pub tackle_contain_choices: u32,
+    #[serde(default)]
+    pub tackle_front_opportunities: u32,
+    #[serde(default)]
+    pub tackle_front_commits: u32,
+    #[serde(default)]
+    pub tackle_side_opportunities: u32,
+    #[serde(default)]
+    pub tackle_side_commits: u32,
+    #[serde(default)]
+    pub tackle_rear_opportunities: u32,
+    #[serde(default)]
+    pub tackle_rear_commits: u32,
+    #[serde(default)]
+    pub tackle_expected_clean_sum: f64,
+    #[serde(default)]
+    pub tackle_expected_foul_sum: f64,
     pub dead_ball_distributions: DeadBallDistributionsV4,
     pub avg_player_distance_m: f32,
     pub tactical_commands_delayed: u32,
@@ -414,6 +430,22 @@ struct DesDiagnosticsAccumulator {
     tackle_commit_choices: u32,
     #[serde(default)]
     tackle_contain_choices: u32,
+    #[serde(default)]
+    tackle_front_opportunities: u32,
+    #[serde(default)]
+    tackle_front_commits: u32,
+    #[serde(default)]
+    tackle_side_opportunities: u32,
+    #[serde(default)]
+    tackle_side_commits: u32,
+    #[serde(default)]
+    tackle_rear_opportunities: u32,
+    #[serde(default)]
+    tackle_rear_commits: u32,
+    #[serde(default)]
+    tackle_expected_clean_sum: f64,
+    #[serde(default)]
+    tackle_expected_foul_sum: f64,
     avg_player_distance_m: f32,
     tactical_commands_delayed: u32,
     goal_celebration_samples: Vec<i64>,
@@ -463,6 +495,14 @@ impl DesDiagnosticsAccumulator {
             tackle_opportunities: self.tackle_opportunities,
             tackle_commit_choices: self.tackle_commit_choices,
             tackle_contain_choices: self.tackle_contain_choices,
+            tackle_front_opportunities: self.tackle_front_opportunities,
+            tackle_front_commits: self.tackle_front_commits,
+            tackle_side_opportunities: self.tackle_side_opportunities,
+            tackle_side_commits: self.tackle_side_commits,
+            tackle_rear_opportunities: self.tackle_rear_opportunities,
+            tackle_rear_commits: self.tackle_rear_commits,
+            tackle_expected_clean_sum: self.tackle_expected_clean_sum,
+            tackle_expected_foul_sum: self.tackle_expected_foul_sum,
             dead_ball_distributions: DeadBallDistributionsV4 {
                 goal_celebration: DurationDistributionMs::from_samples(&mut self.goal_celebration_samples),
                 throw_in: DurationDistributionMs::from_samples(&mut self.throw_in_samples),
@@ -604,10 +644,19 @@ impl MatchDiagnosticsCollectorV4 {
         *distance+=moved.max(0.0);
     }
 
-    pub fn record_tackle_choice(&mut self,commits:bool) {
+    pub fn record_tackle_choice(&mut self,commits:bool,access:f32,clean:f32,foul:f32) {
         self.des.tackle_opportunities=self.des.tackle_opportunities.saturating_add(1);
-        if commits {self.des.tackle_commit_choices=self.des.tackle_commit_choices.saturating_add(1);}
-        else {self.des.tackle_contain_choices=self.des.tackle_contain_choices.saturating_add(1);}
+        if commits {
+            self.des.tackle_commit_choices=self.des.tackle_commit_choices.saturating_add(1);
+            self.des.tackle_expected_clean_sum+=f64::from(clean);
+            self.des.tackle_expected_foul_sum+=f64::from(foul);
+        } else {self.des.tackle_contain_choices=self.des.tackle_contain_choices.saturating_add(1);}
+        // Classify visible approach geometry at evaluation, not the eventual contact.
+        let (n,c)=if access>=0.75 {(&mut self.des.tackle_front_opportunities,&mut self.des.tackle_front_commits)}
+            else if access>=0.25 {(&mut self.des.tackle_side_opportunities,&mut self.des.tackle_side_commits)}
+            else {(&mut self.des.tackle_rear_opportunities,&mut self.des.tackle_rear_commits)};
+        *n=n.saturating_add(1);
+        if commits {*c=c.saturating_add(1);}
     }
     pub fn record_preparation_contact(&mut self,lost:bool,foul:bool) {
         self.des.preparation_contacts=self.des.preparation_contacts.saturating_add(1);

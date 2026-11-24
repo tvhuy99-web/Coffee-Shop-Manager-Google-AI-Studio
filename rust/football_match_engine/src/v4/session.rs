@@ -2033,7 +2033,8 @@ impl MatchSessionV4 {
             let elapsed=at.saturating_sub(motion.started_at_ms) as f32/1000.0;
             let evaluation=crate::player_intelligence::evaluate_tackle(&self.state,idx,def_idx,elapsed);
             let commits=evaluation.commits();
-            self.diagnostics.record_tackle_choice(commits);
+            self.diagnostics.record_tackle_choice(commits,evaluation.access,
+                evaluation.clean_win_probability,evaluation.foul_probability);
             if !commits {continue;}
             if best.as_ref().map_or(true,|(_,old_time,old_motion)|
                 at<*old_time || (at==*old_time && candidate.player_id<old_motion.candidate.player_id)) {
