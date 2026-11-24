@@ -67,15 +67,16 @@ def main():
                 paired[f"{a}minus{b}"]=describe([x-y for x,y in zip(raw[str(a)],raw[str(b)]) if x is not None and y is not None])
             measures[key]={"levels":{l:describe([v for v in vs if v is not None]) for l,vs in raw.items()},"paired":paired}
         changed=sum(not r["lowEqualsBaseline"] or not r["highEqualsBaseline"] for r in rows)
-        item={"attribute":name,"careerHook":rows[0]["careerHook"],"changedSeeds":changed,"metrics":measures}
+        play_changed=sum(not r["lowPlayEqualsBaseline"] or not r["highPlayEqualsBaseline"] for r in rows)
+        item={"attribute":name,"careerHook":rows[0]["careerHook"],"changedSeeds":changed,"playChangedSeeds":play_changed,"metrics":measures}
         results.append(item)
         print("PI_ATTRIBUTE_CONTRAST",json.dumps({
-            "attribute":name,"careerHook":item["careerHook"],"changedSeeds":changed,
+            "attribute":name,"careerHook":item["careerHook"],"changedSeeds":changed,"playChangedSeeds":play_changed,
             "highMinusLow":{k:measures[k]["paired"]["18minus5"]["mean"] for k in ("goalsFor","goalsAgainst","passAccuracyPct","fouls","outfieldDistanceM","keeperDistanceM")}
         },sort_keys=True))
     Path(sys.argv[2]).write_text(json.dumps({
         "group":data["group"],"piVersion":data["piVersion"],"simulations":data["simulations"],
-        "careerDifferences":data["careerDifferences"],"limitations":data["limitations"],
+        "careerDifferences":data["careerDifferences"],"careerCarryoverDifferences":data["careerCarryoverDifferences"],"limitations":data["limitations"],
         "attributes":results
     },indent=2))
 if __name__=="__main__":

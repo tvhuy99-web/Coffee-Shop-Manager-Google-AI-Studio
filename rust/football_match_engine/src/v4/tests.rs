@@ -2664,7 +2664,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.16");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.17");
 }
 
 
@@ -2963,6 +2963,7 @@ fn pi_attribute_audit_population() {
     }
     let mut rows=Vec::new();
     let mut career_differences=0usize;
+    let mut career_carryover_differences=0usize;
     for name in &names {
         let career=PI_CAREER_HOOKS.contains(&name.as_str());
         for (i,seed) in seeds.iter().enumerate() {
@@ -2974,10 +2975,25 @@ fn pi_attribute_audit_population() {
             };
             let low_same=same(&low,mid);
             let high_same=same(&high,mid);
-            if career && (!low_same||!high_same){career_differences+=1;}
+            // Only the explicitly documented home-player morale carryover
+            // is permitted to differ for ambition/loyalty. Every other
+            // field, including opponent morale and timeline, remains exact.
+            let carryover_allowed=matches!(name.as_str(),"ambition"|"loyalty");
+            let low_play_same=pi_audit_same_play(&low,mid,carryover_allowed);
+            let high_play_same=pi_audit_same_play(&high,mid,carryover_allowed);
+            if career && (!low_play_same||!high_play_same){career_differences+=1;}
+            if career && low_play_same && high_play_same && (!low_same||!high_same) {
+                career_carryover_differences+=1;
+            }
+            if carryover_allowed {
+                pi_audit_check_morale(&low,name,5);
+                pi_audit_check_morale(mid,name,12);
+                pi_audit_check_morale(&high,name,18);
+            }
             rows.push(serde_json::json!({
                 "attribute":name,"seed":seed,"careerHook":career,
                 "lowEqualsBaseline":low_same,"highEqualsBaseline":high_same,
+                "lowPlayEqualsBaseline":low_play_same,"highPlayEqualsBaseline":high_play_same,
                 "low":low,"high":high
             }));
         }
@@ -2991,6 +3007,7 @@ fn pi_attribute_audit_population() {
         "simulationMode":"FAST_BATCH","fixedTactics":true,
         "baseline":baselines,"pairs":rows,"simulations":simulations,
         "careerDifferences":career_differences,
+        "careerCarryoverDifferences":career_carryover_differences,
         "limitations":["Only eight matched seeds per attribute; descriptive screening, not validation of effect size.",
             "Same seed does not imply the same later random draws after decisions diverge.",
             "Whole-match outcomes can reflect indirect changes in opportunities, not direct skill execution.",
@@ -2998,5 +3015,196 @@ fn pi_attribute_audit_population() {
     });
     std::fs::write(&path,serde_json::to_string(&report).unwrap()).expect("write full evidence");
     println!("PI_ATTRIBUTE_AUDIT group={} attributes={} simulations={} careerDifferences={}",group,names.len(),simulations,career_differences);
-    assert_eq!(career_differences,0,"career-only hooks changed match output; see saved evidence");
+    println!("PI_CAREER_CARRYOVER group={} pairsWithAllowedMoraleChanges={}",group,career_carryover_differences);
+    assert_eq!(career_differences,0,"career-only hooks changed football output beyond allowed morale carryover");
+}
+
+
+fn pi_audit_same_play(a:&serde_json::Value,b:&serde_json::Value,allow_home_morale:bool)->bool {
+    if ["timelineFingerprint","eventCount","diagnostics"].iter().any(|k|a[*k]!=b[*k]) {return false;}
+    let project=|r:&serde_json::Value|{
+        let mut s=r["summary"].clone();
+        if allow_home_morale {
+            for p in s["players"].as_array_mut().unwrap() {
+                if p["playerId"].as_str().unwrap().starts_with("H") {
+                    p.as_object_mut().unwrap().remove("moraleDelta");
+                }
+            }
+        }
+        s
+    };
+    project(a)==project(b)
+}
+
+fn pi_audit_check_morale(row:&serde_json::Value,name:&str,level:u8) {
+    use crate::v4::psychology::compute_post_match_morale_delta;
+    let profile=pi_audit_profile("hidden",name,level);
+    let neutral=PlayerAttributes54::uniform(12).unwrap();
+    let s=&row["summary"];
+    let h=s["home"]["goals"].as_u64().unwrap();
+    let a=s["away"]["goals"].as_u64().unwrap();
+    for p in s["players"].as_array().unwrap() {
+        let home=p["playerId"].as_str().unwrap().starts_with("H");
+        let expected=compute_post_match_morale_delta(if home{&profile}else{&neutral},
+            if home{h>a}else{a>h},h==a,p["rating"].as_f64().unwrap() as f32);
+        assert_eq!(p["moraleDelta"].as_i64().unwrap(),i64::from(expected));
+    }
+}
+
+#[test]
+fn pi_attribute_isolated_career_projection_preserves_all_other_fields() {
+    let a=serde_json::json!({"timelineFingerprint":"a","eventCount":1,"diagnostics":{},
+        "summary":{"home":{"goals":1},"players":[{"playerId":"H00","moraleDelta":2,"distanceM":12},
+        {"playerId":"A00","moraleDelta":-2}]}});
+    let mut b=a.clone();
+    b["summary"]["players"][0]["moraleDelta"]=serde_json::json!(4);
+    assert!(!pi_audit_same_play(&a,&b,false));
+    assert!(pi_audit_same_play(&a,&b,true));
+    b["summary"]["players"][1]["moraleDelta"]=serde_json::json!(0);
+    assert!(!pi_audit_same_play(&a,&b,true));
+    b=a.clone();
+    b["summary"]["players"][0]["distanceM"]=serde_json::json!(13);
+    assert!(!pi_audit_same_play(&a,&b,true));
+    b=a.clone();
+    b["timelineFingerprint"]=serde_json::json!("b");
+    assert!(!pi_audit_same_play(&a,&b,true));
+}
+
+#[test]
+fn pi_attribute_isolated_goalkeeper_contexts() {
+    use crate::v4::goalkeeper::{resolve_gk_aerial_claim,GkAerialOutcome};
+    let input=make_v4_input(22401,SimulationMode::FastBatch,RulesModeV4::Standard);
+    // Fresh paired RNG per opportunity: branch-dependent draws cannot
+    // desynchronize subsequent attempts.
+    for (name,one_vs_one,distance) in [("reflexes",false,9.0),("one_on_ones",true,11.0)] {
+        let mut conceded=[0u32;3];
+        for (i,level) in [5,12,18].into_iter().enumerate() {
+            let attrs=pi_audit_profile("goalkeeping",name,level);
+            for k in 0..4096i64 {
+                let mut rng=DeterministicRng::new(104729+k*7907);
+                if resolve_gk_shot_reaction(&attrs,1.0,90.0,0.32,distance,one_vs_one,false,false,&input,&mut rng)==GkShotOutcome::GoalConceded {
+                    conceded[i]+=1;
+                }
+            }
+        }
+        println!("PI_ISOLATED attribute={name} opportunities=4096 conceded_5_12_18={conceded:?}");
+        assert!(conceded[0]>conceded[1] && conceded[1]>conceded[2]);
+    }
+    let mut punches=[0u32;3];
+    let mut come_out=[0u32;3];
+    for (i,level) in [5,12,18].into_iter().enumerate() {
+        let attrs=pi_audit_profile("goalkeeping","punching",level);
+        for k in 0..4096i64 {
+            let mut rng=DeterministicRng::new(104729+k*7907);
+            match resolve_gk_aerial_claim(&attrs,185,true,2.35,&input,&mut rng) {
+                GkAerialOutcome::PunchedClear=>{punches[i]+=1;come_out[i]+=1;},
+                GkAerialOutcome::Claimed=>come_out[i]+=1,
+                GkAerialOutcome::StayedOnLine=>{},
+            }
+        }
+    }
+    println!("PI_ISOLATED attribute=punching opportunities=4096 punches_5_12_18={punches:?} engaged={come_out:?}");
+    assert_eq!(come_out[0],come_out[1]);
+    assert_eq!(come_out[1],come_out[2]);
+    assert!(punches[0]<punches[1] && punches[1]<punches[2]);
+}
+
+#[test]
+fn pi_attribute_isolated_set_piece_contexts() {
+    use crate::v4::state::MatchStateV4;
+    use crate::v4::set_pieces::{execute_corner_v4,execute_free_kick_v4,execute_penalty_kick_v4_with_rules};
+    for name in ["corners","free_kicks","penalties"] {
+        let mut successes=[0u32;3];
+        let mut opportunities=[0u32;3];
+        for (i,level) in [5,12,18].into_iter().enumerate() {
+            let mut input=pi_audit_input(22402,"technical",name,level);
+            // Fix the taker, not merely the team distribution.
+            input.home_team.set_piece_plan.corner_taker_slot_ids=vec!["CF".into()];
+            input.home_team.set_piece_plan.close_free_kick_taker_slot_ids=vec!["CF".into()];
+            input.home_team.set_piece_plan.penalty_taker_slot_ids=vec!["CF".into()];
+            let template=MatchStateV4::from_input(&input);
+            for k in 0..4096i64 {
+                let mut state=template.clone();
+                let mut rng=DeterministicRng::new(104729+k*7907);
+                let out=match name {
+                    "corners"=>execute_corner_v4(&mut state,&input,TeamSideV4::Home,&mut rng),
+                    "free_kicks"=>execute_free_kick_v4(&mut state,&input,TeamSideV4::Home,Vec2::new(82.0,34.0),&mut rng),
+                    _=>execute_penalty_kick_v4_with_rules(&mut state,&input,TeamSideV4::Home,false,&mut rng),
+                };
+                if name=="corners" {
+                    if let Some(duel)=out.events.iter().find(|e|e.kind==EventTypeV4::AerialDuel) {
+                        opportunities[i]+=1;
+                        successes[i]+=u32::from(duel.side==Some(TeamSideV4::Home));
+                    }
+                } else {
+                    opportunities[i]+=1;
+                    successes[i]+=u32::from(if name=="free_kicks"{
+                        out.events.iter().any(|e|e.kind==EventTypeV4::ShotOnTarget && e.side==Some(TeamSideV4::Home))
+                    }else{
+                        out.events.iter().any(|e|e.kind==EventTypeV4::Goal && e.side==Some(TeamSideV4::Home))
+                    });
+                }
+            }
+        }
+        println!("PI_ISOLATED attribute={name} successes_5_12_18={successes:?} opportunities={opportunities:?}");
+        assert!(opportunities[0]>0);
+        assert_eq!(opportunities[0],opportunities[1]);
+        assert_eq!(opportunities[1],opportunities[2]);
+        assert!(successes[0]<successes[1] && successes[1]<successes[2]);
+    }
+}
+
+#[test]
+fn pi_attribute_isolated_long_shot_context() {
+    use crate::v4::state::MatchStateV4;
+    use crate::v4::shooting::{resolve_shot_v4_des,ShotKindV4};
+    let mut xg=[0u64;3];
+    let mut on_target=[0u32;3];
+    for (i,level) in [5,12,18].into_iter().enumerate() {
+        let input=pi_audit_input(22403,"technical","long_shots",level);
+        let mut template=MatchStateV4::from_input(&input);
+        let idx=template.players.iter().position(|p|p.player_id=="H10").unwrap();
+        for p in &mut template.players {
+            if p.side==TeamSideV4::Away && !p.is_goalkeeper {p.on_pitch=false;}
+        }
+        template.players[idx].pos=Vec2::new(80.0,34.0);
+        template.ball.pos=Vec3::ground(80.0,34.0);
+        for k in 0..2048i64 {
+            let mut state=template.clone();
+            let mut rng=DeterministicRng::new(104729+k*7907);
+            resolve_shot_v4_des(&mut state,&input,&input.timing_model,idx,None,Some(ShotKindV4::LongRange),false,&mut rng);
+            xg[i]+=u64::from(state.home.xg_millis);
+            on_target[i]+=u32::from(state.home.shots_on_target>0);
+        }
+    }
+    println!("PI_ISOLATED attribute=long_shots opportunities=2048 xg_millis_5_12_18={xg:?} on_target={on_target:?}");
+    assert!(xg[0]<xg[1] && xg[1]<xg[2]);
+    assert!(on_target[0]<on_target[1] && on_target[1]<on_target[2]);
+}
+
+#[test]
+fn pi_attribute_isolated_prematch_contexts() {
+    use crate::v4::psychology::compute_prematch_form_multiplier;
+    let mut spread=[0.0f64;3];
+    let mut standard=[0.0f64;3];
+    let mut final_match=[0.0f64;3];
+    for (i,level) in [5,12,18].into_iter().enumerate() {
+        let cons=pi_audit_profile("hidden","consistency",level);
+        let big=pi_audit_profile("hidden","big_matches",level);
+        for k in 0..4096i64 {
+            let seed=104729+k*7907;
+            let mut rng=DeterministicRng::new(seed);
+            spread[i]+=f64::from((compute_prematch_form_multiplier(&cons,50,&mut rng)-1.0).abs());
+            let mut rng=DeterministicRng::new(seed);
+            standard[i]+=f64::from(compute_prematch_form_multiplier(&big,50,&mut rng));
+            let mut rng=DeterministicRng::new(seed);
+            final_match[i]+=f64::from(compute_prematch_form_multiplier(&big,95,&mut rng));
+        }
+    }
+    println!("PI_ISOLATED attribute=consistency mean_abs_deviation_5_12_18={:?}",spread.map(|x|x/4096.0));
+    println!("PI_ISOLATED attribute=big_matches standard_5_12_18={:?} final_5_12_18={:?}",standard.map(|x|x/4096.0),final_match.map(|x|x/4096.0));
+    assert!(spread[0]>spread[1] && spread[1]>spread[2]);
+    assert_eq!(standard[0],standard[1]);
+    assert_eq!(standard[1],standard[2]);
+    assert!(final_match[0]<final_match[1] && final_match[1]<final_match[2]);
 }
