@@ -219,6 +219,22 @@ pub struct TeamAttackDiagnosticsV4 {
     pub pass_loose_regained: u32,
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub pass_loose_lost: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub pass_execution_errors: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub pass_receiver_unreached: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub inaccurate_kicks_received: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub pass_miss_regained: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub pass_miss_lost: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub first_touch_loose_regained: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub first_touch_loose_lost: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub loose_recovery_out: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -536,11 +552,18 @@ impl MatchDiagnosticsCollectorV4 {
                 // Only a clean first touch or a later controlled-carrier beat
                 // proves the ball was actually controlled at the destination.
                 self.record_pass(side, metadata, true);
+                if metadata.extra.get("inaccurateKickReceived").map(String::as_str)==Some("true") {
+                    self.team_mut(side).inaccurate_kicks_received+=1;
+                }
             }
             EventTypeV4::PassFailed => {
                 self.record_pass(side, metadata, false);
                 if metadata.extra.get("pendingPassRecovery").map(String::as_str) == Some("true") {
-                    self.team_mut(side).pass_contacts_loose += 1;
+                    match metadata.extra.get("passMissReason").map(String::as_str) {
+                        Some("EXECUTION_ERROR")=>self.team_mut(side).pass_execution_errors+=1,
+                        Some("RECEIVER_UNREACHED")=>self.team_mut(side).pass_receiver_unreached+=1,
+                        _=>self.team_mut(side).pass_contacts_loose+=1,
+                    }
                 } else {
                     self.lose_ball(side, metadata.outcome.as_deref().unwrap_or("MISPLACED"));
                 }
@@ -552,19 +575,36 @@ impl MatchDiagnosticsCollectorV4 {
                 }
                 self.lose_ball(side, "OFFSIDE");
             }
-            EventTypeV4::SecondBallWon if metadata.cause.as_deref() == Some("PASS_CONTACT_LOOSE") => {
-                match metadata.extra.get("recoveryOutcome").map(String::as_str) {
-                    Some("ATTACK_REGAINED") => self.team_mut(side).pass_loose_regained += 1,
-                    Some("DEFENCE_WON") => {
-                        self.team_mut(side.opposite()).pass_loose_lost += 1;
-                        self.lose_ball(side.opposite(), "INTERCEPTED");
-                    }
-                    _ => {}
+            EventTypeV4::SecondBallWon if matches!(metadata.cause.as_deref(),Some("PASS_CONTACT_LOOSE" | "PASS_MISS_LOOSE" | "FIRST_TOUCH_LOOSE")) => {
+                let cause=metadata.cause.as_deref().unwrap_or("");
+                let regained=metadata.extra.get("recoveryOutcome").map(String::as_str)==Some("ATTACK_REGAINED");
+                let origin=if regained {side} else {side.opposite()};
+                let team=self.team_mut(origin);
+                match (cause,regained) {
+                    ("PASS_CONTACT_LOOSE",true)=>team.pass_loose_regained+=1,
+                    ("PASS_CONTACT_LOOSE",false)=>team.pass_loose_lost+=1,
+                    ("PASS_MISS_LOOSE",true)=>team.pass_miss_regained+=1,
+                    ("PASS_MISS_LOOSE",false)=>team.pass_miss_lost+=1,
+                    ("FIRST_TOUCH_LOOSE",true)=>team.first_touch_loose_regained+=1,
+                    ("FIRST_TOUCH_LOOSE",false)=>team.first_touch_loose_lost+=1,
+                    _=>{}
                 }
-                self.observe_territory(side, ball_pos.xy());
+                if !regained { self.lose_ball(origin,match cause {
+                    "PASS_CONTACT_LOOSE"=>"INTERCEPTED","FIRST_TOUCH_LOOSE"=>"FIRST_TOUCH_ERROR",_=>"MISPLACED"
+                }); }
+                self.observe_territory(side,ball_pos.xy());
             }
-            EventTypeV4::FirstTouch if metadata.outcome.as_deref() == Some("HEAVY_TOUCH_LOST") => {
-                self.lose_ball(side, "FIRST_TOUCH_ERROR");
+            EventTypeV4::ThrowIn | EventTypeV4::Corner | EventTypeV4::GoalKick
+                if metadata.extra.get("looseRecoveryBoundary").map(String::as_str)==Some("true") => {
+                let lost=metadata.extra.get("recoveryOutcome").map(String::as_str)==Some("DEFENCE_RESTART");
+                let origin=if lost {side.opposite()} else {side};
+                self.team_mut(origin).loose_recovery_out+=1;
+                if lost {self.lose_ball(origin,"OUT_OF_PLAY");} else {self.close_active();}
+            }
+            EventTypeV4::FirstTouch if metadata.outcome.as_deref()==Some("HEAVY_TOUCH_LOST") => {
+                if metadata.extra.get("pendingPassRecovery").map(String::as_str)!=Some("true") {
+                    self.lose_ball(side,"FIRST_TOUCH_ERROR");
+                }
             }
             EventTypeV4::FirstTouch | EventTypeV4::DribbleWon | EventTypeV4::Carry => {
                 self.observe_territory(side, ball_pos.xy());

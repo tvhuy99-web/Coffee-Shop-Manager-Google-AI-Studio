@@ -9,11 +9,12 @@ use crate::v4::spatial::{attacking_goal_center, distance_to_attacking_goal, Team
 use crate::v4::state::MatchStateV4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DeflectionCause { BlockedShot, MishitAerialClearance }
+pub enum DeflectionCause { BlockedShot, MishitAerialClearance, PassContact }
 impl DeflectionCause {
     pub fn as_str(self) -> &'static str { match self {
         Self::BlockedShot => "DEFLECTED_BLOCK",
         Self::MishitAerialClearance => "MISHIT_CLEARANCE",
+        Self::PassContact => "DEFLECTED_PASS",
     }}
 }
 
@@ -33,6 +34,7 @@ pub fn own_goal_risk(
     let base = match cause {
         DeflectionCause::BlockedShot => 0.020,
         DeflectionCause::MishitAerialClearance => 0.012,
+        DeflectionCause::PassContact => 0.0, // physical crossing only
     };
     (base * (0.25 + 0.75 * proximity) * (1.35 - 0.75 * control)).clamp(0.0, 0.03)
 }

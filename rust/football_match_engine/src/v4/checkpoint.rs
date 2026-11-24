@@ -77,8 +77,12 @@ pub struct PendingFlightSnapshotV4 {
 pub enum FlightActionV4 {
     Pass { passer_idx: usize, kind: PassKindV4, distance_m: f32, is_one_touch: bool },
     Shot { shooter_idx: usize },
-    LooseRecovery { origin_side: TeamSideV4 },
+    LooseRecovery { origin_side: TeamSideV4,
+        #[serde(default = "default_loose_pass_cause")] cause: String },
+
 }
+
+fn default_loose_pass_cause() -> String { "PASS_CONTACT_LOOSE".into() }
 
 /// Only copy additive outcome deltas, never the entire cloned world: intervening
 /// fatigue, tactical orders, positions and disciplinary state must survive.

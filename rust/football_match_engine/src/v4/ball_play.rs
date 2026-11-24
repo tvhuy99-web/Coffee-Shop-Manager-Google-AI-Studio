@@ -375,7 +375,7 @@ pub fn execute_pass_and_first_touch_des(
     // Recovery of inaccurate passes by arbitrary teammates is a separate
     // stage. For an accurate pass, the intended receiver races defenders.
     let contact = find_pass_contact(&traj, &defenders,
-        if is_misplaced { None } else { Some(&receiver) }, t_now_ms, t_arrival_ms);
+        Some(&receiver), t_now_ms, t_arrival_ms);
     let (early_hit, receiver_contact) = match contact {
         Some(PassContact::Other(hit)) => (Some(hit), None),
         Some(PassContact::Receiver { time_ms, ball_pos }) => (None, Some((time_ms, ball_pos))),
@@ -543,53 +543,36 @@ pub fn execute_pass_and_first_touch_des(
     // Lane risk is a decision input, not a second chance to intercept a
     // trajectory that no defender can physically reach.
 
-    // Legacy loose-ball recovery remains isolated until stage 4.
-    // An accurate kick whose intended receiver cannot reach it is not completed.
-    if is_misplaced || receiver_contact.is_none() {
-        let def_idx = evaluate_local_context(state, input, att_side, target_pos)
-            .nearest_defender_idx
-            .unwrap_or_else(|| first_outfield(state, def_side));
-        let def_id = state.players[def_idx].player_id.clone();
-        let def_pos = state.players[def_idx].pos;
-        let ball_pos = Vec3::ground(def_pos.x, def_pos.y).clamp_to_pitch();
+    // A missed pass remains at its physical endpoint, available to either side.
+    if receiver_contact.is_none() {
+        let ball_pos = traj.position_at_ms(t_arrival_ms).clamp_to_pitch();
+        let v = traj.velocity_at_ms(t_arrival_ms);
         state.ball.pos = ball_pos;
-        state.ball.vel = Vec3::default();
-        state.ball.control = BallControlState::Controlled;
-        state.ball.owner_side = Some(def_side);
-        state.ball.owner_player_id = Some(def_id.clone());
-        state.ball.last_touch_side = Some(def_side);
-        state.ball.last_touch_player_id = Some(def_id.clone());
-
-        let meta = EventMetadataV4 {
-            pass_type: Some(kind.as_str().into()),
-            distance_m: Some(distance_m),
+        state.ball.vel = Vec3::new(v.x * 0.45, v.y * 0.45, 0.0);
+        state.ball.control = BallControlState::Loose;
+        state.ball.owner_side = None;
+        state.ball.owner_player_id = None;
+        state.ball.last_touch_side = Some(att_side);
+        state.ball.last_touch_player_id = Some(passer_id.clone());
+        let mut meta = EventMetadataV4 {
+            pass_type: Some(kind.as_str().into()), distance_m: Some(distance_m),
             pressure: Some(passer_ctx.pressure.round() as u8),
-            outcome: Some("MISPLACED".into()),
-            ..EventMetadataV4::default()
+            outcome: Some("MISPLACED".into()), ..EventMetadataV4::default()
         };
+        meta.extra.insert("pendingPassRecovery".into(), "true".into());
+        meta.extra.insert("passMissReason".into(), if is_misplaced {
+            "EXECUTION_ERROR".into()
+        } else { "RECEIVER_UNREACHED".into() });
         events.push(EmittedPlayEvent {
-            kind: EventTypeV4::PassFailed,
-            tier: HighlightTier::None,
-            seq_id: None,
-            side: Some(att_side),
-            actor: Some(passer_id),
-            target: Some(def_id),
-            ball_pos,
-            metadata: meta,
+            kind: EventTypeV4::PassFailed, tier: HighlightTier::None, seq_id: None,
+            side: Some(att_side), actor: Some(passer_id), target: Some(target_id),
+            ball_pos, metadata: meta,
         });
         return DesBallPlayOutcome {
-            trajectory: Some(traj.clone()),
-            planned_flight_ms: flight_ms,
-            outcome: BallPlayOutcome {
-                next_side: def_side,
-                next_carrier_idx: def_idx,
-                stoppage_seconds: 0,
-                events,
-            },
-            elapsed_ms: flight_ms,
-            dead_ball_kind: None,
-            restart_spot: None,
-            early_interaction: None,
+            trajectory: Some(traj.clone()), planned_flight_ms: flight_ms,
+            outcome: BallPlayOutcome { next_side: att_side, next_carrier_idx: passer_idx,
+                stoppage_seconds: 0, events },
+            elapsed_ms: flight_ms, dead_ball_kind: None, restart_spot: None, early_interaction: None,
         };
     }
 
@@ -684,7 +667,7 @@ pub fn execute_pass_and_first_touch_des(
         PassKindV4::Cross => EventTypeV4::Cross,
         _ => EventTypeV4::PassCompleted,
     };
-    let pass_meta = EventMetadataV4 {
+    let mut pass_meta = EventMetadataV4 {
         pass_type: Some(kind.as_str().into()),
         distance_m: Some(distance_m),
         progress_gain: Some(progress_gain_m.round() as i32),
@@ -703,6 +686,9 @@ pub fn execute_pass_and_first_touch_des(
         ..EventMetadataV4::default()
     };
 
+    if is_misplaced {
+        pass_meta.extra.insert("inaccurateKickReceived".into(), "true".into());
+    }
     state.team_state_mut(att_side).passes_completed += 1;
     events.push(EmittedPlayEvent {
         kind: pass_event_kind,
@@ -716,80 +702,32 @@ pub fn execute_pass_and_first_touch_des(
     });
 
     if (rng.next_double() as f32) < miscontrol_prob {
-        let loose_pos = Vec3::ground(
-            (target_pos.x + (rng.next_double() as f32 - 0.5) * 4.5).clamp(0.0, PITCH_LENGTH_M),
-            (target_pos.y + (rng.next_double() as f32 - 0.5) * 4.5).clamp(0.0, PITCH_WIDTH_M),
-        );
-        state.ball.pos = loose_pos;
+        let err_x = (rng.next_double() as f32 - 0.5) * 4.5;
+        let err_y = (rng.next_double() as f32 - 0.5) * 4.5;
+        let v = traj.velocity_at_ms(receiver_time_ms);
+        state.ball.pos = arrived_pos;
+        state.ball.vel = Vec3::new(v.x * 0.20 + err_x, v.y * 0.20 + err_y, 0.0);
         state.ball.control = BallControlState::Loose;
-
-        let ft_meta = EventMetadataV4 {
+        state.ball.owner_side = None;
+        state.ball.owner_player_id = None;
+        state.ball.last_touch_side = Some(att_side);
+        state.ball.last_touch_player_id = Some(target_id.clone());
+        let mut meta = EventMetadataV4 {
             pressure: Some(target_ctx.pressure.round() as u8),
-            outcome: Some("HEAVY_TOUCH_LOST".into()),
-            cause: Some("FIRST_TOUCH_ERROR".into()),
+            outcome: Some("HEAVY_TOUCH_LOST".into()), cause: Some("FIRST_TOUCH_ERROR".into()),
             ..EventMetadataV4::default()
         };
+        meta.extra.insert("pendingPassRecovery".into(), "true".into());
         events.push(EmittedPlayEvent {
-            kind: EventTypeV4::FirstTouch,
-            tier: HighlightTier::None,
-            seq_id: None,
-            side: Some(att_side),
-            actor: Some(target_id),
-            target: None,
-            ball_pos: loose_pos,
-            metadata: ft_meta,
+            kind: EventTypeV4::FirstTouch, tier: HighlightTier::None, seq_id: None,
+            side: Some(att_side), actor: Some(target_id), target: None,
+            ball_pos: arrived_pos, metadata: meta,
         });
-
-        let winner_idx = target_ctx
-            .nearest_defender_idx
-            .unwrap_or_else(|| first_outfield(state, def_side));
-        let winner_id = state.players[winner_idx].player_id.clone();
-        state.ball.control = BallControlState::Controlled;
-        state.ball.owner_side = Some(def_side);
-        state.ball.owner_player_id = Some(winner_id.clone());
-        state.ball.last_touch_side = Some(def_side);
-        state.ball.last_touch_player_id = Some(winner_id.clone());
-
-        events.push(EmittedPlayEvent {
-            kind: EventTypeV4::LooseBall,
-            tier: HighlightTier::None,
-            seq_id: None,
-            side: None,
-            actor: None,
-            target: None,
-            ball_pos: loose_pos,
-            metadata: EventMetadataV4 {
-                cause: Some("FIRST_TOUCH_ERROR".into()),
-                ..EventMetadataV4::default()
-            },
-        });
-        events.push(EmittedPlayEvent {
-            kind: EventTypeV4::SecondBallWon,
-            tier: HighlightTier::None,
-            seq_id: None,
-            side: Some(def_side),
-            actor: Some(winner_id),
-            target: None,
-            ball_pos: loose_pos,
-            metadata: EventMetadataV4 {
-                cause: Some("FIRST_TOUCH_ERROR".into()),
-                ..EventMetadataV4::default()
-            },
-        });
-
         return DesBallPlayOutcome {
-            trajectory: Some(traj.clone()),
-            planned_flight_ms: flight_ms,
-            outcome: BallPlayOutcome {
-                next_side: def_side,
-                next_carrier_idx: winner_idx,
-                stoppage_seconds: 0,
-                events,
-            },
-            elapsed_ms: contact_elapsed_ms,
-            dead_ball_kind: None,
-            restart_spot: None,
-            early_interaction: None,
+            trajectory: Some(traj.clone()), planned_flight_ms: flight_ms,
+            outcome: BallPlayOutcome { next_side: att_side, next_carrier_idx: target_idx,
+                stoppage_seconds: 0, events },
+            elapsed_ms: contact_elapsed_ms, dead_ball_kind: None, restart_spot: None, early_interaction: None,
         };
     }
 

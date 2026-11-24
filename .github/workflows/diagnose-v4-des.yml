@@ -61,7 +61,10 @@ jobs:
                   for side in ("home", "away"):
                       d = row["diagnostics"][side]
                       losses.update(d["turnovers"])
-                      for field in ("passContactsLoose", "passLooseRegained", "passLooseLost"):
+                      for field in ("passContactsLoose", "passLooseRegained", "passLooseLost",
+                                    "passExecutionErrors", "passReceiverUnreached", "inaccurateKicksReceived",
+                                    "passMissRegained", "passMissLost", "firstTouchLooseRegained",
+                                    "firstTouchLooseLost", "looseRecoveryOut"):
                           recovery[field] += d.get(field, 0)
                       for kind, counts in d["passesByType"].items():
                           passes[kind].update(counts)
@@ -116,6 +119,18 @@ jobs:
       - name: Verify contact control and loose ball lifecycle
         working-directory: rust/football_match_engine
         run: cargo test --lib des_contact_control_ -- --nocapture
+  loose_motion_regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify rolling ball and boundary lifecycle
+        working-directory: rust/football_match_engine
+        run: cargo test --lib des_loose_motion_ -- --nocapture
+      - name: Verify fast and full accounting parity
+        working-directory: rust/football_match_engine
+        run: cargo test --lib fast_batch_and_full_event_diagnostics_match -- --nocapture
   attacking_sample:
     runs-on: ubuntu-latest
     timeout-minutes: 20

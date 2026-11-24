@@ -786,3 +786,100 @@ mod contact_control_tests {
         assert_eq!(find_grounded_ball_recovery(&players, spot), Some((1, ms)));
     }
 }
+
+
+/// Inelastic block: dissipate energy, reflect normal motion and preserve
+/// some tangential motion. The contact normal is independent of team side.
+pub(crate) fn blocked_ball_velocity(v: Vec3, player: Vec2, contact: Vec3) -> Vec3 {
+    let dx = contact.x - player.x;
+    let dy = contact.y - player.y;
+    let len = (dx*dx + dy*dy).sqrt();
+    let speed = (v.x*v.x + v.y*v.y).sqrt();
+    let (nx, ny) = if len > 0.05 { (dx/len, dy/len) }
+        else if speed > 0.01 { (-v.x/speed, -v.y/speed) } else { (0.0,0.0) };
+    let dot = v.x*nx + v.y*ny;
+    if dot < 0.0 {
+        Vec3::new(0.55*(v.x-dot*nx)-0.35*dot*nx,
+                  0.55*(v.y-dot*ny)-0.35*dot*ny, v.z.abs()*0.12)
+    } else {
+        Vec3::new(v.x*0.45, v.y*0.45, v.z.abs()*0.12)
+    }
+}
+
+pub(crate) enum LooseBallResolution {
+    Player { candidate_idx: usize, time_ms: i64, ball_pos: Vec3 },
+    Boundary(EarlyInteractionHit),
+}
+
+/// Local bounded search for a moving loose ball. A routine recovery requires
+/// playable height and reduced horizontal speed; rapid repeated contacts
+/// remain a subsequent model refinement, not automatic possession.
+pub(crate) fn find_moving_ball_recovery(traj: &BallTrajectory, candidates: &[PassReachCandidate]) -> Option<LooseBallResolution> {
+    let now = traj.start_time_ms;
+    let end = now.saturating_add(120_000);
+    let boundary = find_earliest_ball_interaction(traj, &[], now, end);
+    let stop = boundary.as_ref().map_or(end, |h| h.time_ms);
+    let mut t = now.saturating_add(250);
+    while t <= stop {
+        if boundary.as_ref().map_or(false, |h| t >= h.time_ms) { break; }
+        let ball = traj.position_at_ms(t);
+        let v = traj.velocity_at_ms(t);
+        if (v.x*v.x+v.y*v.y).sqrt() <= 7.0 {
+            let mut best: Option<(usize,f32)> = None;
+            for (idx,p) in candidates.iter().enumerate() {
+                if let Some(d) = p.contact_distance(ball, t-now) {
+                    if best.map_or(true, |(old,old_d)| d < old_d-1e-4
+                        || ((d-old_d).abs() <= 1e-4 && p.player_id < candidates[old].player_id)) {
+                        best = Some((idx,d));
+                    }
+                }
+            }
+            if let Some((idx,_)) = best {
+                return Some(LooseBallResolution::Player { candidate_idx: idx, time_ms: t, ball_pos: ball });
+            }
+        }
+        t = t.saturating_add(50);
+    }
+    boundary.map(LooseBallResolution::Boundary)
+}
+
+#[cfg(test)]
+mod moving_ball_tests {
+    use super::*;
+    #[test]
+    fn des_loose_motion_block_dissipates_energy_and_mirrors() {
+        let v=Vec3::new(20.0,4.0,0.0);
+        let spot=Vec3::ground(50.0,34.0);
+        let r=blocked_ball_velocity(v,Vec2::new(51.0,34.0),spot);
+        let m=blocked_ball_velocity(Vec3::new(-20.0,4.0,0.0),Vec2::new(49.0,34.0),spot);
+        assert!(r.x<0.0 && r.y>0.0);
+        assert!(r.x*r.x+r.y*r.y<v.x*v.x+v.y*v.y);
+        assert!((r.x+m.x).abs()<0.001 && r.y==m.y);
+    }
+    #[test]
+    fn des_loose_motion_actual_position_and_boundary() {
+        let traj=BallTrajectory { start_time_ms:1000,start_pos:Vec3::ground(50.0,34.0),
+            initial_vel:Vec3::new(12.0,0.0,0.0),gravity_z:9.81,drag:1.6,is_shot:false,is_carrier_dribble:false };
+        let p=|id:&str,side,x| PassReachCandidate {player_id:id.into(),side,pos:Vec2::new(x,34.0),
+            velocity:Vec2::default(),speed_mps:7.0,acceleration_mps2:4.0,agility:0.65,
+            reaction_ms:200,reach_m:1.0,playable_height_m:1.2};
+        let ps=[p("D",TeamSideV4::Away,50.0),p("R",TeamSideV4::Home,54.0)];
+        match find_moving_ball_recovery(&traj,&ps).unwrap() {
+            LooseBallResolution::Player{candidate_idx,time_ms,ball_pos} => {
+                assert_eq!(candidate_idx,1);
+                assert!(time_ms>1250 && ball_pos.x>53.0);
+                assert_eq!(ball_pos,traj.position_at_ms(time_ms));
+                assert!(ps[candidate_idx].position_toward(ball_pos.xy(),time_ms-1000).distance(ball_pos.xy())<=1.0);
+            }
+            _=>panic!("receiver must reach rolling ball"),
+        }
+        let exit=BallTrajectory{start_pos:Vec3::ground(50.0,67.0),initial_vel:Vec3::new(0.0,12.0,0.0),..traj};
+        match find_moving_ball_recovery(&exit,&ps).unwrap() {
+            LooseBallResolution::Boundary(h)=>{
+                assert_eq!(h.boundary,Some(BoundaryKind::RightTouchline));
+                assert!(h.time_ms>1000 && h.time_ms<1250);
+            }
+            _=>panic!("boundary before recovery"),
+        }
+    }
+}
