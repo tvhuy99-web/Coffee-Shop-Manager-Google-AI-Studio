@@ -157,6 +157,7 @@ jobs:
         run: |
           cargo test --lib pi4_legacy_api_and_direct_policy_match -- --nocapture
           cargo test --lib des_offside_ -- --nocapture
+          cargo test --lib p2_50_match_attributes_have_explicit_runtime_wiring_and_4_are_career_hooks -- --nocapture
   attacking_sample:
     runs-on: ubuntu-latest
     timeout-minutes: 20

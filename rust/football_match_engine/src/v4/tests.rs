@@ -1454,6 +1454,13 @@ fn p2_50_match_attributes_have_explicit_runtime_wiring_and_4_are_career_hooks() 
         include_str!("ball_play.rs"), include_str!("shooting.rs"),
         include_str!("goalkeeper.rs"), include_str!("set_pieces.rs"),
         include_str!("movement.rs"), include_str!("perception.rs"),
+        // PI owns these policies since stage 5.1; compatibility reexports
+        // are not the implementation. Keep the original 50-attribute gate.
+        include_str!("../player_intelligence/decision.rs"),
+        include_str!("../player_intelligence/timing.rs"),
+        include_str!("../player_intelligence/off_ball.rs"),
+        include_str!("../player_intelligence/goalkeeper.rs"),
+        include_str!("../player_intelligence/utility.rs"),
         include_str!("tactics.rs"), include_str!("psychology.rs"),
         include_str!("ai_manager.rs"), include_str!("session.rs"),
     ].join("
