@@ -10,5 +10,5 @@ def packages(p):
 old,new=packages(base),packages(candidate)
 external=lambda rows: sorted((r for r in rows if 'source' in r),key=lambda r:(r['name'],r['version'],r['source']))
 assert external(old)==external(new), 'registry graph changed'
-assert {r['name'] for r in new if 'source' not in r}=={'football_match_engine','match_contracts'}
-print('PASS frozen external Cargo graph, workspace has 2 real local packages')
+assert {r['name'] for r in new if 'source' not in r}=={'football_match_engine','match_contracts','player_intelligence','coach_intelligence'}
+print('PASS frozen external Cargo graph, workspace has 4 real local packages')

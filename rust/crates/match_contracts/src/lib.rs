@@ -5,3 +5,6 @@ pub mod fingerprints;
 pub mod ports;
 pub mod spatial;
 pub mod units;
+
+pub mod team_instructions;
+pub mod tactical_phase;

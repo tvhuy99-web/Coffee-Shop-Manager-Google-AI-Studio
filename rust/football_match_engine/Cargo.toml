@@ -9,6 +9,8 @@ description = "Football Match Lab native engine: V4.1 DES 54-attribute 90-minute
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
+player_intelligence = { path = "../crates/player_intelligence" }
+coach_intelligence = { path = "../crates/coach_intelligence" }
 match_contracts = { path = "../crates/match_contracts" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["float_roundtrip"] }

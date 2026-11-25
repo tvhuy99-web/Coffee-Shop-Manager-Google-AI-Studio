@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["football_match_engine", "crates/match_contracts"]
+members = ["football_match_engine", "crates/match_contracts", "crates/player_intelligence", "crates/coach_intelligence"]
 default-members = ["football_match_engine"]
 
 [profile.release]

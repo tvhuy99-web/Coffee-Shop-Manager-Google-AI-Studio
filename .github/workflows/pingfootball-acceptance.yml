@@ -46,12 +46,15 @@ jobs:
           from pathlib import Path
           m=json.loads(Path('evidence/cargo-metadata.json').read_text())
           local=[p for p in m['packages'] if p['source'] is None]
-          assert {p['name'] for p in local}=={'football_match_engine','match_contracts'}
+          assert {p['name'] for p in local}=={'football_match_engine','match_contracts','player_intelligence','coach_intelligence'}
           assert {p['id'] for p in local}==set(m['workspace_members'])
           contracts=next(p for p in local if p['name']=='match_contracts')
           assert all(d['source'] is not None for d in contracts['dependencies']), 'contracts must remain leaf'
           engine=next(p for p in local if p['name']=='football_match_engine')
-          assert {d['name'] for d in engine['dependencies'] if d['source'] is None}=={'match_contracts'}
+          assert {d['name'] for d in engine['dependencies'] if d['source'] is None}=={'match_contracts','player_intelligence','coach_intelligence'}
+          for name in ('player_intelligence','coach_intelligence'):
+              p=next(p for p in local if p['name']==name)
+              assert {d['name'] for d in p['dependencies'] if d['source'] is None}=={'match_contracts'}
           PY
           python3 tools/verify_a1_boundary.py
       - uses: actions/upload-artifact@v4

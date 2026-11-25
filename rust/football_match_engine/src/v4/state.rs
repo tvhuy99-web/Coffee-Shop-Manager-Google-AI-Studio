@@ -189,14 +189,7 @@ impl PlayerPsychologyState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum TacticalPhaseV4 {
-    InPossession,
-    AttackingTransition,
-    DefensiveTransition,
-    OutOfPossession,
-}
+pub use match_contracts::tactical_phase::TacticalPhaseV4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

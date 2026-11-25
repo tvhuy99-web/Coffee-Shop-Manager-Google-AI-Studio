@@ -62,33 +62,9 @@ fn evaluate_side(
         TeamSideV4::Home => input.home_team.team_instructions.clone(),
         TeamSideV4::Away => input.away_team.team_instructions.clone(),
     };
-    let mut next_ti = base_ti;
-
-    if down_to_ten {
-        next_ti.line_height = next_ti.line_height.saturating_sub(18).max(20);
-        next_ti.pressing_intensity = next_ti.pressing_intensity.saturating_sub(14).max(25);
-        next_ti.build_up_risk = next_ti.build_up_risk.saturating_sub(15).max(20);
-        next_ti.width = next_ti.width.saturating_sub(12).max(30);
-    }
-
-    if goal_diff < 0 && game_sec >= 3600 {
-        let urgency: u8 = if game_sec >= 4680 { 20 } else { 12 };
-        next_ti.line_height = (next_ti.line_height + urgency).min(88);
-        next_ti.pressing_intensity = (next_ti.pressing_intensity + urgency).min(90);
-        next_ti.tempo = (next_ti.tempo + urgency).min(90);
-        next_ti.transition_risk = (next_ti.transition_risk + 14).min(90);
-        next_ti.time_wasting = 5;
-    } else if goal_diff > 0 && game_sec >= 4320 {
-        let lock: u8 = if game_sec >= 4920 { 22 } else { 14 };
-        next_ti.line_height = next_ti.line_height.saturating_sub(lock).max(22);
-        next_ti.pressing_intensity = next_ti.pressing_intensity.saturating_sub(12).max(28);
-        next_ti.tempo = next_ti.tempo.saturating_sub(14).max(25);
-        next_ti.build_up_risk = next_ti.build_up_risk.saturating_sub(15).max(20);
-        next_ti.time_wasting = if game_sec >= 4800 { 78 } else { 62 };
-    } else if (opp_xg - own_xg) >= 0.85 && game_sec >= 2100 {
-        next_ti.line_height = next_ti.line_height.saturating_sub(10).max(28);
-        next_ti.concentration = (next_ti.concentration + 10).min(90);
-    }
+    let next_ti = coach_intelligence::propose_tactics(base_ti, coach_intelligence::CoachObservation {
+        goal_diff, own_xg, opp_xg, down_to_ten, game_sec,
+    });
 
     let prev_ti = state.active_instructions(side).clone();
     if next_ti != prev_ti {
