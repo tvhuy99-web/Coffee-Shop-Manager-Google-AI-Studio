@@ -491,3 +491,68 @@ mod pi_tackle_loose_tests {
         assert_eq!(s.rng.state(),r.rng.state());
     }
 }
+
+
+#[cfg(test)]
+mod a4_atomic_api_tests {
+    use super::*;
+    use crate::v4::input::{SimulationMode,RulesModeV4};
+    use crate::v4::tests::make_v4_input;
+
+    fn new_session()->MatchSessionV4{
+        MatchSessionV4::new(make_v4_input(4242,SimulationMode::FullEvent,RulesModeV4::Standard)).unwrap()
+    }
+    fn snapshot(s:&MatchSessionV4)->String{
+        serde_json::to_string(&s.export_checkpoint().unwrap()).unwrap()
+    }
+    #[test]
+    fn a4_rejected_command_does_not_consume_id_or_mutate_any_state(){
+        let mut s=new_session();
+        let before=snapshot(&s);
+        let id=s.next_command_id;
+        let err=s.submit_command(MatchCommandV4::Substitute{side:TeamSideV4::Home,
+            player_out_id:"missing-player".into(),player_in_id:"missing-bench".into()});
+        assert!(err.is_err());
+        assert_eq!(snapshot(&s),before);
+        assert_eq!(s.next_command_id,id);
+        s.submit_command(MatchCommandV4::StartNextPeriod).unwrap();
+        assert_eq!(s.command_timeline.last().unwrap().command_id,id);
+    }
+    #[test]
+    fn a4_failed_advance_rolls_back_queue_rng_ledger_and_event_cursor(){
+        let mut s=new_session();
+        s.start_next_period().unwrap();
+        // Force a real scheduler failure after a number of successful
+        // dispatcher calls: 65 same-time events exceed the watchdog.
+        let at=s.sim_time_ms()+1;
+        s.scheduler=EventScheduler::new();
+        s.scheduler.advance_cursor_to(at).unwrap();
+        for _ in 0..65 {
+            s.scheduler.schedule(at,EventPriority::TacticalAndCommand,CancellationScope::Persistent,
+                DesEventPayload::TacticalCommandEffective{command_index:u32::MAX,side:TeamSideV4::Home}).unwrap();
+        }
+        let before=snapshot(&s);
+        let beats=s.completed_beats;
+        assert!(s.advance_steps(100).is_err());
+        assert_eq!(s.completed_beats,beats);
+        assert_eq!(snapshot(&s),before);
+    }
+    #[test]
+    fn a4_recomputed_checksum_cannot_hide_invalid_checkpoint_references(){
+        let s=new_session();
+        let original=s.export_checkpoint().unwrap();
+        for mode in 0..5 {
+            let mut bad=original.clone();
+            match mode {
+                0=>bad.payload.stats.carrier_idx=usize::MAX,
+                1=>bad.payload.state.players[0].profile_idx=usize::MAX,
+                2=>bad.payload.rng.root_seed=bad.payload.input.seed.wrapping_add(1),
+                3=>bad.sim_time_ms=bad.sim_time_ms+1,
+                _=>bad.payload.next_event_sequence=bad.payload.stats.event_count+1,
+            }
+            bad.checksum_hex=compute_checkpoint_checksum(&serde_json::to_string(&bad.payload).unwrap());
+            assert!(MatchSessionV4::from_checkpoint(bad).is_err(),"corruption mode {mode}");
+        }
+        assert_eq!(snapshot(&MatchSessionV4::from_checkpoint(original).unwrap()),snapshot(&s));
+    }
+}

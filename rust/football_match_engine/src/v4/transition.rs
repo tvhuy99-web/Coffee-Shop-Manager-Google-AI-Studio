@@ -1,7 +1,17 @@
-//! Phase A4 atomic transition stages and authoritative invariant verifier (INV-01..INV-07).
+//! Phase A4 transition vocabulary, monotonic commit gate and read-only state verifier.
 //!
 //! Provides runtime and test verification that `MatchStateV4` remains physically and legally
-//! consistent after every DES transition without mutating gameplay state.
+//! consistent without mutating gameplay state. The public API transaction gate is separate.
+
+use crate::v4::error::V4Error;
+
+/// Runtime commit gate shared by all public mutation entrypoints.
+pub(crate) fn verify_commit_progress(before_ms:i64,after_ms:i64,before_events:u32,after_events:u32,before_steps:u64,after_steps:u64)->Result<(),V4Error>{
+    if after_ms<before_ms || after_events<before_events || after_steps<before_steps {
+        return Err(V4Error::InvalidClock("INV-03: transaction regressed time, event sequence or DES step count".into()));
+    }
+    Ok(())
+}
 
 use crate::contracts::{is_finite_vec2, is_finite_vec3};
 use crate::v4::state::{BallControlState, MatchStateV4};

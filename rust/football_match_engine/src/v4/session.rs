@@ -63,6 +63,7 @@ pub use crate::v4::session_replay::{replay_v4_with_timeline, simulate_batch_fast
 ///   `start_next_period`, `submit_command`) with explicit `HalfTimeBreak` / `ExtraTimeBreak` pauses
 /// - **Self-verifying checkpoint export/import** (`export_checkpoint`, `from_checkpoint`)
 /// - **FastBatch / Seed-Replay** (`run_to_full_time`) with zero-allocation event fingerprinting
+#[derive(Clone)]
 pub struct MatchSessionV4 {
     input: MatchInputV4,
     ruleset: RulesetConfig,
@@ -300,6 +301,26 @@ impl MatchSessionV4 {
     ///   `DeadBallPhase::ProcessingSubstitutions`.
     /// - `StartNextPeriod`: transitions out of `HalfTimeBreak` / `ExtraTimeBreak` / `PreMatch`.
     pub fn submit_command(&mut self, cmd: MatchCommandV4) -> Result<(), V4Error> {
+        self.transact(|candidate| candidate.submit_command_inner(cmd))
+    }
+
+    /// Execute a public operation against a private candidate. The live session,
+    /// including queue, RNG, ledger, diagnostics and event-delivery cursor,
+    /// changes only after the whole operation succeeds. Batch size is bounded
+    /// by the existing public API; do not clone the event history per DES event.
+    fn transact<T>(&mut self, operation: impl FnOnce(&mut Self) -> Result<T,V4Error>) -> Result<T,V4Error> {
+        let mut candidate=self.clone();
+        let result=operation(&mut candidate)?;
+        crate::v4::transition::verify_commit_progress(
+            self.state.des_clock.sim_time_ms,candidate.state.des_clock.sim_time_ms,
+            self.event_count,candidate.event_count,
+            self.completed_beats,candidate.completed_beats,
+        )?;
+        *self=candidate;
+        Ok(result)
+    }
+
+    fn submit_command_inner(&mut self, cmd: MatchCommandV4) -> Result<(), V4Error> {
         if self.is_full_time() {
             return Err(V4Error::SessionFinished);
         }
@@ -712,6 +733,10 @@ impl MatchSessionV4 {
 
     /// Starts the next match period from `PreMatch`, `HalfTimeBreak`, or `ExtraTimeBreak`.
     pub fn start_next_period(&mut self) -> Result<SessionStepResultV4, V4Error> {
+        self.transact(|candidate| candidate.start_next_period_inner())
+    }
+
+    fn start_next_period_inner(&mut self) -> Result<SessionStepResultV4, V4Error> {
         if self.is_full_time() {
             return Err(V4Error::SessionFinished);
         }
@@ -722,6 +747,10 @@ impl MatchSessionV4 {
     /// Advances an interactive match by up to `max_steps` DES events, stopping early on
     /// `HalfTimeBreak`, `ExtraTimeBreak`, or `FullTime`.
     pub fn advance_steps(&mut self, max_steps: usize) -> Result<SessionStepResultV4, V4Error> {
+        self.transact(|candidate| candidate.advance_steps_inner(max_steps))
+    }
+
+    fn advance_steps_inner(&mut self, max_steps: usize) -> Result<SessionStepResultV4, V4Error> {
         let steps_limit = max_steps.clamp(1, 500);
         let mut executed = 0u32;
         let mut stop_reason = "MAX_STEPS_REACHED";
@@ -766,6 +795,14 @@ impl MatchSessionV4 {
     /// equality of the actual event clock and the requested horizon.
     /// A stale (past) target is a no-op during an active period.
     pub fn advance_until_ms(
+        &mut self,
+        target_sim_time_ms: i64,
+        max_steps_guard: usize,
+    ) -> Result<SessionStepResultV4, V4Error> {
+        self.transact(|candidate| candidate.advance_until_ms_inner(target_sim_time_ms,max_steps_guard))
+    }
+
+    fn advance_until_ms_inner(
         &mut self,
         target_sim_time_ms: i64,
         max_steps_guard: usize,
@@ -844,6 +881,10 @@ impl MatchSessionV4 {
     /// Runs the match to Full Time (used by `simulate_v4`, `FastBatch`, and interactive `finish`).
     /// Automatically advances through `HalfTimeBreak` / `ExtraTimeBreak` with half-time recovery.
     pub fn run_to_full_time(&mut self) -> Result<MatchResultV4, V4Error> {
+        self.transact(|candidate| candidate.run_to_full_time_inner())
+    }
+
+    fn run_to_full_time_inner(&mut self) -> Result<MatchResultV4, V4Error> {
         if self.finished {
             return Err(V4Error::SessionFinished);
         }

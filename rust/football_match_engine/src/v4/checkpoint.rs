@@ -328,5 +328,53 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
         )));
     }
 
+    // The checksum authenticates bytes only; it does not prove they describe
+    // a structurally restorable session. Reject invalid references before
+    // any engine indexing, even if the sender recomputed the checksum.
+    let p=&ckpt.payload;
+    let bad=|detail:&str| V4Error::InvalidInput(format!("checkpoint structural invariant: {detail}"));
+    if ckpt.sim_time_ms!=p.state.des_clock.sim_time_ms || ckpt.sim_time_ms<0 {
+        return Err(bad("envelope time differs from authoritative clock"));
+    }
+    if p.rng.root_seed!=p.input.seed {return Err(bad("RNG root seed differs from input"));}
+    if p.next_event_sequence!=p.stats.event_count {return Err(bad("event sequence mismatch"));}
+    if p.stats.carrier_idx>=p.state.players.len() || p.stats.last_passer_idx.is_some_and(|i|i>=p.state.players.len()) {
+        return Err(bad("carrier or passer index out of roster"));
+    }
+    if p.state.players.iter().any(|player|player.profile_idx>=p.state.player_profiles.len()) {
+        return Err(bad("player profile index out of bounds"));
+    }
+    if p.pending_carry.as_ref().is_some_and(|c|c.carrier_idx>=p.state.players.len()) {
+        return Err(bad("pending carry index out of roster"));
+    }
+    if let Some(f)=&p.pending_flight {
+        match f.action {
+            FlightActionV4::Pass{passer_idx,..} if passer_idx>=p.state.players.len()=>return Err(bad("pending passer index out of roster")),
+            FlightActionV4::Shot{shooter_idx} if shooter_idx>=p.state.players.len()=>return Err(bad("pending shooter index out of roster")),
+            _=>{}
+        }
+    }
+    if let Some(d)=&p.pending_decision {
+        use crate::player_intelligence::PlannedActionV4;
+        if !p.state.players.iter().any(|player|player.player_id==d.player_id && player.side==d.side) {
+            return Err(bad("pending decision actor not in roster"));
+        }
+        match d.plan.action {
+            PlannedActionV4::Pass{target_idx,..} if target_idx>=p.state.players.len()=>return Err(bad("pending pass target out of roster")),
+            PlannedActionV4::Dribble{defender_idx:Some(i)} if i>=p.state.players.len()=>return Err(bad("pending defender index out of roster")),
+            _=>{}
+        }
+    }
+    if !p.stats.finished && p.stats.last_delivered_event_index>p.stats.retained_events.len(){
+        return Err(bad("event delivery cursor exceeds retained history"));
+    }
+    if p.stats.retained_events.iter().enumerate().any(|(i,event)|event.sequence as usize!=i+1 || event.sim_time_ms>ckpt.sim_time_ms)
+        || p.stats.retained_events.windows(2).any(|w|w[0].sim_time_ms>w[1].sim_time_ms){
+        return Err(bad("retained event sequence/time is invalid"));
+    }
+    if !p.stats.finished && p.input.simulation_mode.retain_events() && p.stats.retained_events.len()!=p.stats.event_count as usize {
+        return Err(bad("retained full-event history count mismatch"));
+    }
+
     Ok(())
 }
