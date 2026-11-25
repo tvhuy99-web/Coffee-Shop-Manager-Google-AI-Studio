@@ -3611,5 +3611,4 @@ fn map_dead_ball_diag_kind(kind: DeadBallKind) -> Option<DeadBallDiagKind> {
 }
 
 #[cfg(test)]
-#[path = "session_tests.rs"]
-mod contact_control_lifecycle_tests;
+include!("session_tests.rs");
