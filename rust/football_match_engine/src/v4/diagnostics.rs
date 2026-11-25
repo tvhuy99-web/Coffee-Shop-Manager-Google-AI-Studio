@@ -228,6 +228,16 @@ pub struct DesMatchDiagnosticsV4 {
     #[serde(default)]
     pub tackle_audit_advantage: u32,
     #[serde(default)]
+    pub tackle_controlled_wins: u32,
+    #[serde(default)]
+    pub tackle_loose_contacts: u32,
+    #[serde(default)]
+    pub tackle_loose_attack_regained: u32,
+    #[serde(default)]
+    pub tackle_loose_defence_won: u32,
+    #[serde(default)]
+    pub tackle_loose_boundary: u32,
+    #[serde(default)]
     pub tackle_audit_missed_ball_fouls: u32,
     #[serde(default)]
     pub tackle_audit_missed_ball_advantage: u32,
@@ -511,6 +521,16 @@ struct DesDiagnosticsAccumulator {
     #[serde(default)]
     tackle_audit_advantage: u32,
     #[serde(default)]
+    tackle_controlled_wins: u32,
+    #[serde(default)]
+    tackle_loose_contacts: u32,
+    #[serde(default)]
+    tackle_loose_attack_regained: u32,
+    #[serde(default)]
+    tackle_loose_defence_won: u32,
+    #[serde(default)]
+    tackle_loose_boundary: u32,
+    #[serde(default)]
     tackle_audit_missed_ball_fouls: u32,
     #[serde(default)]
     tackle_audit_missed_ball_advantage: u32,
@@ -613,6 +633,11 @@ impl DesDiagnosticsAccumulator {
             tackle_audit_clean: self.tackle_audit_clean,
             tackle_audit_foul: self.tackle_audit_foul,
             tackle_audit_advantage: self.tackle_audit_advantage,
+            tackle_controlled_wins: self.tackle_controlled_wins,
+            tackle_loose_contacts: self.tackle_loose_contacts,
+            tackle_loose_attack_regained: self.tackle_loose_attack_regained,
+            tackle_loose_defence_won: self.tackle_loose_defence_won,
+            tackle_loose_boundary: self.tackle_loose_boundary,
             tackle_audit_missed_ball_fouls: self.tackle_audit_missed_ball_fouls,
             tackle_audit_missed_ball_advantage: self.tackle_audit_missed_ball_advantage,
             tackle_audit_pi_clean_sum: self.tackle_audit_pi_clean_sum,
@@ -829,6 +854,17 @@ impl MatchDiagnosticsCollectorV4 {
         self.des.tackle_audit_resolver_foul_sum+=f64::from(resolver.1);
         self.des.tackle_audit_resolver_advantage_sum+=f64::from(resolver.2);
     }
+    pub(crate) fn record_tackle_control_split(&mut self,loose:bool,controlled:bool) {
+        self.des.tackle_loose_contacts+=u32::from(loose);
+        self.des.tackle_controlled_wins+=u32::from(controlled);
+    }
+    pub(crate) fn record_tackle_loose_recovery(&mut self,regained:bool) {
+        self.des.tackle_loose_attack_regained+=u32::from(regained);
+        self.des.tackle_loose_defence_won+=u32::from(!regained);
+    }
+    pub(crate) fn record_tackle_loose_boundary(&mut self) {
+        self.des.tackle_loose_boundary+=1;
+    }
     pub fn record_preparation_contact(&mut self,lost:bool,foul:bool) {
         self.des.preparation_contacts=self.des.preparation_contacts.saturating_add(1);
         if lost {self.des.preparation_turnovers=self.des.preparation_turnovers.saturating_add(1);}
@@ -974,6 +1010,12 @@ impl MatchDiagnosticsCollectorV4 {
                 }
                 self.lose_ball(side, "OFFSIDE");
             }
+            EventTypeV4::SecondBallWon if metadata.cause.as_deref()==Some("TACKLE_CONTACT_LOOSE") => {
+                if metadata.extra.get("recoveryOutcome").map(String::as_str)==Some("DEFENCE_WON") {
+                    self.lose_ball(side.opposite(),"DRIBBLE_TACKLED");
+                }
+                self.observe_territory(side,ball_pos.xy());
+            }
             EventTypeV4::SecondBallWon if matches!(metadata.cause.as_deref(),Some("PASS_CONTACT_LOOSE" | "PASS_MISS_LOOSE" | "FIRST_TOUCH_LOOSE")) => {
                 let cause=metadata.cause.as_deref().unwrap_or("");
                 let regained=metadata.extra.get("recoveryOutcome").map(String::as_str)==Some("ATTACK_REGAINED");
@@ -997,7 +1039,9 @@ impl MatchDiagnosticsCollectorV4 {
                 if metadata.extra.get("looseRecoveryBoundary").map(String::as_str)==Some("true") => {
                 let lost=metadata.extra.get("recoveryOutcome").map(String::as_str)==Some("DEFENCE_RESTART");
                 let origin=if lost {side.opposite()} else {side};
-                self.team_mut(origin).loose_recovery_out+=1;
+                if metadata.cause.as_deref()!=Some("TACKLE_CONTACT_LOOSE") {
+                    self.team_mut(origin).loose_recovery_out+=1;
+                }
                 if lost {self.lose_ball(origin,"OUT_OF_PLAY");} else {self.close_active();}
             }
             EventTypeV4::FirstTouch if metadata.outcome.as_deref()==Some("HEAVY_TOUCH_LOST") => {

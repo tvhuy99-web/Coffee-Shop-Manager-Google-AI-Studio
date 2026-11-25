@@ -831,7 +831,59 @@ pub(crate) fn resolve_carry_contact(
     state:&mut MatchStateV4,input:&MatchInputV4,carrier_idx:usize,defender_idx:Option<usize>,
     carrier_ctx:LocalSpatialContext,shielding:bool,rng:&mut DeterministicRng,
 )->BallPlayOutcome {
-    execute_dribble_duel_impl(state,input,carrier_idx,defender_idx,carrier_ctx,0.0,shielding,rng).outcome
+    // Preserve the existing duel and legality decision. Only a legal
+    // winning touch is eligible for the subsequent control assessment.
+    let control=defender_idx.map(|i|tackle_control_probability(state,input,carrier_idx,i));
+    let incoming=state.players[carrier_idx].vel;
+    let mut out=execute_dribble_duel_impl(state,input,carrier_idx,defender_idx,carrier_ctx,0.0,shielding,rng).outcome;
+    if out.events.iter().any(|e|e.kind==EventTypeV4::TackleWon) {
+        let i=defender_idx.expect("winning tackle has a challenger");
+        if (rng.next_double() as f32)>=control.expect("winning tackle has a control estimate") {
+            let p=&state.players[i];
+            let spot=state.ball.pos;
+            let velocity=crate::v4::interaction::blocked_ball_velocity(
+                Vec3::new(incoming.x,incoming.y,0.0),p.pos,spot);
+            state.ball.vel=velocity;
+            state.ball.control=BallControlState::Loose;
+            state.ball.owner_side=None;
+            state.ball.owner_player_id=None;
+            // Last touch is the legal tackling player, not a new owner.
+            state.ball.last_touch_side=Some(p.side);
+            state.ball.last_touch_player_id=Some(p.player_id.clone());
+            out.events.retain(|e|!matches!(e.kind,EventTypeV4::DribbleLost|EventTypeV4::TackleWon));
+            out.events.push(EmittedPlayEvent{kind:EventTypeV4::LooseBall,tier:HighlightTier::None,
+                seq_id:None,side:Some(p.side),actor:Some(p.player_id.clone()),
+                target:Some(state.players[carrier_idx].player_id.clone()),ball_pos:spot,
+                metadata:EventMetadataV4{cause:Some("TACKLE_CONTACT_LOOSE".into()),
+                    ..EventMetadataV4::default()}});
+            // No new controlled possession yet. Session schedules the
+            // same moving loose-ball recovery used for other contacts.
+            out.next_side=state.players[carrier_idx].side;
+            out.next_carrier_idx=carrier_idx;
+        }
+    }
+    out
+}
+
+/// Same first-touch control model as a legal pass interception. The
+/// controlled-ball carrier velocity is a proxy for incoming ball speed,
+/// since there is no independent rolling dribble trajectory yet.
+pub(crate) fn tackle_control_probability(state:&MatchStateV4,input:&MatchInputV4,
+    carrier_idx:usize,def_idx:usize)->f32 {
+    let carrier=&state.players[carrier_idx];
+    let defender=&state.players[def_idx];
+    let attrs=player_attrs(state,defender);
+    let skill=normalize_attr(attrs.technical.first_touch)*0.45
+        +normalize_attr(attrs.technical.technique)*0.30
+        +normalize_attr(attrs.mental.composure)*0.25;
+    let fatigue=(defender.fatigue.aerobic*0.6+defender.fatigue.anaerobic*0.4)/100.0;
+    let dx=carrier.vel.x-defender.vel.x;
+    let dy=carrier.vel.y-defender.vel.y;
+    let speed=(dx*dx+dy*dy).sqrt();
+    let reach=0.85+normalize_attr(attrs.physical.agility)*0.25;
+    let pressure=evaluate_local_context(state,input,defender.side,carrier.pos).pressure/100.0;
+    crate::v4::interaction::contact_control_probability(skill,normalize_attr(attrs.physical.balance),
+        fatigue,speed,0.0,carrier.pos.distance(defender.pos)/reach,pressure)
 }
 
 /// Authoritative conditional duel probabilities for a reachable

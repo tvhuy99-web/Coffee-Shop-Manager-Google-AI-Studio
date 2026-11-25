@@ -2688,7 +2688,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.25");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.26");
 }
 
 
@@ -3555,7 +3555,8 @@ fn pi_defense_contact_audit_shared_angle_and_speed() {
             let mut rng=DeterministicRng::new(104729+k*7907);
             let out=resolve_carry_contact(&mut x,&input,a,Some(b),ctx,false,&mut rng);
             for (m,kind) in [EventTypeV4::TackleWon,EventTypeV4::Foul,EventTypeV4::AdvantagePlayed].into_iter().enumerate() {
-                counts[j][m]+=u32::from(out.events.iter().any(|e|e.kind==kind));
+                counts[j][m]+=u32::from(out.events.iter().any(|e|e.kind==kind ||
+                    (kind==EventTypeV4::TackleWon && e.kind==EventTypeV4::LooseBall && e.metadata.cause.as_deref()==Some("TACKLE_CONTACT_LOOSE"))));
             }
         }
     }
@@ -3617,7 +3618,8 @@ fn pi_defense_body_contact_is_separate_from_ball_success() {
             let mut state=template.clone();
             let mut rng=DeterministicRng::new(104729+seed*7907);
             let out=resolve_carry_contact(&mut state,&input,a,Some(b),ctx,false,&mut rng);
-            let clean=out.events.iter().any(|e|e.kind==EventTypeV4::TackleWon);
+            let clean=out.events.iter().any(|e|e.kind==EventTypeV4::TackleWon ||
+                (e.kind==EventTypeV4::LooseBall && e.metadata.cause.as_deref()==Some("TACKLE_CONTACT_LOOSE")));
             let foul=out.events.iter().any(|e|e.kind==EventTypeV4::Foul);
             let body=out.events.iter().any(|e|e.kind==EventTypeV4::Foul&&e.metadata.extra.get("contactBranch").map(String::as_str)==Some("MISSED_BALL_BODY"));
             assert!(!(clean&&foul));
@@ -3640,4 +3642,49 @@ fn pi_defense_body_contact_is_separate_from_ball_success() {
         assert!((counts[j][1] as f32/4096.0-p.1).abs()<0.04);
     }
     println!("PI_TACKLE_BODY_CONTACT front={f:?} rear={r:?} counts_clean_foul_body_miss={counts:?}");
+}
+
+
+#[test]
+fn pi_defense_legal_tackle_contact_does_not_guarantee_control() {
+    use crate::v4::ball_play::{duel_contact_probabilities,tackle_control_probability,resolve_carry_contact};
+    use crate::v4::state::{MatchStateV4,BallControlState};
+    use crate::v4::movement::evaluate_local_context;
+    let input=make_v4_input(23101,SimulationMode::FullEvent,RulesModeV4::Standard);
+    let mut state=MatchStateV4::from_input(&input);
+    let a=state.players.iter().position(|p|p.side==TeamSideV4::Home&&!p.is_goalkeeper).unwrap();
+    let b=state.players.iter().position(|p|p.side==TeamSideV4::Away&&!p.is_goalkeeper).unwrap();
+    state.players[a].pos=Vec2::new(50.0,34.0);
+    state.players[b].pos=Vec2::new(51.0,34.0);
+    state.players[a].facing_rad=0.0;
+    state.players[a].vel=Vec2::new(4.0,0.0);
+    state.players[b].vel=Vec2::default();
+    let ctx=evaluate_local_context(&state,&input,TeamSideV4::Home,state.players[a].pos);
+    let legal=duel_contact_probabilities(&state,&input,a,b,ctx,false).0;
+    let control=tackle_control_probability(&state,&input,a,b);
+    let mut wins=0u32;let mut loose=0u32;
+    for k in 0..4096i64 {
+        let mut x=state.clone();
+        let mut rng=DeterministicRng::new(104729+k*7907);
+        let out=resolve_carry_contact(&mut x,&input,a,Some(b),ctx,false,&mut rng);
+        if out.events.iter().any(|e|e.kind==EventTypeV4::TackleWon) {
+            wins+=1;
+            assert_eq!(x.ball.control,BallControlState::Controlled);
+            assert_eq!(out.next_side,TeamSideV4::Away);
+        }
+        if out.events.iter().any(|e|e.kind==EventTypeV4::LooseBall&&e.metadata.cause.as_deref()==Some("TACKLE_CONTACT_LOOSE")) {
+            loose+=1;
+            assert_eq!(x.ball.control,BallControlState::Loose);
+            assert!(x.ball.owner_side.is_none()&&x.ball.owner_player_id.is_none());
+            assert_eq!(x.ball.last_touch_side,Some(TeamSideV4::Away));
+            assert_eq!(x.ball.last_touch_player_id.as_deref(),Some(state.players[b].player_id.as_str()));
+            assert!(x.ball.vel.x.abs()+x.ball.vel.y.abs()>0.0);
+            assert_eq!(out.next_side,TeamSideV4::Home);
+            assert!(!out.events.iter().any(|e|matches!(e.kind,EventTypeV4::TackleWon|EventTypeV4::DribbleLost|EventTypeV4::Foul)));
+        }
+    }
+    assert!(wins>0&&loose>0);
+    assert!((wins as f32/4096.0-legal*control).abs()<0.04);
+    assert!((loose as f32/4096.0-legal*(1.0-control)).abs()<0.04);
+    println!("PI_TACKLE_CONTROL legal={legal} conditional_control={control} controlled={wins} loose={loose} n=4096");
 }

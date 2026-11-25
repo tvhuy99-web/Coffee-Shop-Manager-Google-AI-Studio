@@ -2124,6 +2124,9 @@ impl MatchSessionV4 {
                     let kind=if is_in_attacking_penalty_box(side,pos){DeadBallKind::PenaltyKick}else{DeadBallKind::DirectFreeKick};
                     return self.open_dead_ball(kind,side,Vec3::ground(pos.x,pos.y),injury,card);
                 }
+                if self.state.ball.control==BallControlState::Loose {
+                    return self.start_pass_recovery(side,Vec::new(),"TACKLE_CONTACT_LOOSE");
+                }
                 if lost {
                     self.last_passer_idx=None;
                     let avg_wr=self.team_avg_work_rate(outcome.next_side);
@@ -2443,6 +2446,15 @@ impl MatchSessionV4 {
         let mut meta = EventMetadataV4 { cause: Some(cause.into()), ..EventMetadataV4::default() };
         meta.extra.insert("recoveryOutcome".into(), if side == origin_side { "ATTACK_REGAINED".into() } else { "DEFENCE_WON".into() });
         self.emit(EventTypeV4::SecondBallWon, HighlightTier::None, None, Some(side), Some(id.clone()), None, meta);
+        if cause=="TACKLE_CONTACT_LOOSE" {
+            self.diagnostics.record_tackle_loose_recovery(side==origin_side);
+        }
+        if cause=="TACKLE_CONTACT_LOOSE" && side!=origin_side {
+            let avg_wr=self.team_avg_work_rate(side);
+            let ball=self.state.ball.pos;
+            let phase_events=update_tactical_phases(&mut self.state,origin_side,side,ball,0,avg_wr);
+            self.flush_play_events(phase_events,side);
+        }
         let settle = self.input.timing_model.first_touch_settle_ms.sample_triangular(&mut self.rng, 1.0).max(150);
         self.scheduler.schedule(now.saturating_add(settle), EventPriority::BallStateTransition, CancellationScope::LivePlayOnly,
             DesEventPayload::FirstTouchComplete { player_id: id, side })
@@ -2451,6 +2463,7 @@ impl MatchSessionV4 {
     }
 
     fn finish_loose_ball_boundary(&mut self, origin_side: TeamSideV4, cause: &str, hit: &EarlyInteractionHit) -> Result<(), V4Error> {
+        if cause=="TACKLE_CONTACT_LOOSE" {self.diagnostics.record_tackle_loose_boundary();}
         let spot=hit.ball_pos.clamp_to_pitch();
         let last_side=self.state.ball.last_touch_side.unwrap_or(origin_side);
         let last_id=self.state.ball.last_touch_player_id.clone();
@@ -2467,7 +2480,8 @@ impl MatchSessionV4 {
             let seq=self.alloc_highlight_sequence();
             if last_side==defender {
                 let event=crate::v4::own_goal::award_own_goal(&mut self.state,actor,beneficiary,
-                    crate::v4::own_goal::DeflectionCause::PassContact,seq);
+                    if cause=="TACKLE_CONTACT_LOOSE" {crate::v4::own_goal::DeflectionCause::TackleContact}
+                    else {crate::v4::own_goal::DeflectionCause::PassContact},seq);
                 self.flush_play_events(vec![event],beneficiary);
             } else {
                 self.state.team_state_mut(beneficiary).goals+=1;
@@ -2778,8 +2792,11 @@ impl MatchSessionV4 {
             let has=|kind|out.events.iter().any(|e|e.kind==kind);
             let missed_ball_body=out.events.iter().any(|e|matches!(e.kind,EventTypeV4::Foul|EventTypeV4::AdvantagePlayed)
                 && e.metadata.extra.get("contactBranch").map(String::as_str)==Some("MISSED_BALL_BODY"));
+            let loose=out.events.iter().any(|e|e.kind==EventTypeV4::LooseBall
+                && e.metadata.cause.as_deref()==Some("TACKLE_CONTACT_LOOSE"));
             self.diagnostics.record_tackle_contact_audit(pi.clean_win_probability,pi.foul_probability,
-                resolver,has(EventTypeV4::TackleWon),has(EventTypeV4::Foul),has(EventTypeV4::AdvantagePlayed),missed_ball_body);
+                resolver,has(EventTypeV4::TackleWon)||loose,has(EventTypeV4::Foul),has(EventTypeV4::AdvantagePlayed),missed_ball_body);
+            self.diagnostics.record_tackle_control_split(loose,has(EventTypeV4::TackleWon));
         }
         out
     }
@@ -2834,6 +2851,9 @@ impl MatchSessionV4 {
         if had_foul {
             let kind=if is_in_attacking_penalty_box(side,pos){DeadBallKind::PenaltyKick}else{DeadBallKind::DirectFreeKick};
             return self.open_dead_ball(kind,side,Vec3::ground(pos.x,pos.y),had_injury,had_card);
+        }
+        if self.state.ball.control==BallControlState::Loose {
+            return self.start_pass_recovery(side,Vec::new(),"TACKLE_CONTACT_LOOSE");
         }
         if outcome.next_side!=side {
             self.last_passer_idx=None;
@@ -4133,5 +4153,59 @@ mod pi_personal_feedback_tests {
         s.emit(EventTypeV4::Goal,HighlightTier::None,None,Some(TeamSideV4::Home),Some(id),None,EventMetadataV4::default());
         assert_eq!(recovering,s.state.players[idx].psychology.personal_confidence_delta);
         println!("PI_PSYCHOLOGY personal_feedback initial={initial} recovered={recovered} negative={negative} recovering={recovering}");
+    }
+}
+
+
+#[cfg(test)]
+mod pi_tackle_loose_tests {
+    use super::*;
+    use crate::v4::input::{SimulationMode,RulesModeV4};
+    use crate::v4::tests::make_v4_input;
+    #[test]
+    fn pi_defense_tackle_loose_recovery_checkpoint_and_third_player() {
+        let mut s=MatchSessionV4::new(make_v4_input(23102,SimulationMode::FullEvent,RulesModeV4::Standard)).unwrap();
+        s.step_one_des_event(true).unwrap();
+        s.scheduler.invalidate_live_play();
+        let side=s.possession_side;
+        let a=s.carrier_idx;
+        let b=s.state.players.iter().position(|p|p.side!=side&&!p.is_goalkeeper).unwrap();
+        let third=s.state.players.iter().enumerate().position(|(i,p)|i!=a&&i!=b&&p.side==side&&!p.is_goalkeeper).unwrap();
+        for p in &mut s.state.players {p.pos=Vec2::new(95.0,60.0);p.vel=Vec2::default();}
+        s.state.players[a].pos=Vec2::new(50.0,34.0);
+        s.state.players[b].pos=Vec2::new(51.0,34.0);
+        s.state.players[a].facing_rad=0.0;
+        s.state.players[a].vel=Vec2::new(4.0,0.0);
+        let ctx=evaluate_local_context(&s.state,&s.input,side,s.state.players[a].pos);
+        let initial=s.state.clone();
+        let mut loose=None;
+        for seed in 1..=512 {
+            s.state=initial.clone();
+            s.rng=DeterministicRng::new(seed*7907);
+            let out=resolve_carry_contact(&mut s.state,&s.input,a,Some(b),ctx,false,&mut s.rng);
+            if s.state.ball.control==BallControlState::Loose {loose=Some(out);break;}
+        }
+        s.flush_play_events(loose.expect("legal uncontrolled touch").events,side);
+        // Place an uninvolved teammate at the projected recovery spot;
+        // both original duel participants are too far to recover first.
+        s.state.players[a].pos=Vec2::new(20.0,10.0);
+        s.state.players[b].pos=Vec2::new(80.0,10.0);
+        s.state.players[third].pos=s.state.ball.pos.xy();
+        let now=s.sim_time_ms();
+        s.start_pass_recovery(side,Vec::new(),"TACKLE_CONTACT_LOOSE").unwrap();
+        let at=s.pending_flight.as_ref().unwrap().resolves_at_ms;
+        assert!(at>now);
+        assert!(s.state.ball.owner_side.is_none());
+        assert_eq!(s.pending_flight.as_ref().unwrap().outcome.next_carrier_idx,third);
+        let mut r=MatchSessionV4::from_checkpoint(serde_json::from_str(&serde_json::to_string(&s.export_checkpoint().unwrap()).unwrap()).unwrap()).unwrap();
+        for x in [&mut s,&mut r] {
+            x.step_one_des_event(true).unwrap();
+            assert_eq!(x.sim_time_ms(),at);
+            assert_eq!(x.carrier_idx,third);
+            assert_eq!(x.state.ball.control,BallControlState::Controlled);
+            assert_eq!(x.state.ball.owner_player_id.as_deref(),Some(x.state.players[third].player_id.as_str()));
+        }
+        assert_eq!(s.timeline_fingerprint,r.timeline_fingerprint);
+        assert_eq!(s.rng.state(),r.rng.state());
     }
 }
