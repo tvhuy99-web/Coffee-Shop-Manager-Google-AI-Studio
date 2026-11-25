@@ -2688,7 +2688,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.24");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.25");
 }
 
 
@@ -3602,6 +3602,15 @@ fn pi_defense_body_contact_is_separate_from_ball_success() {
     assert!(duel_missed_ball_foul_probability(&rear,&input,a,b)>0.0);
     assert!(f.0>r.0&&r.1>f.1);
     assert!(r.0+r.1+r.2<=1.0);
+    // Forecast now recognizes the same unsafe-miss branch without
+    // reading the opponent's real technical attributes or the RNG.
+    let pi_front=crate::player_intelligence::evaluate_tackle(&front,a,b,0.0);
+    let pi_rear=crate::player_intelligence::evaluate_tackle(&rear,a,b,0.0);
+    assert!(pi_front.clean_win_probability>pi_rear.clean_win_probability);
+    assert!(pi_rear.foul_probability>pi_front.foul_probability);
+    assert!(pi_rear.clean_win_probability+pi_rear.foul_probability<=1.0);
+    println!("PI_TACKLE_BODY_FORECAST_MATCHED front_clean={} front_foul={} rear_clean={} rear_foul={}",
+        pi_front.clean_win_probability,pi_front.foul_probability,pi_rear.clean_win_probability,pi_rear.foul_probability);
     let mut counts=[[0u32;4];2];
     for seed in 0..4096i64 {
         for (j,template) in [&front,&rear].into_iter().enumerate() {
