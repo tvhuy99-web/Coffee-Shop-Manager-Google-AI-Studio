@@ -306,6 +306,26 @@ mod tests {
     }
 
     #[test]
+    fn des_clock_independent_period_rounding_preserves_fractional_seconds() {
+        let mut clock=DesClockState::default();
+        clock.begin_period(Period::FirstHalf,DEFAULT_HALF_REGULATION_MS);
+        clock.advance_ms(2_700_700,true).unwrap();
+        assert_eq!(clock.game_second(),2700);
+        assert_eq!(clock.period_elapsed_second(),2700);
+        let first=clock.period_elapsed_ms;
+        clock.begin_period(Period::SecondHalf,DEFAULT_HALF_REGULATION_MS);
+        assert_eq!(clock.sim_time_ms,first);
+        assert_eq!(clock.period_elapsed_ms,0);
+        assert_eq!(clock.period_elapsed_second(),0);
+        clock.advance_ms(2_700_600,false).unwrap();
+        assert_eq!(clock.period_elapsed_ms,2_700_600);
+        assert_eq!(clock.period_elapsed_second(),2700);
+        assert_eq!(clock.sim_time_ms,5_401_300);
+        assert_eq!(clock.game_second(),5401);
+        assert_eq!(clock.ball_in_play_ms+clock.ball_out_of_play_ms,clock.sim_time_ms);
+    }
+
+    #[test]
     fn des_clock_monotonic_and_watchdog_guard() {
         let mut clock = DesClockState::default();
         clock.begin_period(Period::FirstHalf, DEFAULT_HALF_REGULATION_MS);

@@ -1092,18 +1092,42 @@ fn p0_shootout_scores_come_only_from_actual_kicks() {
 fn p1_regulation_clock_uses_independent_period_elapsed_seconds() {
     let result = simulate_v4(make_v4_input(
         23031, SimulationMode::FullEvent, RulesModeV4::Standard)).unwrap();
-    assert!(result.summary.first_half_elapsed_seconds >= 2700);
-    assert!(result.summary.second_half_elapsed_seconds >= 2700);
-    assert_eq!(result.summary.final_game_second,
-        result.summary.first_half_elapsed_seconds + result.summary.second_half_elapsed_seconds);
-    let h2 = result.events.iter().find(|ev|
-        ev.kind == EventTypeV4::Kickoff && ev.period == 2).unwrap();
-    assert_eq!(h2.period_elapsed_second, 0,
+    let summary=&result.summary;
+    let ht=result.events.iter().find(|ev|ev.kind==EventTypeV4::HalfTime).unwrap();
+    let h2=result.events.iter().find(|ev|
+        ev.kind==EventTypeV4::Kickoff && ev.period==2).unwrap();
+    let ft=result.events.iter().find(|ev|ev.kind==EventTypeV4::FullTime).unwrap();
+
+    // The DES clock is authoritative in milliseconds. The public
+    // second fields independently truncate the respective exact values.
+    // floor(a+b) need not equal floor(a)+floor(b).
+    let first_ms=ht.period_elapsed_ms;
+    let second_ms=ft.period_elapsed_ms;
+    assert!(first_ms>=HALF_MS_V4 && second_ms>=HALF_MS_V4);
+    assert_eq!(ht.sim_time_ms,first_ms);
+    assert_eq!(h2.sim_time_ms,ht.sim_time_ms,"halftime must not consume simulation time");
+    assert_eq!(h2.period_elapsed_ms,0);
+    assert_eq!(ft.sim_time_ms,first_ms+second_ms);
+    let diag=&result.diagnostics.as_ref().unwrap().des;
+    assert_eq!(diag.ball_in_play_ms+diag.ball_out_of_play_ms,ft.sim_time_ms);
+    assert_eq!(summary.first_half_elapsed_seconds,(first_ms/1000) as i32);
+    assert_eq!(summary.second_half_elapsed_seconds,(second_ms/1000) as i32);
+    assert_eq!(summary.final_game_second,((first_ms+second_ms)/1000) as i32);
+    assert_eq!(h2.period_elapsed_second,0,
         "second-half 45:00 must not inherit first-half added time");
-    assert_eq!(h2.game_second, result.summary.first_half_elapsed_seconds);
+    assert_eq!(h2.game_second,summary.first_half_elapsed_seconds);
     for ev in &result.events {
-        assert!(ev.period_elapsed_second >= 0);
+        assert!(ev.period_elapsed_ms>=0);
+        assert_eq!(ev.game_second,(ev.sim_time_ms/1000) as i32);
+        assert_eq!(ev.period_elapsed_second,(ev.period_elapsed_ms/1000) as i32);
+        match ev.period {
+            1=>assert_eq!(ev.sim_time_ms,ev.period_elapsed_ms),
+            2=>assert_eq!(ev.sim_time_ms,first_ms+ev.period_elapsed_ms),
+            _=>{}
+        }
     }
+    println!("PI_CLOCK_EXACT first_ms={first_ms} second_ms={second_ms} total_ms={} display_seconds={}/{}/{}",
+        ft.sim_time_ms,summary.first_half_elapsed_seconds,summary.second_half_elapsed_seconds,summary.final_game_second);
 }
 
 #[test]

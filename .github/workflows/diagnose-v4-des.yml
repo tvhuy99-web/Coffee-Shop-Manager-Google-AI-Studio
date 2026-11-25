@@ -275,6 +275,8 @@ jobs:
         working-directory: rust/football_match_engine
         run: |
           cargo test --lib pi_defense_ -- --nocapture
+          cargo test --lib p1_regulation_clock_uses_independent_period_elapsed_seconds -- --nocapture
+          cargo test --lib des_clock_independent_period_rounding_preserves_fractional_seconds -- --nocapture
           cargo test --lib pi_support_ -- --nocapture
           cargo test --lib fast_batch_and_full_event_diagnostics_match -- --nocapture
   attacking_sample:
