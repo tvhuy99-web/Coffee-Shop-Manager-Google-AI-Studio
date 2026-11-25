@@ -103,4 +103,8 @@ pub trait SpatialForecastPort {
     fn local_context(&self, side: TeamSideV4, point: Vec2) -> LocalSpatialContext;
     fn passing_lane(&self, side: TeamSideV4, from: Vec2, to: Vec2, aerial: bool) -> (f32, Option<usize>);
     fn offside_reference(&self, side: TeamSideV4, ball: Vec2) -> Option<f32>;
+    fn pass_risk(&self, side: TeamSideV4, awareness: f32, from: Vec2, target_idx: usize, kind: crate::rule_types::PassKindV4) -> f32;
+    fn carry_endpoint(&self, idx: usize, direction: Vec2, duration_ms: i64) -> Vec2;
+    fn reaction_delay(&self, attrs: &crate::attributes::PlayerAttributes54, pressure: f32, tempo: u8, one_touch: bool, rng: &mut impl RngSampleSource) -> i64;
+    fn reaction_bounds(&self) -> (i64, i64);
 }

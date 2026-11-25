@@ -7,7 +7,7 @@ mod intent;
 mod off_ball;
 mod defensive;
 mod tackle;
-mod pass_forecast;
+pub(crate) mod pass_forecast;
 pub(crate) use tackle::evaluate_tackle;
 pub(crate) use defensive::{assign_defense, DefensiveRole, DefenderObservation, DefensiveIntent};
 mod support;

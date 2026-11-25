@@ -8,3 +8,6 @@ pub mod timing;
 pub mod version;
 
 pub mod goalkeeper;
+
+pub mod decision;
+pub mod on_ball;
