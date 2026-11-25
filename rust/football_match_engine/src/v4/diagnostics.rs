@@ -252,6 +252,12 @@ pub struct DesMatchDiagnosticsV4 {
     #[serde(default)]
     pub tackle_audit_pi_clean_sum: f64,
     #[serde(default)]
+    pub tackle_audit_pi_controlled_sum: f64,
+    #[serde(default)]
+    pub tackle_audit_pi_loose_sum: f64,
+    #[serde(default)]
+    pub tackle_observed_loose_recovery_prior_sum: f64,
+    #[serde(default)]
     pub tackle_audit_pi_foul_sum: f64,
     #[serde(default)]
     pub tackle_audit_resolver_clean_sum: f64,
@@ -553,6 +559,12 @@ struct DesDiagnosticsAccumulator {
     #[serde(default)]
     tackle_audit_pi_clean_sum: f64,
     #[serde(default)]
+    tackle_audit_pi_controlled_sum: f64,
+    #[serde(default)]
+    tackle_audit_pi_loose_sum: f64,
+    #[serde(default)]
+    tackle_observed_loose_recovery_prior_sum: f64,
+    #[serde(default)]
     tackle_audit_pi_foul_sum: f64,
     #[serde(default)]
     tackle_audit_resolver_clean_sum: f64,
@@ -661,6 +673,9 @@ impl DesDiagnosticsAccumulator {
             tackle_audit_missed_ball_fouls: self.tackle_audit_missed_ball_fouls,
             tackle_audit_missed_ball_advantage: self.tackle_audit_missed_ball_advantage,
             tackle_audit_pi_clean_sum: self.tackle_audit_pi_clean_sum,
+            tackle_audit_pi_controlled_sum: self.tackle_audit_pi_controlled_sum,
+            tackle_audit_pi_loose_sum: self.tackle_audit_pi_loose_sum,
+            tackle_observed_loose_recovery_prior_sum: self.tackle_observed_loose_recovery_prior_sum,
             tackle_audit_pi_foul_sum: self.tackle_audit_pi_foul_sum,
             tackle_audit_resolver_clean_sum: self.tackle_audit_resolver_clean_sum,
             tackle_audit_resolver_foul_sum: self.tackle_audit_resolver_foul_sum,
@@ -873,6 +888,13 @@ impl MatchDiagnosticsCollectorV4 {
         self.des.tackle_audit_resolver_clean_sum+=f64::from(resolver.0);
         self.des.tackle_audit_resolver_foul_sum+=f64::from(resolver.1);
         self.des.tackle_audit_resolver_advantage_sum+=f64::from(resolver.2);
+    }
+    /// Matched actual-contact predictions, with recovery prior conditional
+    /// on observed loose contacts (some may remain unresolved at period end).
+    pub(crate) fn record_tackle_second_ball_prior(&mut self,controlled:f32,loose:f32,recovery:f32,observed_loose:bool) {
+        self.des.tackle_audit_pi_controlled_sum+=f64::from(controlled);
+        self.des.tackle_audit_pi_loose_sum+=f64::from(loose);
+        if observed_loose {self.des.tackle_observed_loose_recovery_prior_sum+=f64::from(recovery);}
     }
     pub(crate) fn record_tackle_control_split(&mut self,loose:bool,controlled:bool) {
         self.des.tackle_loose_contacts+=u32::from(loose);
