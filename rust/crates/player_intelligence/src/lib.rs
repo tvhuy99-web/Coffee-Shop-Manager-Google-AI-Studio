@@ -11,3 +11,5 @@ pub mod goalkeeper;
 
 pub mod decision;
 pub mod on_ball;
+
+pub mod tackle;

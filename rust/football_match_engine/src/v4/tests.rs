@@ -1572,6 +1572,7 @@ fn p2_50_match_attributes_have_explicit_runtime_wiring_and_4_are_career_hooks() 
         include_str!("../../../crates/player_intelligence/src/support.rs"),
         include_str!("../../../crates/player_intelligence/src/defensive.rs"),
         include_str!("../player_intelligence/tackle.rs"),
+        include_str!("../../../crates/player_intelligence/src/tackle.rs"),
         include_str!("../player_intelligence/pass_forecast.rs"),
         include_str!("tactics.rs"), include_str!("psychology.rs"),
         include_str!("../../../crates/player_condition/src/lib.rs"),
