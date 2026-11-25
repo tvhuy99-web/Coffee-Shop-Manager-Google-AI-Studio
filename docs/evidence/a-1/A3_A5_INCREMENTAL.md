@@ -1,0 +1,6 @@
+# A3–A5 incremental extraction
+
+- A3: actual decision/carry calls use exact spatial port (local context, passing lane and offside); RNG sampling trait replaces concrete RNG in decision/timing/movement, without changing sampling order. Remaining compatibility dependencies: state/input, actual player attributes, pass trajectory/contact and tackle forecasting, timing config; coach adapter still mutates authoritative state, not pure policy. Do not claim A3 closed.
+- A4: manual substitution execution moved to Engine/Rules; command DTO and replay extracted; session tests retained; read-only invariant verifier added. Full atomic transition pipeline and INV-01..12 still pending.
+- A5: first real workspace split: match_contracts (attributes, errors, spatial, units, ports, fingerprints) + existing football_match_engine. Canonical implementations, no dummy crates. External Cargo package graph identical; original lock archived and exact SHA checked. Full DTO/state dependency isolation, other eight production crates, JNI separation, and complete DAG remain pending. Keep old .so and V4 symbols.
+- This branch is stacked on A1–A2 and will not be integrated before that package passes. Use the frozen golden archive, never regenerate expected data.

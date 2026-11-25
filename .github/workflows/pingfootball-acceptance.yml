@@ -1,7 +1,7 @@
 name: PingFootball L0-L4 acceptance
 on:
   push:
-    branches: [main, 'refactor/football-simulation-4', 'refactor/a0-consolidated', 'refactor/a1-a2-contracts']
+    branches: [main, 'refactor/football-simulation-4', 'refactor/a0-consolidated', 'refactor/a1-a2-contracts', 'refactor/a3-a5-engine-workspace']
   pull_request:
     branches: [main, 'refactor/football-simulation-4']
   workflow_dispatch:
@@ -25,14 +25,14 @@ jobs:
         run: |
           set -euo pipefail
           for script in verify_lab_v2 verify_england_v2 verify_parity_fixtures verify_v4_p0_p1_patch verify_v4_p1_234 verify_v4_p2 verify_v4_des_contract; do python3 "tools/$script.py"; done
-          echo "$LOCK_SHA  rust/football_match_engine/Cargo.lock" | sha256sum -c -
+          python3 tools/verify_workspace_lock.py docs/evidence/a-1/frozen-Cargo.lock rust/Cargo.lock
           mkdir -p evidence
           (
             cd rust/football_match_engine
             rustup show
             rustc -Vv
             cargo metadata --locked --format-version 1 > ../../evidence/cargo-metadata.json
-            cargo clippy --locked --all-targets 2>&1 | tee ../../evidence/clippy.log
+            cargo clippy --workspace --locked --all-targets 2>&1 | tee ../../evidence/clippy.log
             # Report pre-existing formatting debt explicitly; A0 is a test/CI
             # change, not a mass formatting rewrite. Required strict format
             # gate starts on new crates in A1/A2, before architecture merge.
@@ -46,7 +46,12 @@ jobs:
           from pathlib import Path
           m=json.loads(Path('evidence/cargo-metadata.json').read_text())
           local=[p for p in m['packages'] if p['source'] is None]
-          assert len(local)==1 and local[0]['id'] in m['workspace_members'], 'A0 expects original single crate; A5 must replace with explicit DAG'
+          assert {p['name'] for p in local}=={'football_match_engine','match_contracts'}
+          assert {p['id'] for p in local}==set(m['workspace_members'])
+          contracts=next(p for p in local if p['name']=='match_contracts')
+          assert all(d['source'] is not None for d in contracts['dependencies']), 'contracts must remain leaf'
+          engine=next(p for p in local if p['name']=='football_match_engine')
+          assert {d['name'] for d in engine['dependencies'] if d['source'] is None}=={'match_contracts'}
           PY
           python3 tools/verify_a1_boundary.py
       - uses: actions/upload-artifact@v4
@@ -134,7 +139,7 @@ jobs:
                   (Path('reference')/member).write_bytes(data)
           PY
           test "$(cat reference/commit.txt)" = "$BASELINE"
-          cmp reference/Cargo.lock candidate/rust/football_match_engine/Cargo.lock
+          python3 candidate/tools/verify_workspace_lock.py reference/Cargo.lock candidate/rust/Cargo.lock
           crate=candidate/rust/football_match_engine
           cp candidate/tests/a1/deep_golden_fixture.rs "$crate/src/v4/a1_deep_golden_fixture.rs"
           printf '\ninclude!("a1_deep_golden_fixture.rs");\n' >> "$crate/src/v4/tests.rs"
@@ -378,5 +383,5 @@ jobs:
           import json,os
           results=json.loads(os.environ['RESULTS'])
           assert len(results)==7 and all(v['result']=='success' for v in results.values()), results
-          print('All required A1-A2 layers passed (signed release/device/strict legacy formatting tracked separately).')
+          print('All required A3-A5 incremental layers passed (signed release/device/strict legacy formatting tracked separately).')
           PY

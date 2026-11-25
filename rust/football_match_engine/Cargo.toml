@@ -3,18 +3,13 @@ name = "football_match_engine"
 version = "0.4.0"
 edition = "2021"
 license = "LicenseRef-PingFootball-User-Source"
-description = "Football Match Lab native engine: V3 reference core alongside V4.0 54-attribute 90-minute interactive & FastBatch simulation engine."
+description = "Football Match Lab native engine: V4.1 DES 54-attribute 90-minute interactive & FastBatch simulation engine."
 
 [lib]
 crate-type = ["rlib", "cdylib"]
 
-[profile.release]
-lto = true
-codegen-units = 1
-# Use unwind (not abort) so JNI catch_unwind boundaries can safely trap panics and return JSON errors to Android JVM.
-panic = "unwind"
-
 [dependencies]
+match_contracts = { path = "../crates/match_contracts" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
 jni = "0.21"

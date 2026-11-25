@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["football_match_engine", "crates/match_contracts"]
+default-members = ["football_match_engine"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+# Use unwind (not abort) so JNI catch_unwind boundaries can safely trap panics and return JSON errors to Android JVM.
+panic = "unwind"
+
