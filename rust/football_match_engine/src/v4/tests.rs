@@ -1151,6 +1151,36 @@ fn p0_every_goal_is_followed_by_opponent_kickoff_at_centre() {
     assert!(n_goals > 0);
 }
 
+// Diagnostic evidence only: preserve the original red gate until the period-end
+// semantics have been observed. Do not assume that every missing restart is legal.
+#[test]
+#[ignore = "A0 exports goal/restart boundary evidence"]
+fn a0_goal_restart_boundary_diagnostic() {
+    let mut goals = 0;
+    let mut suspicious = 0;
+    let mut rows = Vec::new();
+    for seed in 71001..71011 {
+        let result = simulate_v4(make_v4_input(seed, SimulationMode::FullEvent, RulesModeV4::Standard)).unwrap();
+        for (idx, goal) in result.events.iter().enumerate() {
+            if !matches!(goal.kind, EventTypeV4::Goal | EventTypeV4::OwnGoal) { continue; }
+            goals += 1;
+            let suffix = &result.events[idx+1..];
+            let next = suffix.iter().find(|e| matches!(e.kind, EventTypeV4::Kickoff | EventTypeV4::Goal | EventTypeV4::OwnGoal | EventTypeV4::HalfTime | EventTypeV4::ExtraTimeHalfTime | EventTypeV4::FullTime | EventTypeV4::ExtraTimeStarted | EventTypeV4::PenaltyShootoutStarted));
+            let category = match next {
+                Some(e) if e.kind == EventTypeV4::Kickoff && e.period == goal.period && e.side == goal.side.map(|side| side.opposite()) && (e.ball_pos.x - 52.5).abs() < 0.01 && (e.ball_pos.y - 34.0).abs() < 0.01 && e.actor.is_some() => "opponent_kickoff",
+                Some(e) if matches!(e.kind, EventTypeV4::HalfTime | EventTypeV4::ExtraTimeHalfTime | EventTypeV4::FullTime | EventTypeV4::ExtraTimeStarted | EventTypeV4::PenaltyShootoutStarted) => "period_boundary_before_restart",
+                _ => { suspicious += 1; "investigate" },
+            };
+            rows.push(serde_json::json!({"seed":seed,"category":category,"goal":goal,"nextBoundary":next,"followingEvents":suffix.iter().take(12).collect::<Vec<_>>() }));
+        }
+    }
+    assert!(goals > 0);
+    let output = std::env::var("A0_GOAL_REPORT").expect("A0_GOAL_REPORT");
+    std::fs::write(output, serde_json::to_string_pretty(&serde_json::json!({"goals":goals,"suspicious":suspicious,"rows":rows})).unwrap()).unwrap();
+    println!("A0_GOAL_RESTART_DIAGNOSTIC goals={goals} suspicious={suspicious}");
+    // Not a replacement for the original invariant: this test exports observations.
+}
+
 // P1-2: multi-player batches count as one in-play window; failures are atomic.
 #[test]
 fn p1_batch_substitution_counts_one_window_and_returns_authoritative_roster() {
