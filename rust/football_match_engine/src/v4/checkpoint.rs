@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::{MatchDiagnosticsCollectorV4, MatchDiagnosticsV4};
-use crate::v4::perception::PassKindV4;
+use crate::player_intelligence::PassKindV4;
 use crate::v4::interaction::EarlyInteractionHit;
 use crate::v4::error::V4Error;
 use crate::v4::events::MatchEventV4;

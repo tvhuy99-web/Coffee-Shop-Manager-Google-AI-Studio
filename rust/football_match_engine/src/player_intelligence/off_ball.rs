@@ -1,8 +1,8 @@
 //! Read-only position intentions. The engine alone applies movement, time and fatigue.
-use crate::rng::DeterministicRng;
-use crate::v4::attributes::{normalize_attr, PlayerAttributes54};
-use crate::v4::input::TeamInstructionsV4;
-use crate::v4::spatial::{attacking_progress_m, TeamSideV4, Vec2, PITCH_LENGTH_M};
+use crate::contracts::RngSampleSource;
+use crate::contracts::attributes::{normalize_attr, PlayerAttributes54};
+use crate::contracts::input::TeamInstructionsV4;
+use crate::contracts::spatial::{attacking_progress_m, TeamSideV4, Vec2, PITCH_LENGTH_M};
 use crate::v4::state::TacticalPhaseV4;
 
 /// Inputs already available to the pre-extraction movement policy.
@@ -26,7 +26,7 @@ pub struct MovementObservation<'a> {
 }
 
 #[inline]
-pub fn select_movement_target(observation: MovementObservation<'_>, rng: &mut DeterministicRng) -> Vec2 {
+pub fn select_movement_target(observation: MovementObservation<'_>, rng: &mut impl RngSampleSource) -> Vec2 {
     let MovementObservation {
         is_carrier, is_gk, in_poss, side, phase, attrs, instructions: ti,
         anchor, ball_xy, ball_progress_home, receiving_line, noise_scale,

@@ -960,7 +960,7 @@ fn stage_a0_interactive_session_step_advance_and_live_commands() {
 fn p0_offside_position_is_not_automatically_an_offence() {
     use crate::v4::ball_play::{execute_pass_and_first_touch, is_receiver_offside};
     use crate::v4::movement::evaluate_local_context;
-    use crate::v4::perception::PassKindV4;
+    use crate::player_intelligence::PassKindV4;
     use crate::v4::state::MatchStateV4;
 
     let input = make_v4_input(4001, SimulationMode::FullEvent, RulesModeV4::Standard);
@@ -2671,7 +2671,7 @@ fn des_population_watchdog_seed_1970781_finishes_both_halves() {
 fn des_offside_awareness_avoids_clearly_illegal_pass_target() {
     use crate::v4::state::MatchStateV4;
     use crate::v4::movement::evaluate_local_context;
-    use crate::v4::perception::{perceive_evaluate_and_decide_des, PlannedActionV4};
+    use crate::player_intelligence::{perceive_evaluate_and_decide_des, PlannedActionV4};
     use crate::v4::ball_play::is_receiver_offside;
     let input = make_v4_input_teams(12345, SimulationMode::FullEvent, RulesModeV4::Standard,
         make_v4_team("H", "H", 18), make_v4_team("A", "A", 13));
@@ -2764,7 +2764,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
     for seed in 1..=64 {
         let mut a = DeterministicRng::new(seed);
         let mut b = a.clone();
-        let old = crate::v4::perception::perceive_evaluate_and_decide_des(
+        let old = crate::player_intelligence::perceive_evaluate_and_decide_des(
             &state, &input, &input.timing_model, carrier, ctx, &mut a);
         let new = pi::perceive_evaluate_and_decide_des(
             &state, &input, &input.timing_model, carrier, ctx, &mut b);

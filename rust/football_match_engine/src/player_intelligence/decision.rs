@@ -1,10 +1,10 @@
-use crate::rng::DeterministicRng;
-use crate::v4::attributes::{normalize_attr, normalize_attr_elite};
+use crate::contracts::RngSampleSource;
+use crate::contracts::attributes::{normalize_attr, normalize_attr_elite};
 use crate::v4::ball_play::offside_reference_progress_m;
-use crate::v4::input::MatchInputV4;
+use crate::contracts::input::MatchInputV4;
 use crate::v4::movement::{evaluate_local_context, evaluate_passing_lane, player_attrs, LocalSpatialContext};
 use crate::v4::rules::{estimate_reaction_decision_ms, TimingModelConfig};
-use crate::v4::spatial::{attacking_progress_m, distance_to_attacking_goal, is_in_attacking_penalty_box, PITCH_WIDTH_M};
+use crate::contracts::spatial::{attacking_progress_m, distance_to_attacking_goal, is_in_attacking_penalty_box, PITCH_WIDTH_M};
 use crate::v4::state::{MatchStateV4, TacticalPhaseV4};
 use super::intent::{CandidateOption, DecisionPlanV4, PassKindV4, PlannedActionV4};
 use super::timing::evaluate_one_touch_intent;
@@ -261,7 +261,7 @@ pub fn perceive_evaluate_and_decide_des(
     timing: &TimingModelConfig,
     carrier_idx: usize,
     carrier_ctx: LocalSpatialContext,
-    rng: &mut DeterministicRng,
+    rng: &mut impl RngSampleSource,
 ) -> DecisionPlanV4 {
     let carrier = &state.players[carrier_idx];
     let att_side = carrier.side;
@@ -320,7 +320,7 @@ pub fn perceive_evaluate_and_decide_des(
         let shot_quality = (distance_quality * central * (0.72 + 0.56 * fin)
             * (1.0 - pressure_norm * (0.30 - composure * 0.14))
             * (0.8 + 0.2 * readiness) * if one_v_one {1.32} else {1.0}).clamp(0.015,0.72);
-        let goal_center=crate::v4::spatial::attacking_goal_center(att_side);
+        let goal_center=crate::contracts::spatial::attacking_goal_center(att_side);
         let (block_risk,_)=evaluate_passing_lane(state,input,att_side,carrier.pos,goal_center,false);
         let unblocked=if one_v_one {1.0} else {1.0-0.60*block_risk};
         let on_target=(0.34+0.34*fin-pressure_norm*(0.30-composure*0.14)*0.55).clamp(0.18,0.78);
@@ -463,7 +463,7 @@ pub fn perceive_evaluate_and_decide(
     input: &MatchInputV4,
     carrier_idx: usize,
     carrier_ctx: LocalSpatialContext,
-    rng: &mut DeterministicRng,
+    rng: &mut impl RngSampleSource,
 ) -> PlannedActionV4 {
     let default_timing = TimingModelConfig::default();
     perceive_evaluate_and_decide_des(

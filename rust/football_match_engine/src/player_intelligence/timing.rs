@@ -1,5 +1,5 @@
-use crate::rng::DeterministicRng;
-use crate::v4::attributes::{normalize_attr, PlayerAttributes54};
+use crate::contracts::RngSampleSource;
+use crate::contracts::attributes::{normalize_attr, PlayerAttributes54};
 use super::intent::{PassKindV4, PlannedActionV4};
 
 /// Evaluates whether the carrier intends a one-touch release vs taking a controlling touch.
@@ -15,7 +15,7 @@ pub fn evaluate_one_touch_intent(
     pressure_norm: f32,
     tempo: u8,
     time_wasting: u8,
-    rng: &mut DeterministicRng,
+    rng: &mut impl RngSampleSource,
 ) -> bool {
     let p_norm = pressure_norm.clamp(0.0, 1.0);
     let ft = normalize_attr(attrs.technical.first_touch);
