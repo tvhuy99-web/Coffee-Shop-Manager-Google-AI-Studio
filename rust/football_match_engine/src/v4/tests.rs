@@ -2688,7 +2688,46 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.27");
+    // The manifest is frozen independently from runtime constants, not generated from them.
+    let m: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/pi4_baseline_identity.json")).unwrap();
+    assert_eq!(m["schema"].as_u64(), Some(1));
+    assert_eq!(m["pi_module_version"].as_str(), Some(pi::PI_MODULE_VERSION));
+    assert_eq!(m["pi_policy_id"].as_str(), Some(pi::PI_POLICY_ID));
+    assert_eq!(m["pi_extraction_baseline"].as_str(), Some(pi::PI_BASELINE_COMMIT));
+    assert_eq!(m["engine_version"].as_str(), Some(ENGINE_VERSION_V4));
+    assert_eq!(m["jni_bridge_version"].as_i64(), Some(crate::v4::JNI_BRIDGE_VERSION as i64));
+    assert_eq!(m["protocol_version"].as_u64(), Some(ENGINE_PROTOCOL_VERSION_V4 as u64));
+    assert_eq!(m["event_schema_version"].as_u64(), Some(crate::v4::EVENT_SCHEMA_VERSION_V4 as u64));
+    assert_eq!(m["checkpoint_schema_version"].as_u64(), Some(crate::v4::CHECKPOINT_SCHEMA_VERSION_V4 as u64));
+    let checkpoint = MatchSessionV4::new(input).unwrap().export_checkpoint().unwrap();
+    crate::v4::verify_checkpoint(&checkpoint).unwrap();
+    assert_eq!(m["pi_policy_id"].as_str(), Some(checkpoint.payload.pi_policy_id.as_str()));
+    assert_eq!(m["checkpoint_schema_version"].as_u64(), Some(checkpoint.checkpoint_schema_version as u64));
+    assert_eq!(m["event_schema_version"].as_u64(), Some(checkpoint.event_schema_version as u64));
+    assert_eq!(m["protocol_version"].as_u64(), Some(checkpoint.protocol_version as u64));
+    assert_eq!(m["engine_version"].as_str(), Some(checkpoint.engine_version.as_str()));
+
+    // Mutate policy then recompute checksum: rejection must be compatibility,
+    // not just the generic checksum guard. The valid checkpoint still restores.
+    let mut wrong_policy = checkpoint.clone();
+    wrong_policy.payload.pi_policy_id = "incompatible-a0-negative-control".into();
+    wrong_policy.checksum_hex = crate::v4::compute_checkpoint_checksum(
+        &serde_json::to_string(&wrong_policy.payload).unwrap());
+    assert!(crate::v4::verify_checkpoint(&wrong_policy).unwrap_err().to_string().contains("PI policy mismatch"));
+    assert!(MatchSessionV4::from_checkpoint(wrong_policy).is_err());
+    let mut wrong_schema = checkpoint.clone();
+    wrong_schema.checkpoint_schema_version += 1;
+    assert!(crate::v4::verify_checkpoint(&wrong_schema).unwrap_err().to_string().contains("unsupported checkpoint schema"));
+    let mut wrong_protocol = checkpoint.clone();
+    wrong_protocol.protocol_version += 1;
+    assert!(crate::v4::verify_checkpoint(&wrong_protocol).is_err());
+    let mut wrong_event = checkpoint.clone();
+    wrong_event.event_schema_version += 1;
+    assert!(crate::v4::verify_checkpoint(&wrong_event).is_err());
+    let mut wrong_checksum = checkpoint.clone();
+    wrong_checksum.checksum_hex = "0".repeat(32);
+    assert!(crate::v4::verify_checkpoint(&wrong_checksum).unwrap_err().to_string().contains("checkpoint checksum mismatch"));
+    MatchSessionV4::from_checkpoint(checkpoint).unwrap();
 }
 
 
