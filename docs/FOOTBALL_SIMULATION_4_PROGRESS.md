@@ -7,21 +7,25 @@ Nhánh tích hợp: `refactor/football-simulation-4`. Main tại thời điểm 
 ## A-1 — IN PROGRESS (25/11/2026)
 
 ### Đã thực hiện và kiểm chứng
-- [x] Hai commit gốc tồn tại và được giữ ở nhánh `baseline/pi-4.0.27`, `baseline/pi-4.0.28`. Main vẫn ở `c2c392d8`. Nhánh không phải tag bất biến; chưa có tag/protection.
-- [x] Ghim Rust 1.100.0 theo log job [138915898432](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45527962031/job/138915898432), commit `d5f4336`. NDK 27.2.12479018, JDK 17, Gradle 8.9, compileSdk 35, targetSdk 29 được ghi trong hồ sơ; chưa kiểm thử build Android.
-- [x] Tải 19 ZIP lịch sử từ ba run 45520666910, 45520666555, 45527962031. SHA-256 khớp 19/19 GitHub digest; kiểm tra CRC ZIP và commit.txt 19/19. Hai bộ DES mỗi bộ 1.384/1.384 trận, 0 failed/invalid, seed duy nhất; audit 4.0.27 đủ 54 thuộc tính/904 trận. Đây là bằng chứng lịch sử, không phải golden khóa mới.
-- [x] [Manifest lịch sử](evidence/a-1/historical-artifacts.json) có ID, digest, expiry. Bản sao ZIP đã tải và kiểm chứng ở phiên làm việc; SHA-256 gói tổng: `8c46434d33d8f52d6d7f0b64ef84740a92291bf4cdc6f5594c645da534754b64`.
-- [x] Thêm workflow [tái lập A-1](../.github/workflows/a1-baseline-freeze.yml) trên chính commit 4.0.28; sinh lockfile candidate, reuse lockfile đã commit, hai lần chạy 1.384 FastBatch + 12 FullEvent, negative result control, audit 5 nhóm/904 trận, checkpoint continuation; xuất SHA-256. Đã commit workflow, chưa có log chạy mới được xác nhận.
-- [x] Tạo nhánh `evidence/a1-historical` và workflow [archive](../.github/workflows/a1-archive-historical.yml): tải ZIP gốc, xác minh lại và push không force chỉ vào nhánh archive. Chưa xác nhận commit ZIP của workflow.
+- [x] Hai commit gốc tồn tại ở nhánh `baseline/pi-4.0.27`, `baseline/pi-4.0.28`. Main vẫn ở `c2c392d8`; chưa có tag/protection.
+- [x] Ghim Rust 1.100.0 theo log job 138915898432; NDK 27.2.12479018, JDK 17, Gradle 8.9, compileSdk 35, targetSdk 29 được ghi nhận.
+- [x] Lưu 19 ZIP lịch sử có SHA-256/CRC và commit gốc đúng trên nhánh `evidence/a1-historical`, commit `121c69fe1569e85c25e6ed2487fd6a0013e63186`. Hai bộ population 1.384 trận, audit 4.0.27 đủ 904.
+- [x] [Run 45593874053](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45593874053): 14/14 jobs PASS, 1.384 FastBatch + 12 FullEvent exact parity (hai lần chạy), 904 audit PI 4.0.28 (5 nhóm), 3 checkpoint tests, negative control kết quả.
+- [x] [Run 45604255587](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45604255587) PASS: 14 ZIP mới đã archive, commit `b82dbf0d4c01b100ec00a155e364fdae7bd1b7de`. Tổng 33 ZIP lịch sử và locked evidence đã lưu bền vững. Manifest tại nhánh archive.
+- [x] Cargo.lock do Cargo sinh, SHA-256 `41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099`, commit `b6353ea66112821b24f295bb201739198b1eb089` tại rust/football_match_engine/Cargo.lock. Workspace rust/ chưa tồn tại; chuyển lockfile có kiểm chứng tại A5.
+- [x] Inventory 34 legacy, 5 shared, 9 JNI, 10 workflow, 11 static checks (2 shared + 9 legacy), 50+4 thuộc tính, 48 OGG ở [baseline-inventory.json](evidence/a-1/baseline-inventory.json) và [attribute_contracts.json](evidence/a-1/attribute_contracts.json). Log [139134958569](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45593934894/job/139134958569) xác minh 101/101 static, 48 checksum OGG, 895 mẫu bình luận mỗi locale và token parity. Static không chứng minh build/device.
 
-### Cổng A-1 còn thiếu (không đánh dấu PASS)
-- [ ] Tag bất biến hoặc bảo vệ ref; xác nhận chính thức ADR-001, ADR-002, ADR-003, ADR-008. Dùng mặc định 4.0.28 cho công việc có thể rollback; không tự quyết các ADR về UX/gameplay.
-- [ ] Xác nhận Actions chạy thành công; lấy Cargo.lock do Cargo sinh, kiểm tra rồi commit tại `rust/football_match_engine/Cargo.lock` (crate hiện hành, chưa có workspace). Khi A5 chuyển workspace, giữ lockfile baseline và chuyển lockfile workspace có kiểm chứng. Chạy lại --locked với lockfile đã commit. Không giả tạo lockfile bằng tay.
-- [ ] Tái lập golden với seed/input/command log và 5 cấp Mục 11.3 (bao gồm state, RNG, scheduler/ledger và checkpoint đầy đủ); comparator hiện tại mới bao phủ JSON đã export và negative control mức kết quả. Cần bổ sung test-only instrumentation và first-divergence theo field path.
-- [ ] Chứng minh audit 904 trận trên đúng 4.0.28, checkpoint/replay ở các trạng thái yêu cầu, inventory 34 tệp legacy/9 JNI/10 workflow/11 static asserts/50+4 attribute/48 OGG/895 templates.
-- [ ] Kiểm tra archive commit thực tế trên GitHub và lưu golden mới bền vững.
+### Chưa hoàn thành — không đánh dấu PASS
+- [ ] [Run 45606252958](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45606252958): rerun dùng chính Cargo.lock đã commit; thiếu file/hash sai phải fail, không generate-lockfile lại. Đã kích hoạt, còn queued khi kiểm tra.
+- [ ] [PR #7](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/pull/7), [run 45604679705](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45604679705): test-only deep golden normalized input, result, terminal state/RNG/scheduler/command ledger, 7 marker restore, strict field-path comparison. Còn queued; chưa có PASS. FastBatch hiện chỉ fingerprint event, không phải toàn bộ raw event stream; FullEvent 12 trận có raw stream. Cần đối chiếu độ bao phủ Mục 11.3 trước nghiệm thu.
+- [ ] Archive và xác minh raw artifacts của các run mới sau khi hoàn tất; bổ sung event/state trace nếu chưa đủ 5 cấp.
+- [ ] Tag/ref protection và chốt ADR-001/002/003/008. Không tự coi tag/ADR đã duyệt; không tự quyết các ADR ảnh hưởng UX/gameplay.
 
-**Chặn A0/A1–A6:** runner nội bộ hiện không có Rust/Cargo và không clone được GitHub. Không áp patch, không xóa mã, không sửa gameplay trước khi cổng A-1 đạt. Các workflow được đẩy lên nhánh tích hợp, không coi việc commit workflow là kết quả CI.
+### Chuẩn bị A0 (chưa triển khai)
+- [x] [Coverage map 10 workflow và triage](evidence/a0/CI_COVERAGE_AND_TRIAGE.md). Rust tổng 185 PASS, 2 FAIL (version literal và test giao bóng sau bàn), 8 ignored. P1 static 17/22, 5 lỗi đã phân loại theo mã nguồn thực tế. Hai hợp đồng thay người hàng loạt và chống ghi đè hiện có implementation; cần test hành vi trước khi kết luận thiếu tính năng.
+- [ ] Chỉ tích hợp A0 khi A-1 đạt. Không nới gate hoặc thay đổi gameplay để làm xanh CI.
+
+**Chặn A1–A6:** A-1 chưa đủ 5 cấp và CI rerun còn chờ runner. Không xóa mã, không áp patch toàn khối, không sửa gameplay.
 
 ## Trạng thái thực tế
 - [x] Nhập nguyên văn đặc tả Revision 3.
