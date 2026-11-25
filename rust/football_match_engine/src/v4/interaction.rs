@@ -75,13 +75,11 @@ impl GroundContactGeometry {
 pub(crate) fn missed_ball_body_overlap(
     carrier:Vec2,facing_rad:f32,defender:Vec2,reach_m:f32
 )->f32 {
-    const CONTROLLED_BALL_OFFSET_M:f32=0.45;
     const LEG_BODY_ENVELOPE_M:f32=0.35;
     if reach_m<=0.0 || defender.distance(carrier)>reach_m+LEG_BODY_ENVELOPE_M {
         return 0.0;
     }
-    let ball=Vec2::new(carrier.x+facing_rad.cos()*CONTROLLED_BALL_OFFSET_M,
-        carrier.y+facing_rad.sin()*CONTROLLED_BALL_OFFSET_M);
+    let ball=controlled_ball_proxy(carrier,facing_rad);
     let dx=ball.x-defender.x;
     let dy=ball.y-defender.y;
     let distance=(dx*dx+dy*dy).sqrt();
@@ -89,6 +87,40 @@ pub(crate) fn missed_ball_body_overlap(
     let end=Vec2::new(defender.x+dx*scale,defender.y+dy*scale);
     let clearance=crate::v4::spatial::point_to_segment_distance_m(carrier,defender,end);
     (1.0-clearance/LEG_BODY_ENVELOPE_M).clamp(0.0,1.0)
+}
+
+/// Shared local estimate of the controlled ball, not an independent
+/// foot/ball trajectory. Preserve the offset introduced for body overlap.
+fn controlled_ball_proxy(carrier:Vec2,facing_rad:f32)->Vec2 {
+    const CONTROLLED_BALL_OFFSET_M:f32=0.45;
+    Vec2::new(carrier.x+facing_rad.cos()*CONTROLLED_BALL_OFFSET_M,
+        carrier.y+facing_rad.sin()*CONTROLLED_BALL_OFFSET_M)
+}
+
+/// Approximate a legal tackle's release point by projecting the local
+/// ball proxy onto the reachable disc if necessary. Conditional on
+/// accepted legal contact; not a new reach criterion or player move.
+pub(crate) fn tackle_loose_contact_point(carrier:Vec2,facing_rad:f32,
+    defender:Vec2,reach_m:f32)->Vec3 {
+    let proxy=controlled_ball_proxy(carrier,facing_rad).clamp_to_pitch();
+    let distance=proxy.distance(defender);
+    let reach=reach_m.max(0.0);
+    let point=if distance>reach && distance>1e-6 {
+        let scale=reach/distance;
+        Vec2::new(defender.x+(proxy.x-defender.x)*scale,
+            defender.y+(proxy.y-defender.y)*scale).clamp_to_pitch()
+    }else{proxy};
+    Vec3::ground(point.x,point.y)
+}
+
+/// Reuse the dissipative block law in the moving challenger frame.
+/// Body velocity approximates foot velocity. No random kick speed.
+pub(crate) fn tackle_loose_velocity(incoming:Vec2,defender_velocity:Vec2,
+    defender:Vec2,contact:Vec3)->Vec3 {
+    let relative=Vec3::new(incoming.x-defender_velocity.x,
+        incoming.y-defender_velocity.y,0.0);
+    let rebound=blocked_ball_velocity(relative,defender,contact);
+    Vec3::new(rebound.x+defender_velocity.x,rebound.y+defender_velocity.y,0.0)
 }
 
 /// Analytic 3D ball trajectory parameterized by start timestamp, initial kinematics,

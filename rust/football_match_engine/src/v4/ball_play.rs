@@ -840,9 +840,13 @@ pub(crate) fn resolve_carry_contact(
         let i=defender_idx.expect("winning tackle has a challenger");
         if (rng.next_double() as f32)>=control.expect("winning tackle has a control estimate") {
             let p=&state.players[i];
-            let spot=state.ball.pos;
-            let velocity=crate::v4::interaction::blocked_ball_velocity(
-                Vec3::new(incoming.x,incoming.y,0.0),p.pos,spot);
+            let carrier=&state.players[carrier_idx];
+            let attrs=player_attrs(state,p);
+            let reach=0.85+normalize_attr(attrs.physical.agility)*0.25;
+            let spot=crate::v4::interaction::tackle_loose_contact_point(
+                carrier.pos,carrier.facing_rad,p.pos,reach);
+            let velocity=crate::v4::interaction::tackle_loose_velocity(incoming,p.vel,p.pos,spot);
+            state.ball.pos=spot;
             state.ball.vel=velocity;
             state.ball.control=BallControlState::Loose;
             state.ball.owner_side=None;

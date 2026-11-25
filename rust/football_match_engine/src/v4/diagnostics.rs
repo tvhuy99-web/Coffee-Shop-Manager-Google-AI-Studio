@@ -232,6 +232,14 @@ pub struct DesMatchDiagnosticsV4 {
     #[serde(default)]
     pub tackle_loose_contacts: u32,
     #[serde(default)]
+    pub tackle_loose_stationary: u32,
+    #[serde(default)]
+    pub tackle_loose_speed_sum: f64,
+    #[serde(default)]
+    pub tackle_loose_carrier_distance_sum: f64,
+    #[serde(default)]
+    pub tackle_loose_defender_distance_sum: f64,
+    #[serde(default)]
     pub tackle_loose_attack_regained: u32,
     #[serde(default)]
     pub tackle_loose_defence_won: u32,
@@ -525,6 +533,14 @@ struct DesDiagnosticsAccumulator {
     #[serde(default)]
     tackle_loose_contacts: u32,
     #[serde(default)]
+    tackle_loose_stationary: u32,
+    #[serde(default)]
+    tackle_loose_speed_sum: f64,
+    #[serde(default)]
+    tackle_loose_carrier_distance_sum: f64,
+    #[serde(default)]
+    tackle_loose_defender_distance_sum: f64,
+    #[serde(default)]
     tackle_loose_attack_regained: u32,
     #[serde(default)]
     tackle_loose_defence_won: u32,
@@ -635,6 +651,10 @@ impl DesDiagnosticsAccumulator {
             tackle_audit_advantage: self.tackle_audit_advantage,
             tackle_controlled_wins: self.tackle_controlled_wins,
             tackle_loose_contacts: self.tackle_loose_contacts,
+            tackle_loose_stationary: self.tackle_loose_stationary,
+            tackle_loose_speed_sum: self.tackle_loose_speed_sum,
+            tackle_loose_carrier_distance_sum: self.tackle_loose_carrier_distance_sum,
+            tackle_loose_defender_distance_sum: self.tackle_loose_defender_distance_sum,
             tackle_loose_attack_regained: self.tackle_loose_attack_regained,
             tackle_loose_defence_won: self.tackle_loose_defence_won,
             tackle_loose_boundary: self.tackle_loose_boundary,
@@ -857,6 +877,12 @@ impl MatchDiagnosticsCollectorV4 {
     pub(crate) fn record_tackle_control_split(&mut self,loose:bool,controlled:bool) {
         self.des.tackle_loose_contacts+=u32::from(loose);
         self.des.tackle_controlled_wins+=u32::from(controlled);
+    }
+    pub(crate) fn record_tackle_loose_kinematics(&mut self,speed:f32,carrier_distance:f32,defender_distance:f32) {
+        self.des.tackle_loose_stationary+=u32::from(speed<=0.01);
+        self.des.tackle_loose_speed_sum+=f64::from(speed);
+        self.des.tackle_loose_carrier_distance_sum+=f64::from(carrier_distance);
+        self.des.tackle_loose_defender_distance_sum+=f64::from(defender_distance);
     }
     pub(crate) fn record_tackle_loose_recovery(&mut self,regained:bool) {
         self.des.tackle_loose_attack_regained+=u32::from(regained);

@@ -68,7 +68,7 @@ jobs:
                       carry[field] += des.get(field,0)
                   for field in ("outletSamples","openOutletsTotal","noOpenOutletSamples","holdDecisionSamples","holdWithOpenOutletSamples"):
                       outlets[field] += des.get(field,0)
-                  for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM","markPlayerMs","markDistanceM","preparationContacts","preparationTurnovers","preparationFouls","carryFouls","tackleOpportunities","tackleCommitChoices","tackleContainChoices","tackleFrontOpportunities","tackleFrontCommits","tackleSideOpportunities","tackleSideCommits","tackleRearOpportunities","tackleRearCommits","tackleExpectedCleanSum","tackleExpectedFoulSum","tackleAuditContacts","tackleAuditClean","tackleAuditFoul","tackleAuditAdvantage","tackleAuditMissedBallFouls","tackleAuditMissedBallAdvantage","tackleControlledWins","tackleLooseContacts","tackleLooseAttackRegained","tackleLooseDefenceWon","tackleLooseBoundary","tackleAuditPiCleanSum","tackleAuditPiFoulSum","tackleAuditResolverCleanSum","tackleAuditResolverFoulSum","tackleAuditResolverAdvantageSum"):
+                  for field in ("pressPlayerMs","screenPlayerMs","coverPlayerMs","pressDistanceM","screenDistanceM","coverDistanceM","markPlayerMs","markDistanceM","preparationContacts","preparationTurnovers","preparationFouls","carryFouls","tackleOpportunities","tackleCommitChoices","tackleContainChoices","tackleFrontOpportunities","tackleFrontCommits","tackleSideOpportunities","tackleSideCommits","tackleRearOpportunities","tackleRearCommits","tackleExpectedCleanSum","tackleExpectedFoulSum","tackleAuditContacts","tackleAuditClean","tackleAuditFoul","tackleAuditAdvantage","tackleAuditMissedBallFouls","tackleAuditMissedBallAdvantage","tackleControlledWins","tackleLooseContacts","tackleLooseStationary","tackleLooseSpeedSum","tackleLooseCarrierDistanceSum","tackleLooseDefenderDistanceSum","tackleLooseAttackRegained","tackleLooseDefenceWon","tackleLooseBoundary","tackleAuditPiCleanSum","tackleAuditPiFoulSum","tackleAuditResolverCleanSum","tackleAuditResolverFoulSum","tackleAuditResolverAdvantageSum"):
                       defense[field] += des.get(field,0)
                   for field in ("passRiskPairs","passRiskInitialSum","passRiskReleaseSum","passRiskAbsChangeSum","passRiskIncreased","passRiskDecreased","passRiskStable","reaimReviews","reaimChoices","reaimReleases","reaimPlannedMs","reaimRiskPairs","reaimRiskReductionSum"):
                       drift[field] += des.get(field,0)
@@ -121,6 +121,14 @@ jobs:
               assert defense["tackleAuditClean"] == defense["tackleControlledWins"]+defense["tackleLooseContacts"]
               assert defense["tackleLooseAttackRegained"]+defense["tackleLooseDefenceWon"]+defense["tackleLooseBoundary"] <= defense["tackleLooseContacts"]
               print("PI_TACKLE_CONTROL_SPLIT",json.dumps({k:defense[k]/n for k in ("tackleControlledWins","tackleLooseContacts","tackleLooseAttackRegained","tackleLooseDefenceWon","tackleLooseBoundary")},sort_keys=True))
+              loose=defense["tackleLooseContacts"]
+              assert defense["tackleLooseStationary"] <= loose
+              print("PI_TACKLE_LOOSE_KINEMATICS",json.dumps({
+                  "stationaryPct":100*defense["tackleLooseStationary"]/max(1,loose),
+                  "meanSpeedMps":defense["tackleLooseSpeedSum"]/max(1,loose),
+                  "meanCarrierDistanceM":defense["tackleLooseCarrierDistanceSum"]/max(1,loose),
+                  "meanDefenderDistanceM":defense["tackleLooseDefenderDistanceSum"]/max(1,loose)
+              },sort_keys=True))
               print("PI_TACKLE_CONTACT_AUDIT",json.dumps({
                   "contactsPerMatch":contacts/n,
                   "meanPiClean":defense["tackleAuditPiCleanSum"]/max(1,contacts),

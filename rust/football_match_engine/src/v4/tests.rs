@@ -2688,7 +2688,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.26");
+    assert_eq!(pi::PI_MODULE_VERSION, "4.0.27");
 }
 
 
@@ -3679,6 +3679,8 @@ fn pi_defense_legal_tackle_contact_does_not_guarantee_control() {
             assert_eq!(x.ball.last_touch_side,Some(TeamSideV4::Away));
             assert_eq!(x.ball.last_touch_player_id.as_deref(),Some(state.players[b].player_id.as_str()));
             assert!(x.ball.vel.x.abs()+x.ball.vel.y.abs()>0.0);
+            assert!((x.ball.pos.x-50.45).abs()<1e-4);
+            assert!((x.ball.pos.y-34.0).abs()<1e-4);
             assert_eq!(out.next_side,TeamSideV4::Home);
             assert!(!out.events.iter().any(|e|matches!(e.kind,EventTypeV4::TackleWon|EventTypeV4::DribbleLost|EventTypeV4::Foul)));
         }
@@ -3687,4 +3689,39 @@ fn pi_defense_legal_tackle_contact_does_not_guarantee_control() {
     assert!((wins as f32/4096.0-legal*control).abs()<0.04);
     assert!((loose as f32/4096.0-legal*(1.0-control)).abs()<0.04);
     println!("PI_TACKLE_CONTROL legal={legal} conditional_control={control} controlled={wins} loose={loose} n=4096");
+}
+
+
+#[test]
+fn pi_defense_tackle_loose_kinematics_uses_contact_point_and_moving_frame() {
+    use crate::v4::interaction::{tackle_loose_contact_point,tackle_loose_velocity,blocked_ball_velocity};
+    let carrier=Vec2::new(50.0,34.0);
+    let defender=Vec2::new(51.0,34.0);
+    let zero=Vec2::default();
+    let front=tackle_loose_contact_point(carrier,0.0,defender,1.0);
+    assert!((front.x-50.45).abs()<1e-4);
+    let rear=tackle_loose_contact_point(carrier,std::f32::consts::PI,defender,1.0);
+    assert!(rear.xy().distance(defender)<=1.0001);
+    assert!((rear.x-50.0).abs()<1e-4);
+    let incoming=Vec2::new(4.0,1.0);
+    let stationary=tackle_loose_velocity(incoming,zero,defender,front);
+    assert_eq!(stationary,blocked_ball_velocity(Vec3::new(4.0,1.0,0.0),defender,front));
+    let moving=Vec2::new(-3.0,0.0);
+    let displaced=tackle_loose_velocity(zero,moving,defender,front);
+    assert!(displaced.x<0.0);
+    assert_eq!(displaced.y,0.0);
+    let relative_before=(incoming.x-moving.x).powi(2)+(incoming.y-moving.y).powi(2);
+    let rebound=tackle_loose_velocity(incoming,moving,defender,front);
+    let relative_after=(rebound.x-moving.x).powi(2)+(rebound.y-moving.y).powi(2);
+    assert!(relative_after<=relative_before+1e-5);
+    let mirror_carrier=Vec2::new(55.0,34.0);
+    let mirror_defender=Vec2::new(54.0,34.0);
+    let mirror=tackle_loose_contact_point(mirror_carrier,std::f32::consts::PI,mirror_defender,1.0);
+    let mirror_v=tackle_loose_velocity(Vec2::new(-incoming.x,incoming.y),
+        Vec2::new(-moving.x,moving.y),mirror_defender,mirror);
+    assert!((mirror.x+front.x-105.0).abs()<1e-4);
+    assert!((mirror_v.x+rebound.x).abs()<1e-4&&(mirror_v.y-rebound.y).abs()<1e-4);
+    let comoving=tackle_loose_velocity(incoming,incoming,defender,front);
+    assert_eq!(comoving,Vec3::new(incoming.x,incoming.y,0.0));
+    println!("PI_TACKLE_KINEMATICS_FIXTURE front={front:?} rear={rear:?} stationary={stationary:?} moving={displaced:?}");
 }

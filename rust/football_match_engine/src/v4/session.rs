@@ -2797,6 +2797,14 @@ impl MatchSessionV4 {
             self.diagnostics.record_tackle_contact_audit(pi.clean_win_probability,pi.foul_probability,
                 resolver,has(EventTypeV4::TackleWon)||loose,has(EventTypeV4::Foul),has(EventTypeV4::AdvantagePlayed),missed_ball_body);
             self.diagnostics.record_tackle_control_split(loose,has(EventTypeV4::TackleWon));
+            if loose {
+                let def_idx=contact.expect("loose tackle has a defender");
+                let spot=self.state.ball.pos.xy();
+                let vel=self.state.ball.vel;
+                let speed=(vel.x*vel.x+vel.y*vel.y).sqrt();
+                self.diagnostics.record_tackle_loose_kinematics(speed,
+                    spot.distance(self.state.players[idx].pos),spot.distance(self.state.players[def_idx].pos));
+            }
         }
         out
     }
