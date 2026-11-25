@@ -29,7 +29,7 @@ for abi in "${ABIS[@]}"; do
 done
 
 mkdir -p "$OUT"
-(cd "$CRATE" && cargo ndk "${ARGS[@]}" -o "$OUT" build --release)
+(cd "$CRATE" && cargo ndk "${ARGS[@]}" -o "$OUT" build --release --locked)
 
 for abi in "${ABIS[@]}"; do
   so="$OUT/$abi/libfootball_match_engine.so"

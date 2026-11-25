@@ -1,0 +1,100 @@
+name: A0 test repair and goal boundary diagnosis
+on:
+  push:
+    branches: ['refactor/a0-ci-repair']
+    paths:
+      - 'rust/football_match_engine/**'
+      - 'tools/validate_v4_p1_full.sh'
+      - 'tools/verify_v4_p1_234.py'
+      - 'tests/p1_kotlin/**'
+      - 'tests/des_playback_jvm/**'
+      - '.github/workflows/a0-test-repair.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  identity_and_goal_diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen inputs and production unchanged
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.100.0 --profile minimal
+          echo '41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099  rust/football_match_engine/Cargo.lock' | sha256sum -c -
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/commit.txt
+          rustc +1.100.0 -Vv > evidence/rustc.txt
+      - name: Manifest and checkpoint compatibility
+        run: |
+          set -euo pipefail
+          (cd rust/football_match_engine && cargo +1.100.0 test --locked --lib v4::tests::pi4_legacy_api_and_direct_policy_match -- --exact --nocapture) 2>&1 | tee evidence/identity.log
+          grep -Fq 'test v4::tests::pi4_legacy_api_and_direct_policy_match ... ok' evidence/identity.log
+      - name: Enforce goal restart invariant with negative controls
+        run: |
+          set -euo pipefail
+          (cd rust/football_match_engine && cargo +1.100.0 test --locked --lib v4::tests::p0_every_goal_is_followed_by_opponent_kickoff_at_centre -- --exact --nocapture) 2>&1 | tee evidence/goal-restart-gate.log
+          grep -Fq 'test v4::tests::p0_every_goal_is_followed_by_opponent_kickoff_at_centre ... ok' evidence/goal-restart-gate.log
+      - name: Export actual goal boundary observations
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          (cd rust/football_match_engine && A0_GOAL_REPORT="$GITHUB_WORKSPACE/evidence/goal-boundary.json" cargo +1.100.0 test --locked --lib v4::tests::a0_goal_restart_boundary_diagnostic -- --ignored --exact --nocapture) 2>&1 | tee evidence/goal-boundary.log
+          grep -Fq 'test v4::tests::a0_goal_restart_boundary_diagnostic ... ok' evidence/goal-boundary.log
+          python3 - <<'PY'
+          import collections,json
+          from pathlib import Path
+          report=json.loads(Path('evidence/goal-boundary.json').read_text())
+          print('A0_GOAL_COUNTS',dict(collections.Counter(r['category'] for r in report['rows'])))
+          for r in report['rows']:
+              if r['category']!='opponent_kickoff':
+                  print('A0_GOAL_BOUNDARY',json.dumps({k:r[k] for k in ('seed','category','goal','nextBoundary')}))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a0-identity-and-goal-diagnostic
+          path: evidence/
+          if-no-files-found: error
+  kotlin_and_static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install locked Rust for missing-tool controls
+        run: rustup toolchain install 1.100.0 --profile minimal
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Kotlin compiler
+        run: |
+          curl -fsSL https://github.com/JetBrains/kotlin/releases/download/v1.9.25/kotlin-compiler-1.9.25.zip -o /tmp/kotlin.zip
+          unzip -q /tmp/kotlin.zip -d /tmp/kotlin
+          echo '/tmp/kotlin/kotlinc/bin' >> "$GITHUB_PATH"
+      - name: Static integration and behavioral Kotlin regressions
+        run: |
+          set -euo pipefail
+          python3 tools/verify_v4_p0_p1_patch.py
+          python3 tools/verify_v4_p1_234.py
+          bash tools/run_v4_p1_jvm_smoke.sh
+          bash tools/run_des_playback_jvm.sh
+      - name: Missing-tool must fail before any test
+        run: |
+          set -euo pipefail
+          temp="$(mktemp -d)"
+          trap 'rm -rf "$temp"' EXIT
+          for missing in cargo kotlinc java python3; do
+            rm -f "$temp"/*
+            for present in cargo kotlinc java python3; do
+              if [ "$present" != "$missing" ]; then ln -s "$(command -v "$present")" "$temp/$present"; fi
+            done
+            rc=0
+            PATH="$temp" /bin/bash tools/validate_v4_p1_full.sh >"$temp.out" 2>&1 || rc=$?
+            test "$rc" -eq 2
+            grep -Fq "ERROR: required tool missing: $missing" "$temp.out"
+            echo "PASS missing $missing fails closed"
+          done
+          rm -f "$temp.out"

@@ -19,6 +19,7 @@ class JSONObject {
     }
     fun put(name: String, value: Any?): JSONObject { values[name] = value; return this }
     fun getString(name: String): String = values[name] as String
+    fun getInt(name: String): Int = (values[name] as Number).toInt()
     fun getLong(name: String): Long = (values[name] as Number).toLong()
     fun optString(name: String, fallback: String = ""): String = values[name]?.toString() ?: fallback
     fun optInt(name: String, fallback: Int = 0): Int = (values[name] as? Number)?.toInt() ?: fallback

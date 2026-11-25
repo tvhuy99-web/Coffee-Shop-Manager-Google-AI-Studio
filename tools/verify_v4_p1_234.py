@@ -29,14 +29,14 @@ test('V4 command can express simultaneous substitutions', 'SubstituteBatch' in s
 test('Rust roster state reports actual substitutes and counters', 'pub struct TeamRosterStateV4' in e and 'home_roster: self.roster_snapshot' in s and 'away_roster: self.roster_snapshot' in s)
 test('commands emitted between steps are delivered', 'last_delivered_event_index' in s and 'let prev_len = self.last_delivered_event_index;' in s)
 test('Android UI reconciles roster with Rust rather than local guesses only', 'syncV4HomeRoster' in ui and 'homeRosterIndex' in ui and 'homeWindowsUsed' in ui)
-test('Android UI supports same-stoppage multi-person choice', 'setMultiChoiceItems' in ui and 'submitSubstitutions(' in ui)
-test('V4 simulation runs at most one beat ahead', 'session.advance(maxSteps = if (engineVersion == LabEngineVersion.V4) 1 else 8)' in ui)
-test('Android gates queued commands on presented beat', 'presentedV4Beat != simulatedV4Beat' in ui and 'pendingV4Commands.removeFirst()' in ui and 'played >= narration.size' in ui)
-test('Android prevents continued presentation during command dialog', 'commandDialogActive' in ui and 'main.removeCallbacks(tick)' in ui)
+test('Android UI wires same-stoppage batch selection to native command', all(x in ui for x in ['setMultiChoiceItems', 'chooseV4IncomingPlayers', '.put("type", "SUBSTITUTE_BATCH")', '.put("changes", items)', 'ctrl.submitCommandJson(cmdJson)']))
+# DES timing/frontier/pause behavior is checked by mandatory run_des_playback_jvm.sh.
+# These are source integration checks only, not a substitute for that test.
+test('command dialog uses V4 controller pause and guarded resume', 'private fun openCommandDialog()' in ui and 'playbackController?.pause()' in ui and 'private fun closeCommandDialog()' in ui and 'ctrl.resume()' in ui and 'ctrl.currentHalfStage() == DesHalfStage.IN_HALF' in ui)
 test('unique V4 match UUID and optional immutable fixture ID', 'java.util.UUID.randomUUID()' in factory and 'matchInstanceId: String? = null' in factory)
 test('snapshot filenames hash actual match ID', 'sha256(matchId.toByteArray' in st and '"match-$token.json"' in st)
 test('snapshot writes use Android atomic transaction with integrity digest', 'AtomicFile(destination)' in st and 'atomic.startWrite()' in st and 'atomic.finishWrite(stream)' in st and 'atomic.failWrite(stream)' in st and 'recordDigest' in st)
-test('snapshot never silently overwrites a different match', 'if (previous == record) return' in st and 'Immutable match archive already exists' in st)
+test('snapshot never silently overwrites a different match', 'if (existing.record == record) return' in st and 'Immutable match archive already exists' in st and 'Existing match archive failed integrity check' in st and 'LoadSnapshotResult.LegacyIncompatible' in st)
 test('snapshot validates input match ID, seed, engine version and fingerprint', 'input.getString("matchId") == record.matchId' in st and 'input.getLong("seed") == record.seed' in st and 'record.eventTimelineFingerprint.isNotBlank()' in st)
 test('benchmark snapshot records the event timeline fingerprint', 'eventTimelineFingerprint = firstFast?.optString(' in main)
 for name in ['p1_batch_substitution_counts_one_window_and_returns_authoritative_roster','p1_halftime_substitution_consumes_player_slot_not_inplay_window','p1_grouped_substitutions_replay_deterministically','p1_fourth_inplay_window_is_rejected_even_with_player_slots_left']:

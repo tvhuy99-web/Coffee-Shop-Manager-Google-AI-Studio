@@ -1130,25 +1130,108 @@ fn p1_regulation_clock_uses_independent_period_elapsed_seconds() {
         ft.sim_time_ms,summary.first_half_elapsed_seconds,summary.second_half_elapsed_seconds,summary.final_game_second);
 }
 
+// Only a legal end of the period may supersede the goal restart. Ordinary
+// live-play events before the next kickoff are not accepted.
+fn p0_check_goal_restart(goal: &crate::v4::MatchEventV4, suffix: &[crate::v4::MatchEventV4]) -> Result<&'static str, String> {
+    let side = goal.side.ok_or_else(|| "goal has no beneficiary".to_string())?;
+    for (idx, e) in suffix.iter().enumerate() {
+        if e.sequence <= goal.sequence || e.sim_time_ms < goal.sim_time_ms {
+            return Err("nonmonotonic restart timeline".into());
+        }
+        match e.kind {
+            EventTypeV4::Kickoff => {
+                if e.period != goal.period || e.side != Some(side.opposite())
+                    || (e.ball_pos.x - 52.5).abs() >= 0.01 || (e.ball_pos.y - 34.0).abs() >= 0.01
+                    || e.actor.is_none() {
+                    return Err("invalid opponent kickoff at centre".into());
+                }
+                return Ok("opponent_kickoff");
+            }
+            EventTypeV4::HalfTime if goal.period == 1 && e.period == 1 => return Ok("period_boundary"),
+            EventTypeV4::ExtraTimeHalfTime if goal.period == 3 && e.period == 3 => return Ok("period_boundary"),
+            EventTypeV4::FullTime if (goal.period == 2 || goal.period == 4) && idx+1 == suffix.len() => return Ok("period_boundary"),
+            EventTypeV4::ExtraTimeStarted if goal.period == 2 => return Ok("period_boundary"),
+            EventTypeV4::PenaltyShootoutStarted if goal.period == 4 => return Ok("period_boundary"),
+            // Stoppage bookkeeping is permitted, but passes, shots, possession,
+            // another goal or any other live action require a restart first.
+            EventTypeV4::AddedTimeAnnounced | EventTypeV4::TacticalPhaseChanged |
+            EventTypeV4::Substitution | EventTypeV4::YellowCard | EventTypeV4::RedCard |
+            EventTypeV4::Injury => {},
+            _ => return Err(format!("unexpected event {:?} before goal restart/boundary", e.kind)),
+        }
+    }
+    Err("goal has neither kickoff nor valid period boundary".into())
+}
+
 #[test]
 fn p0_every_goal_is_followed_by_opponent_kickoff_at_centre() {
     let mut n_goals = 0;
+    let mut n_kickoffs = 0;
+    let mut n_boundaries = 0;
+    let mut negative_checked = false;
     for seed in 71001..71011 {
         let result = simulate_v4(make_v4_input(
             seed, SimulationMode::FullEvent, RulesModeV4::Standard)).unwrap();
         for (idx, ev) in result.events.iter().enumerate() {
-            if ev.kind != EventTypeV4::Goal { continue; }
+            if !matches!(ev.kind, EventTypeV4::Goal | EventTypeV4::OwnGoal) { continue; }
             n_goals += 1;
-            let restart = result.events[idx+1..].iter().find(|e|
-                e.kind == EventTypeV4::Kickoff || e.kind == EventTypeV4::Goal).unwrap();
-            assert_eq!(restart.kind, EventTypeV4::Kickoff);
-            assert_eq!(restart.side, Some(ev.side.unwrap().opposite()));
-            assert!((restart.ball_pos.x - 52.5).abs() < 0.01);
-            assert!((restart.ball_pos.y - 34.0).abs() < 0.01);
-            assert!(restart.actor.is_some());
+            let suffix = &result.events[idx+1..];
+            let category = p0_check_goal_restart(ev, suffix).unwrap_or_else(|err|
+                panic!("seed={seed}, goal sequence={}, time={}: {err}", ev.sequence, ev.sim_time_ms));
+            if category == "opponent_kickoff" {
+                n_kickoffs += 1;
+                if !negative_checked {
+                    let kickoff = suffix.iter().position(|e| e.kind == EventTypeV4::Kickoff).unwrap();
+                    let mut missing = suffix.to_vec();
+                    missing.remove(kickoff);
+                    assert!(p0_check_goal_restart(ev, &missing).is_err(), "missing live restart must fail");
+                    let mut wrong_side = suffix.to_vec();
+                    wrong_side[kickoff].side = ev.side;
+                    assert!(p0_check_goal_restart(ev, &wrong_side).is_err(), "wrong restart side must fail");
+                    let mut wrong_spot = suffix.to_vec();
+                    wrong_spot[kickoff].ball_pos.x += 1.0;
+                    assert!(p0_check_goal_restart(ev, &wrong_spot).is_err(), "wrong restart spot must fail");
+                    assert!(p0_check_goal_restart(ev, &[]).is_err(), "truncated timeline must fail");
+                    negative_checked = true;
+                }
+            } else {
+                n_boundaries += 1;
+            }
         }
     }
-    assert!(n_goals > 0);
+    assert!(n_goals > 0 && n_kickoffs > 0 && n_boundaries > 0 && negative_checked,
+        "frozen sample must exercise restart, valid period boundary and negative controls");
+    println!("A0_GOAL_RESTART_GATE goals={n_goals} kickoffs={n_kickoffs} boundaries={n_boundaries}");
+}
+
+// Diagnostic evidence only: preserve the original red gate until the period-end
+// semantics have been observed. Do not assume that every missing restart is legal.
+#[test]
+#[ignore = "A0 exports goal/restart boundary evidence"]
+fn a0_goal_restart_boundary_diagnostic() {
+    let mut goals = 0;
+    let mut suspicious = 0;
+    let mut rows = Vec::new();
+    for seed in 71001..71011 {
+        let result = simulate_v4(make_v4_input(seed, SimulationMode::FullEvent, RulesModeV4::Standard)).unwrap();
+        for (idx, goal) in result.events.iter().enumerate() {
+            if !matches!(goal.kind, EventTypeV4::Goal | EventTypeV4::OwnGoal) { continue; }
+            goals += 1;
+            let suffix = &result.events[idx+1..];
+            let next = suffix.iter().find(|e| matches!(e.kind, EventTypeV4::Kickoff | EventTypeV4::Goal | EventTypeV4::OwnGoal | EventTypeV4::HalfTime | EventTypeV4::ExtraTimeHalfTime | EventTypeV4::FullTime | EventTypeV4::ExtraTimeStarted | EventTypeV4::PenaltyShootoutStarted));
+            let category = match next {
+                Some(e) if e.kind == EventTypeV4::Kickoff && e.period == goal.period && e.side == goal.side.map(|side| side.opposite()) && (e.ball_pos.x - 52.5).abs() < 0.01 && (e.ball_pos.y - 34.0).abs() < 0.01 && e.actor.is_some() => "opponent_kickoff",
+                Some(e) if matches!(e.kind, EventTypeV4::HalfTime | EventTypeV4::ExtraTimeHalfTime | EventTypeV4::FullTime | EventTypeV4::ExtraTimeStarted | EventTypeV4::PenaltyShootoutStarted) => "period_boundary_before_restart",
+                _ => { suspicious += 1; "investigate" },
+            };
+            rows.push(serde_json::json!({"seed":seed,"category":category,"goal":goal,"nextBoundary":next,"followingEvents":suffix.iter().take(12).collect::<Vec<_>>() }));
+        }
+    }
+    assert!(goals > 0);
+    let output = std::env::var("A0_GOAL_REPORT").expect("A0_GOAL_REPORT");
+    std::fs::write(output, serde_json::to_string_pretty(&serde_json::json!({"goals":goals,"suspicious":suspicious,"rows":rows})).unwrap()).unwrap();
+    println!("A0_GOAL_RESTART_DIAGNOSTIC goals={goals} suspicious={suspicious}");
+    // Not a replacement for the original invariant: this test exports observations.
 }
 
 // P1-2: multi-player batches count as one in-play window; failures are atomic.
@@ -2688,7 +2771,46 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(old, new);
         assert_eq!(a.state(), b.state());
     }
-    assert_eq!(pi::PI_MODULE_VERSION, "4.0.27");
+    // The manifest is frozen independently from runtime constants, not generated from them.
+    let m: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/pi4_baseline_identity.json")).unwrap();
+    assert_eq!(m["schema"].as_u64(), Some(1));
+    assert_eq!(m["pi_module_version"].as_str(), Some(pi::PI_MODULE_VERSION));
+    assert_eq!(m["pi_policy_id"].as_str(), Some(pi::PI_POLICY_ID));
+    assert_eq!(m["pi_extraction_baseline"].as_str(), Some(pi::PI_BASELINE_COMMIT));
+    assert_eq!(m["engine_version"].as_str(), Some(ENGINE_VERSION_V4));
+    assert_eq!(m["jni_bridge_version"].as_i64(), Some(crate::v4::JNI_BRIDGE_VERSION as i64));
+    assert_eq!(m["protocol_version"].as_u64(), Some(ENGINE_PROTOCOL_VERSION_V4 as u64));
+    assert_eq!(m["event_schema_version"].as_u64(), Some(crate::v4::EVENT_SCHEMA_VERSION_V4 as u64));
+    assert_eq!(m["checkpoint_schema_version"].as_u64(), Some(crate::v4::CHECKPOINT_SCHEMA_VERSION_V4 as u64));
+    let checkpoint = MatchSessionV4::new(input).unwrap().export_checkpoint().unwrap();
+    crate::v4::verify_checkpoint(&checkpoint).unwrap();
+    assert_eq!(m["pi_policy_id"].as_str(), Some(checkpoint.payload.pi_policy_id.as_str()));
+    assert_eq!(m["checkpoint_schema_version"].as_u64(), Some(checkpoint.checkpoint_schema_version as u64));
+    assert_eq!(m["event_schema_version"].as_u64(), Some(checkpoint.event_schema_version as u64));
+    assert_eq!(m["protocol_version"].as_u64(), Some(checkpoint.protocol_version as u64));
+    assert_eq!(m["engine_version"].as_str(), Some(checkpoint.engine_version.as_str()));
+
+    // Mutate policy then recompute checksum: rejection must be compatibility,
+    // not just the generic checksum guard. The valid checkpoint still restores.
+    let mut wrong_policy = checkpoint.clone();
+    wrong_policy.payload.pi_policy_id = "incompatible-a0-negative-control".into();
+    wrong_policy.checksum_hex = crate::v4::compute_checkpoint_checksum(
+        &serde_json::to_string(&wrong_policy.payload).unwrap());
+    assert!(crate::v4::verify_checkpoint(&wrong_policy).unwrap_err().to_string().contains("PI policy mismatch"));
+    assert!(MatchSessionV4::from_checkpoint(wrong_policy).is_err());
+    let mut wrong_schema = checkpoint.clone();
+    wrong_schema.checkpoint_schema_version += 1;
+    assert!(crate::v4::verify_checkpoint(&wrong_schema).unwrap_err().to_string().contains("unsupported checkpoint schema"));
+    let mut wrong_protocol = checkpoint.clone();
+    wrong_protocol.protocol_version += 1;
+    assert!(crate::v4::verify_checkpoint(&wrong_protocol).is_err());
+    let mut wrong_event = checkpoint.clone();
+    wrong_event.event_schema_version += 1;
+    assert!(crate::v4::verify_checkpoint(&wrong_event).is_err());
+    let mut wrong_checksum = checkpoint.clone();
+    wrong_checksum.checksum_hex = "0".repeat(32);
+    assert!(crate::v4::verify_checkpoint(&wrong_checksum).unwrap_err().to_string().contains("checkpoint checksum mismatch"));
+    MatchSessionV4::from_checkpoint(checkpoint).unwrap();
 }
 
 

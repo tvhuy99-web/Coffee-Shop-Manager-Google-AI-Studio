@@ -1,0 +1,143 @@
+name: A-1 complete per-seed gameplay event trace
+on:
+  push:
+    branches: ['refactor/a1-deep-golden']
+    paths:
+      - 'tests/a1_trace/**'
+      - '.github/workflows/a1-full-trace.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  event_trace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - {scenario: baseline, count: 1000}
+          - {scenario: balanced, count: 128}
+          - {scenario: high_press, count: 64}
+          - {scenario: low_block, count: 64}
+          - {scenario: strong_home, count: 64}
+          - {scenario: strong_away, count: 64}
+    env:
+      A1_SCENARIO: ${{ matrix.scenario }}
+      A1_COUNT: ${{ matrix.count }}
+      BASELINE_SHA: c2c392d8b3ccc57985e87337e8994fd7033328ee
+      LOCK_SHA: 41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: c2c392d8b3ccc57985e87337e8994fd7033328ee
+          path: baseline
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: a1-deep-${{ matrix.scenario }}
+          run-id: 45604679705
+          github-token: ${{ github.token }}
+          path: deep
+      - name: Verify frozen source, lock and prior golden
+        run: |
+          set -euo pipefail
+          test "$(git -C baseline rev-parse HEAD)" = "$BASELINE_SHA"
+          test "$(cat deep/commit.txt)" = "$BASELINE_SHA"
+          test "$(cat deep/harness-commit.txt)" = 'dca1db59fdfd37d5e125c68b3d95897a90d69950'
+          (cd deep && sha256sum -c SHA256SUMS)
+          echo "$LOCK_SHA  deep/Cargo.lock" | sha256sum -c -
+          rustup toolchain install 1.100.0 --profile minimal
+          rustc +1.100.0 -Vv | diff - deep/rustc.txt
+          crate=baseline/rust/football_match_engine
+          cp deep/Cargo.lock "$crate/Cargo.lock"
+          cp control/tests/a1_trace/full_event_population_fixture.rs "$crate/src/v4/a1_full_trace.rs"
+          printf '\ninclude!("a1_full_trace.rs");\n' >> "$crate/src/v4/tests.rs"
+          test "$(git -C baseline diff --name-only)" = 'rust/football_match_engine/src/v4/tests.rs'
+          mkdir -p evidence scratch
+          cp deep/{commit.txt,Cargo.lock,rustc.txt,parity.log} evidence/
+          mv evidence/parity.log evidence/prior-deep-parity.log
+          git -C control rev-parse HEAD > evidence/harness-commit.txt
+          cp control/tests/a1_trace/full_event_population_fixture.rs evidence/
+      - name: Independently replay every normalized input and capture full event stream
+        run: |
+          set -euo pipefail
+          root="$PWD"
+          export A1_DEEP_REFERENCE="$root/deep/first.jsonl"
+          for run in first second; do
+            (
+              cd baseline/rust/football_match_engine
+              export CARGO_TARGET_DIR="$root/target-$run"
+              export A1_OUTPUT="$root/scratch/$run.jsonl"
+              cargo +1.100.0 test --locked --release --lib v4::tests::a1_full_event_population_trace -- --ignored --exact --nocapture
+            ) 2>&1 | tee "evidence/$run.log"
+            grep -Fq 'test v4::tests::a1_full_event_population_trace ... ok' "evidence/$run.log"
+          done
+      - name: Compare every event and preserve lossless trace shards
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import gzip, hashlib, itertools, json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path('control/tests/a1').resolve()))
+          from compare_deep_golden import first_diff, parse
+          out=Path('evidence')
+          cohort=os.environ['A1_SCENARIO']
+          expected=int(os.environ['A1_COUNT'])
+          h1,h2=hashlib.sha256(),hashlib.sha256()
+          count=events=0
+          shard=None
+          shard_path=None
+          shards=[]
+          seen=set()
+          try:
+              with open('scratch/first.jsonl','rb') as f, open('scratch/second.jsonl','rb') as g:
+                  for x,y in itertools.zip_longest(f,g):
+                      assert x is not None and y is not None, 'different row counts'
+                      h1.update(x); h2.update(y)
+                      a,b=parse(x),parse(y)
+                      assert a['scenario']==b['scenario']==cohort
+                      assert a['seed']==104729+count*7907 and a['seed'] not in seen
+                      seen.add(a['seed'])
+                      assert len(a['events'])==a['eventCount']>0
+                      d=first_diff(a,b)
+                      if d:
+                          print(json.dumps({'scenario':cohort,'seed':a['seed'],'fieldPath':d[0],'expected':repr(d[1])[:400],'actual':repr(d[2])[:400]}))
+                          raise SystemExit('A1_TRACE_DIVERGENCE')
+                      if x!=y: raise SystemExit('nonidentical raw event trace')
+                      if count%50==0:
+                          if shard: shard.close()
+                          shard_path=out/f'trace-{count//50:03d}.jsonl.gz'
+                          shards.append(shard_path)
+                          shard=gzip.open(shard_path,'wb',compresslevel=6)
+                      shard.write(x)
+                      count+=1; events+=a['eventCount']
+          finally:
+              if shard: shard.close()
+          assert count==expected
+          assert h1.digest()==h2.digest()
+          recovered=hashlib.sha256()
+          for p in shards:
+              assert p.stat().st_size < 90*1024*1024, 'trace shard too large for durable Git archive'
+              with gzip.open(p,'rb') as f:
+                  for chunk in iter(lambda:f.read(1024*1024),b''): recovered.update(chunk)
+          assert recovered.digest()==h1.digest()
+          report={'scenario':cohort,'rows':count,'events':events,'mismatches':0,'firstSha256':h1.hexdigest(),'secondSha256':h2.hexdigest(),'recoveredSha256':recovered.hexdigest(),'shards':[p.name for p in shards]}
+          (out/'trace-report.json').write_text(json.dumps(report,indent=2)+'\n')
+          print('A1_FULL_TRACE_PARITY',json.dumps(report))
+          PY
+          (cd evidence && sha256sum *.gz *.json *.log *.rs Cargo.lock commit.txt rustc.txt harness-commit.txt > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-full-trace-${{ matrix.scenario }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90

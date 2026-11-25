@@ -20,5 +20,5 @@ fi
 
 # The Rust test suite includes comparisons against the saved Java V3 golden
 # event stream and match fingerprints, not only individual formula tests.
-(cd "$ROOT/rust/football_match_engine" && cargo test --all-targets)
+(cd "$ROOT/rust/football_match_engine" && cargo test --all-targets --locked)
 echo 'RUST TEST SUITE: completed; inspect output for Java V3 event parity.'
