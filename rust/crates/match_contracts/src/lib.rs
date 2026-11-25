@@ -10,3 +10,5 @@ pub mod team_instructions;
 pub mod tactical_phase;
 
 pub mod rule_types;
+
+pub mod event_types;

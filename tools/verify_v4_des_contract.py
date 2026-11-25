@@ -218,6 +218,7 @@ def main() -> int:
         RUST_SRC / "clock.rs",
         RUST_SRC / "jni_bridge.rs",
         *sorted(RUST_V4.glob("*.rs")),
+        *sorted((ROOT / "rust/crates").rglob("*.rs")),
     ]
     kt_files = [
         *sorted(KOTLIN_LAB.glob("*.kt")),
@@ -301,7 +302,7 @@ def main() -> int:
         strip_comments_only(p.read_text(encoding="utf-8")) for p in sorted(RUST_V4.glob("*.rs"))
     )
     session_rs = strip_comments_only((RUST_V4 / "session.rs").read_text(encoding="utf-8"))
-    state_rs = strip_comments_only((RUST_V4 / "state.rs").read_text(encoding="utf-8"))
+    state_rs = strip_comments_only((ROOT / "rust/crates/player_condition/src/lib.rs").read_text(encoding="utf-8"))
     audio_kt = strip_comments_only((KOTLIN_LAB / "LabAudioDirector.kt").read_text(encoding="utf-8"))
 
     check(
@@ -366,7 +367,7 @@ def main() -> int:
     root = Path(__file__).resolve().parent.parent
     sess_rs = (root / "rust/football_match_engine/src/v4/session.rs").read_text()
     rng_rs = (root / "rust/football_match_engine/src/rng.rs").read_text()
-    diag_rs = (root / "rust/football_match_engine/src/v4/diagnostics.rs").read_text()
+    diag_rs = (root / "rust/crates/match_telemetry/src/lib.rs").read_text()
     tests_rs = (root / "rust/football_match_engine/src/v4/tests.rs").read_text()
     ctrl_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/MatchPlaybackController.kt").read_text()
     ns_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/NarrationScheduler.kt").read_text()

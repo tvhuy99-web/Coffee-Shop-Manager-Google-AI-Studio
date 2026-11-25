@@ -78,6 +78,7 @@ dependencies = [
  "match_physics",
  "match_rules",
  "match_tactics",
+ "match_telemetry",
  "player_condition",
  "player_intelligence",
  "rayon",
@@ -172,6 +173,14 @@ name = "match_tactics"
 version = "0.4.0"
 dependencies = [
  "match_contracts",
+]
+
+[[package]]
+name = "match_telemetry"
+version = "0.4.0"
+dependencies = [
+ "match_contracts",
+ "serde",
 ]
 
 [[package]]

@@ -62,12 +62,7 @@ pub struct SlotAnchorPair {
 
 pub use player_condition::TwoPoolFatigueState;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum InjuryKind {
-    Impact,
-    MuscleNonContact,
-}
+pub use match_contracts::event_types::InjuryKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

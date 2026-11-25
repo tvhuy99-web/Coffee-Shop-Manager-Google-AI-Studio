@@ -3,8 +3,7 @@
 use match_contracts::spatial::{attacking_progress_m,TeamSideV4,Vec2};
 use super::support::ObservedPlayer;
 
-#[derive(Debug,Clone,Copy,PartialEq,Eq)]
-pub enum DefensiveRole { Press, Screen, Cover, Mark }
+pub use match_contracts::event_types::DefensiveRole;
 
 #[derive(Debug,Clone,Copy)]
 pub struct DefenderObservation<'a> {
