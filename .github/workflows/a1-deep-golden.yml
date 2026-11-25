@@ -1,0 +1,107 @@
+name: A-1 deep golden and restore markers
+on:
+  push:
+    branches: ['refactor/a1-deep-golden']
+    paths:
+      - 'tests/a1/**'
+      - '.github/workflows/a1-deep-golden.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  golden:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - { scenario: baseline, count: 1000 }
+          - { scenario: balanced, count: 128 }
+          - { scenario: high_press, count: 64 }
+          - { scenario: low_block, count: 64 }
+          - { scenario: strong_home, count: 64 }
+          - { scenario: strong_away, count: 64 }
+          - { scenario: full_event, count: 12 }
+          - { scenario: checkpoint_markers, count: 0 }
+    env:
+      A1_SCENARIO: ${{ matrix.scenario }}
+      A1_COUNT: ${{ matrix.count }}
+      BASELINE_SHA: c2c392d8b3ccc57985e87337e8994fd7033328ee
+      LOCK_SHA: 41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: c2c392d8b3ccc57985e87337e8994fd7033328ee
+          path: baseline
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: a1-locked-inputs
+          run-id: 45593874053
+          github-token: ${{ github.token }}
+          path: locked
+      - uses: actions/download-artifact@v4
+        if: matrix.scenario != 'checkpoint_markers'
+        with:
+          name: a1-parity-${{ matrix.scenario }}
+          run-id: 45593874053
+          github-token: ${{ github.token }}
+          path: prior
+      - name: Verify baseline and attach only test instrumentation
+        run: |
+          set -euo pipefail
+          test "$(git -C baseline rev-parse HEAD)" = "$BASELINE_SHA"
+          (cd locked && sha256sum -c SHA256SUMS)
+          test "$(cat locked/commit.txt)" = "$BASELINE_SHA"
+          echo "$LOCK_SHA  locked/Cargo.lock" | sha256sum -c -
+          if [ "$A1_SCENARIO" != checkpoint_markers ]; then
+            (cd prior && sha256sum -c SHA256SUMS)
+            test "$(cat prior/commit.txt)" = "$BASELINE_SHA"
+            cmp locked/Cargo.lock prior/Cargo.lock
+          fi
+          rustup toolchain install 1.100.0 --profile minimal
+          rustc +1.100.0 -Vv | diff - locked/rustc.txt
+          crate=baseline/rust/football_match_engine
+          cp locked/Cargo.lock "$crate/Cargo.lock"
+          cp control/tests/a1/deep_golden_fixture.rs "$crate/src/v4/a1_deep_golden_fixture.rs"
+          printf '\ninclude!("a1_deep_golden_fixture.rs");\n' >> "$crate/src/v4/tests.rs"
+          test "$(git -C baseline diff --name-only)" = 'rust/football_match_engine/src/v4/tests.rs'
+          mkdir -p evidence
+          cp locked/{commit.txt,Cargo.lock,rustc.txt} evidence/
+          git -C control rev-parse HEAD > evidence/harness-commit.txt
+          cp control/tests/a1/{deep_golden_fixture.rs,compare_deep_golden.py} evidence/
+      - name: Run independent locked replays and compare prior golden
+        run: |
+          set -euo pipefail
+          root="$PWD"
+          test_name=a1_deep_terminal_golden
+          if [ "$A1_SCENARIO" = checkpoint_markers ]; then test_name=a1_deep_checkpoint_markers; fi
+          for run in first second; do
+            (
+              cd baseline/rust/football_match_engine
+              export CARGO_TARGET_DIR="$root/target-$run"
+              export A1_OUTPUT="$root/evidence/$run.jsonl"
+              cargo +1.100.0 test --locked --release --lib "v4::tests::$test_name" -- --ignored --exact --nocapture
+            ) 2>&1 | tee "evidence/$run.log"
+            grep -Fq "test v4::tests::$test_name ... ok" "evidence/$run.log"
+          done
+          args=()
+          if [ "$A1_SCENARIO" != checkpoint_markers ]; then args+=(--reference prior/first.json); fi
+          python3 control/tests/a1/compare_deep_golden.py evidence/first.jsonl evidence/second.jsonl --scenario "$A1_SCENARIO" --expected "$A1_COUNT" "${args[@]}" | tee evidence/parity.log
+          (cd evidence && sha256sum *.jsonl *.log *.rs *.py Cargo.lock commit.txt rustc.txt harness-commit.txt > SHA256SUMS)
+          test "$(git -C baseline diff --name-only)" = 'rust/football_match_engine/src/v4/tests.rs'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-deep-${{ matrix.scenario }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90
