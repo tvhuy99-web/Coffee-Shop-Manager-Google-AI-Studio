@@ -333,6 +333,26 @@ jobs:
           sha256sum "$apk" | tee build-evidence/apk.sha256
           git rev-parse HEAD | tee build-evidence/commit.txt
 
+      - name: Verify packaged ARM64 JNI ABI against frozen V4 export set
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,re,subprocess,tempfile,zipfile
+          from pathlib import Path
+          expected=set(json.loads(r'''["Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeAdvanceV4Session","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeAdvanceV4SessionUntilMs","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeBridgeVersion","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeCreateV4Session","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeDestroyV4Session","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeEngineProtocolVersion","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeExportV4Checkpoint","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeFinishV4Session","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeGetVersionManifestJson","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeImportV4Checkpoint","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeReplayV4Json","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeSimulateBatchV4Json","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeSimulateMatchV4Json","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeStartNextPeriod","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeSubmitV4Command","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeSubmitV4CommandJson"]'''))
+          with tempfile.TemporaryDirectory() as temp:
+              p=Path(temp)/'libfootball_match_engine.so'
+              with zipfile.ZipFile('app/build/outputs/apk/debug/app-debug.apk') as z:
+                  p.write_bytes(z.read('lib/arm64-v8a/libfootball_match_engine.so'))
+              header=subprocess.check_output(['readelf','-h',str(p)],text=True)
+              assert 'AArch64' in header,header
+              symbols=subprocess.check_output(['readelf','--dyn-syms','--wide',str(p)],text=True)
+              actual=set(re.findall(r'Java_pl_mkrstudio_truefootball3_lab_NativeBridge_\w+',symbols))
+              assert actual==expected,{'missing':sorted(expected-actual),'unexpected':sorted(actual-expected)}
+              Path('build-evidence/jni-abi.json').write_text(json.dumps({'architecture':'AArch64','exports':sorted(actual),'count':len(actual)},indent=2)+'\n')
+              print(f'PASS: {len(actual)} JNI exports, frozen V4 set plus manifest, no legacy exports')
+          PY
+
       - name: Upload verified APK and build evidence
         if: success()
         uses: actions/upload-artifact@v4
