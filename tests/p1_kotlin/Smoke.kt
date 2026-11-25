@@ -33,12 +33,17 @@ fun main() {
     val first = record("Season2/round01:home-away")
     store.saveSnapshot(first)
     assertCase(store.loadSnapshot(first.matchId) == first, "snapshot must round-trip")
+    val firstArchive = File(base, "v4_global_snapshots").listFiles()!!.single()
+    val originalBytes = firstArchive.readBytes()
     store.saveSnapshot(first) // safe idempotent retry
+    assertCase(firstArchive.readBytes().contentEquals(originalBytes), "idempotent archive must not change bytes")
     assertCase(store.listStoredMatchIds() == listOf(first.matchId), "raw match ID must survive file hashing")
     var collisionRefused = false
     try { store.saveSnapshot(first.copy(eventTimelineFingerprint = "different")) }
     catch (_: java.io.IOException) { collisionRefused = true }
     assertCase(collisionRefused, "different result must never overwrite same fixture ID")
+    assertCase(firstArchive.readBytes().contentEquals(originalBytes), "collision rejection must preserve original archive bytes")
+    assertCase(store.loadSnapshot(first.matchId) == first, "original match remains replayable after rejected collision")
 
     val second = record("Season2_round01:home-away")
     store.saveSnapshot(second)
