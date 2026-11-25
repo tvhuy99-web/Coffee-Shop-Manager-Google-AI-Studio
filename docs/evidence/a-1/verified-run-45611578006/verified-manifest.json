@@ -1,0 +1,299 @@
+{
+  "artifacts": [
+    {
+      "id": 15020996426,
+      "member_sha256": {
+        "Cargo.lock": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+        "SHA256SUMS": "53df31d154f50e53d3b4b33191dba36cba6cb5b07992d54fa64ca74ed8ef08ff",
+        "commit.txt": "45d2981a0b4662bdd58af6e059e6767f7d907eb104717118037b81380f6d9903",
+        "first.log": "83799c42a96a6ce6e50174ccb080e90e4a53b417f79dee6b264136d570fe3857",
+        "full_event_population_fixture.rs": "6dc74916d764f44e3301b73d27b74d810e6d08293f1ef26577a39040f011d769",
+        "harness-commit.txt": "39a3be43249188670d16eb2b1c9b5a956122b48ea237fd765ab8d3bf624f76f4",
+        "prior-deep-parity.log": "b2ae13ba0ce58ef64d3eb69bd2b7b5b04ec88b7645fe70a9a243a27d56fb211d",
+        "rustc.txt": "be69adad9137eaa0bdac1dd07e2fe286b1831fc8bad193ea27806ca0c7c8e7c6",
+        "second.log": "19836d26d3a4148ae59a4f19a0b60b573c18ac918206c1a1dc9cd0f8c0a75401",
+        "trace-000.jsonl.gz": "0707fba278bfc0b1364b4e10a8596cc18a0f2cc729c81404cd092bc5a96ea16c",
+        "trace-001.jsonl.gz": "e2fa84dde064805ac956f1b08de94f7391e9e099e728cae45ed86513ce076fa2",
+        "trace-report.json": "2e1983ccf26eb4a5b054270ec73d695bfb4824ee99c05ee4e9f0398aa2d0aa38"
+      },
+      "name": "a1-full-trace-low_block",
+      "parts": [
+        {
+          "path": "a1-full-trace-low_block.zip",
+          "sha256": "d81cd482c1268bfe4955620194c128eba317e11cc5161cbeae7c715ea8e3b443",
+          "size": 11061625
+        }
+      ],
+      "sha256": "d81cd482c1268bfe4955620194c128eba317e11cc5161cbeae7c715ea8e3b443",
+      "size": 11061625,
+      "trace_report": {
+        "events": 196110,
+        "firstSha256": "411790fa85fb8bb53dee96e1802447b2654cbd6d9b97f1b41c5454f789a0f9ae",
+        "mismatches": 0,
+        "recoveredSha256": "411790fa85fb8bb53dee96e1802447b2654cbd6d9b97f1b41c5454f789a0f9ae",
+        "rows": 64,
+        "scenario": "low_block",
+        "secondSha256": "411790fa85fb8bb53dee96e1802447b2654cbd6d9b97f1b41c5454f789a0f9ae",
+        "shards": [
+          "trace-000.jsonl.gz",
+          "trace-001.jsonl.gz"
+        ]
+      }
+    },
+    {
+      "id": 15020726017,
+      "member_sha256": {
+        "Cargo.lock": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+        "SHA256SUMS": "7b461840769cd0b0731a494aa0b1e811e5390d1cea456e77129bfe4cc920973a",
+        "commit.txt": "45d2981a0b4662bdd58af6e059e6767f7d907eb104717118037b81380f6d9903",
+        "first.log": "37f7dc5a498261924b6fe42ab4baf82ee602007dff4c70118da9ff33e76e299f",
+        "full_event_population_fixture.rs": "6dc74916d764f44e3301b73d27b74d810e6d08293f1ef26577a39040f011d769",
+        "harness-commit.txt": "39a3be43249188670d16eb2b1c9b5a956122b48ea237fd765ab8d3bf624f76f4",
+        "prior-deep-parity.log": "72f9c2d5b960777da94a05dc855b221030084b5183e6fd1d421e6d0ad8ba25db",
+        "rustc.txt": "be69adad9137eaa0bdac1dd07e2fe286b1831fc8bad193ea27806ca0c7c8e7c6",
+        "second.log": "3128afa15de8364d8dd23b6e234dee2ff3d6a65b4f171b0a2477727f283ae2ca",
+        "trace-000.jsonl.gz": "d2e334a1d2e40b62104a24a23ec993bf9b0490f3a7c137072849ee8137dd269f",
+        "trace-001.jsonl.gz": "97cdaa8b796f02524468d351e21223667d1d983bf7e93c63ea9f54be50046460",
+        "trace-002.jsonl.gz": "3f0530adce705dc58f8b88ef223809b3324a91dbe25c7e7856dce6d1601d831a",
+        "trace-report.json": "d60d3f9380c5072e3e83690665c2944560ef4e216fc23bcef0f3a49e0c422a8c"
+      },
+      "name": "a1-full-trace-balanced",
+      "parts": [
+        {
+          "path": "a1-full-trace-balanced.zip",
+          "sha256": "4ea67c2e47c547fddec89948cd1925e6f5bb4845887743a2894a9bc94d5cc6f8",
+          "size": 22780172
+        }
+      ],
+      "sha256": "4ea67c2e47c547fddec89948cd1925e6f5bb4845887743a2894a9bc94d5cc6f8",
+      "size": 22780172,
+      "trace_report": {
+        "events": 404762,
+        "firstSha256": "fb56628ab983d3e8b3c294f99c240eec4e3c3c8cea994ab14077210ebcb5204d",
+        "mismatches": 0,
+        "recoveredSha256": "fb56628ab983d3e8b3c294f99c240eec4e3c3c8cea994ab14077210ebcb5204d",
+        "rows": 128,
+        "scenario": "balanced",
+        "secondSha256": "fb56628ab983d3e8b3c294f99c240eec4e3c3c8cea994ab14077210ebcb5204d",
+        "shards": [
+          "trace-000.jsonl.gz",
+          "trace-001.jsonl.gz",
+          "trace-002.jsonl.gz"
+        ]
+      }
+    },
+    {
+      "id": 15020213348,
+      "member_sha256": {
+        "Cargo.lock": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+        "SHA256SUMS": "ec8fbb7ce681dcb9606d6c4df5ffa102675dab9d4f62a908bfd061891541009b",
+        "commit.txt": "45d2981a0b4662bdd58af6e059e6767f7d907eb104717118037b81380f6d9903",
+        "first.log": "f40a6ee6bff8181cfffff2360b08695b1f2adb2a89dadfee0d28a31f0acabf4f",
+        "full_event_population_fixture.rs": "6dc74916d764f44e3301b73d27b74d810e6d08293f1ef26577a39040f011d769",
+        "harness-commit.txt": "39a3be43249188670d16eb2b1c9b5a956122b48ea237fd765ab8d3bf624f76f4",
+        "prior-deep-parity.log": "d40f1a0a2cb71d6fbaccb5e73e76cd4c7dc1da20e0cc050adf0c7bf8c30a5b18",
+        "rustc.txt": "be69adad9137eaa0bdac1dd07e2fe286b1831fc8bad193ea27806ca0c7c8e7c6",
+        "second.log": "1adfd56bbdb8834085f020b8a5cd32e5c3df5e81a9db13dbfcd1f73d1bf81d91",
+        "trace-000.jsonl.gz": "f1c1350f154e6fcd0e8e8f0c78bc000a64d43cde0fff2e0f1fd6662d654a9012",
+        "trace-001.jsonl.gz": "775c6fdd4e97e5bdc9fe53ebfeb6cbf1efe4913315a2a6c56e6376971b69d9b5",
+        "trace-report.json": "048a035dc88943bab4f7848f59f6d2bfdb68df5530415a97d89d9edc945b0940"
+      },
+      "name": "a1-full-trace-strong_away",
+      "parts": [
+        {
+          "path": "a1-full-trace-strong_away.zip",
+          "sha256": "5cabed1ed2edeb9f4555fa4cfbfe40efb688340db536a68ba4787b602cae7bca",
+          "size": 10364030
+        }
+      ],
+      "sha256": "5cabed1ed2edeb9f4555fa4cfbfe40efb688340db536a68ba4787b602cae7bca",
+      "size": 10364030,
+      "trace_report": {
+        "events": 182870,
+        "firstSha256": "00402b1f5dd10ec094c6d28398798d576ab71b12d9855fe4ce21845763bb6ec7",
+        "mismatches": 0,
+        "recoveredSha256": "00402b1f5dd10ec094c6d28398798d576ab71b12d9855fe4ce21845763bb6ec7",
+        "rows": 64,
+        "scenario": "strong_away",
+        "secondSha256": "00402b1f5dd10ec094c6d28398798d576ab71b12d9855fe4ce21845763bb6ec7",
+        "shards": [
+          "trace-000.jsonl.gz",
+          "trace-001.jsonl.gz"
+        ]
+      }
+    },
+    {
+      "id": 15020099431,
+      "member_sha256": {
+        "Cargo.lock": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+        "SHA256SUMS": "471945787e9157c5aedac7147ca0a80e246a680a51cb21e76b3457d3dd0c8039",
+        "commit.txt": "45d2981a0b4662bdd58af6e059e6767f7d907eb104717118037b81380f6d9903",
+        "first.log": "b21249a6f12febe9c65ac271dc85763df44f6d2f09a359255a02fbfbb798c899",
+        "full_event_population_fixture.rs": "6dc74916d764f44e3301b73d27b74d810e6d08293f1ef26577a39040f011d769",
+        "harness-commit.txt": "39a3be43249188670d16eb2b1c9b5a956122b48ea237fd765ab8d3bf624f76f4",
+        "prior-deep-parity.log": "1d5720e1ef35ebfea99b426f170ab737ef68d5fecb8a2750eaef7577c1543ec5",
+        "rustc.txt": "be69adad9137eaa0bdac1dd07e2fe286b1831fc8bad193ea27806ca0c7c8e7c6",
+        "second.log": "4634ec1cc1f9b788c43e44b1eaa668dd4116a64d67760daf6b56d56370de0471",
+        "trace-000.jsonl.gz": "91a1f47c0f1a3134a23921ee061b7615b0b3b8f3f6088531ee49ebd3d6e7d8c4",
+        "trace-001.jsonl.gz": "6d2d3efa075c337088a59955583a320f5dded0bab1a52513dd1a79527943367b",
+        "trace-002.jsonl.gz": "7f6abc90270802774271fa256d86e208c5feccb317ce591a76bcc34602733174",
+        "trace-003.jsonl.gz": "168f6f2d9eb5b697eee3756a209823009893b52d8f5536d478858c84f435da3c",
+        "trace-004.jsonl.gz": "a79db1c63132c32448b526d91c0a1d8e0efbe8577a9874ae380c99671b0ce6e3",
+        "trace-005.jsonl.gz": "7f0b38e2fabf6e86b8d30994e9b1a4a47df9fddecfb3689420b525c4a41a0550",
+        "trace-006.jsonl.gz": "cbf7685aed0baed699aa8f2145493456326bb967946773e10876c36103c4ce15",
+        "trace-007.jsonl.gz": "841c7ce023b771a9b464a70968a47385087f8487ce9c9abb4d962e48e7b59e94",
+        "trace-008.jsonl.gz": "8fdf01b5c4b5c6a6267e5da5167c0fe996bd187dded90e64af8cf3b124730839",
+        "trace-009.jsonl.gz": "5cfcbdfa876f4aabd1eb2ba4f6d39c6b0cd8e9e49f1387df8611f4d6fa168fe4",
+        "trace-010.jsonl.gz": "4695e00d2bbeb26092d791dc56089a3ca8ef6373b372b4a90460300bc22c11df",
+        "trace-011.jsonl.gz": "ea89c6c49d3f5c53c64cf49eb999650dd176d634a2d42902f2d60d3d1e4ef784",
+        "trace-012.jsonl.gz": "d86abbe00001c5a9c4272d509b00235f3bf3d960957fe099394cd952b3bd12c3",
+        "trace-013.jsonl.gz": "563983b679da4256a253c6a21d35f1e7380faf8430b371313aedcd2858faf441",
+        "trace-014.jsonl.gz": "6a3f45eef98f23f5b483ca537dee6ab872b18a8407ab5583a0393739ce084b7e",
+        "trace-015.jsonl.gz": "678f4cd1b97322c72046667724ff7f981638b94c4d2bf5732d4ca485cb82e7c0",
+        "trace-016.jsonl.gz": "e2ab4efc0d17ec50c294765e9aeeb35b5e7c2b50a0533d5aa16ab6f1f10bd244",
+        "trace-017.jsonl.gz": "99d3d8d27dc09ddc8a6f45f93fb4dc7064ca698e3c8f3f3d188ddae4397d9602",
+        "trace-018.jsonl.gz": "2923e8c357d54a15d491df93a9f4758b30e226a90a18fd788ec60345c150a7ab",
+        "trace-019.jsonl.gz": "a3f266e8f8eb6d2d83cafd3e2b26d13491a3c56fdc087ced9faeb8ec22010cfe",
+        "trace-report.json": "e4a755a3d4f01231edcc4fa4df6053a7d235f70be2d3f210851346bb56bd4751"
+      },
+      "name": "a1-full-trace-baseline",
+      "parts": [
+        {
+          "path": "a1-full-trace-baseline.zip.part000",
+          "sha256": "a87e759ecd33e819192f04d89c11d2e44a9cae2544f0fec3d4924aeb0b707f69",
+          "size": 67108864
+        },
+        {
+          "path": "a1-full-trace-baseline.zip.part001",
+          "sha256": "8cddfc9801b3bec8889fa29dd3e52cb2398b4a5fd30db22401766ac462475a9c",
+          "size": 67108864
+        },
+        {
+          "path": "a1-full-trace-baseline.zip.part002",
+          "sha256": "fb85f7eb9d99d3eeb4366a330938dbd030a9953db067263b971ddbca34c58ec2",
+          "size": 43321785
+        }
+      ],
+      "sha256": "96b754f7dd8a450ef9a10baa35ce64a0fea15e9c897cd3061d19ef0500e8c2fc",
+      "size": 177539513,
+      "trace_report": {
+        "events": 3150346,
+        "firstSha256": "06eac9e3eedc4c3c16dd092d777af62b2cb0547723c09704ee27a45d3946dd42",
+        "mismatches": 0,
+        "recoveredSha256": "06eac9e3eedc4c3c16dd092d777af62b2cb0547723c09704ee27a45d3946dd42",
+        "rows": 1000,
+        "scenario": "baseline",
+        "secondSha256": "06eac9e3eedc4c3c16dd092d777af62b2cb0547723c09704ee27a45d3946dd42",
+        "shards": [
+          "trace-000.jsonl.gz",
+          "trace-001.jsonl.gz",
+          "trace-002.jsonl.gz",
+          "trace-003.jsonl.gz",
+          "trace-004.jsonl.gz",
+          "trace-005.jsonl.gz",
+          "trace-006.jsonl.gz",
+          "trace-007.jsonl.gz",
+          "trace-008.jsonl.gz",
+          "trace-009.jsonl.gz",
+          "trace-010.jsonl.gz",
+          "trace-011.jsonl.gz",
+          "trace-012.jsonl.gz",
+          "trace-013.jsonl.gz",
+          "trace-014.jsonl.gz",
+          "trace-015.jsonl.gz",
+          "trace-016.jsonl.gz",
+          "trace-017.jsonl.gz",
+          "trace-018.jsonl.gz",
+          "trace-019.jsonl.gz"
+        ]
+      }
+    },
+    {
+      "id": 15020058556,
+      "member_sha256": {
+        "Cargo.lock": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+        "SHA256SUMS": "ebf8aa63b2461d2d52a46d872a6a7e1d74cc887a9639b3e605ad75abb92e9ca6",
+        "commit.txt": "45d2981a0b4662bdd58af6e059e6767f7d907eb104717118037b81380f6d9903",
+        "first.log": "ec7f123601a23187cef82a2b4d47a02f39b32b31026aa5af2b101c1b11852a75",
+        "full_event_population_fixture.rs": "6dc74916d764f44e3301b73d27b74d810e6d08293f1ef26577a39040f011d769",
+        "harness-commit.txt": "39a3be43249188670d16eb2b1c9b5a956122b48ea237fd765ab8d3bf624f76f4",
+        "prior-deep-parity.log": "23a8d928d1d178f603ea9f18c0bf3480d13c5c152629eb94715b15884a4c661a",
+        "rustc.txt": "be69adad9137eaa0bdac1dd07e2fe286b1831fc8bad193ea27806ca0c7c8e7c6",
+        "second.log": "ae4a39a0c253bdbe4ecf9315ea2dd67d6ef1e544969f2d4278366001cfef14e4",
+        "trace-000.jsonl.gz": "c2b0f9e26cc8865874ae2ca39ae97e7d8fe1df22290acde08b36ce2a9339139c",
+        "trace-001.jsonl.gz": "98fc6659c24242b1b86bb359537f4d68b62a981908ad816c0475d4db9ecb4ce3",
+        "trace-report.json": "1047db4c57545826c0513e7a62ee8950b225aa0b731fc168ab49630f0f0853db"
+      },
+      "name": "a1-full-trace-strong_home",
+      "parts": [
+        {
+          "path": "a1-full-trace-strong_home.zip",
+          "sha256": "2f6a855a39be275be246df34c41bf76c9ce2e0c405ab51582d9ff9ebf22198b5",
+          "size": 10241335
+        }
+      ],
+      "sha256": "2f6a855a39be275be246df34c41bf76c9ce2e0c405ab51582d9ff9ebf22198b5",
+      "size": 10241335,
+      "trace_report": {
+        "events": 181959,
+        "firstSha256": "f4dd3ff3a46e3d521c311ed6313ef81d6191ad97bbc8d398ec6b447a9bffee52",
+        "mismatches": 0,
+        "recoveredSha256": "f4dd3ff3a46e3d521c311ed6313ef81d6191ad97bbc8d398ec6b447a9bffee52",
+        "rows": 64,
+        "scenario": "strong_home",
+        "secondSha256": "f4dd3ff3a46e3d521c311ed6313ef81d6191ad97bbc8d398ec6b447a9bffee52",
+        "shards": [
+          "trace-000.jsonl.gz",
+          "trace-001.jsonl.gz"
+        ]
+      }
+    },
+    {
+      "id": 15019918497,
+      "member_sha256": {
+        "Cargo.lock": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+        "SHA256SUMS": "d52e67c9371ad8f7d135eaedad26914aafd2c5c7ed3f6bfd6366f3aa8abc351c",
+        "commit.txt": "45d2981a0b4662bdd58af6e059e6767f7d907eb104717118037b81380f6d9903",
+        "first.log": "00ce04e63b9f86ee61f5055972bd40ecdb411c8246319c7af1337c53d957b5fc",
+        "full_event_population_fixture.rs": "6dc74916d764f44e3301b73d27b74d810e6d08293f1ef26577a39040f011d769",
+        "harness-commit.txt": "39a3be43249188670d16eb2b1c9b5a956122b48ea237fd765ab8d3bf624f76f4",
+        "prior-deep-parity.log": "42853753b33d6fae8b7d9d68bedcb662714c8ca73455c181c60e2a2c1ad0127c",
+        "rustc.txt": "be69adad9137eaa0bdac1dd07e2fe286b1831fc8bad193ea27806ca0c7c8e7c6",
+        "second.log": "15fcd856bb1af776f4fde4f53f1a588a3e1752467177d1b055b05453030cd095",
+        "trace-000.jsonl.gz": "5c44b22795ae2af952e3f18aa982a3d8b479bccdc0ec47e099983bae426d9e53",
+        "trace-001.jsonl.gz": "8b6016b3b376d56b7f22be7e7282e2e0ac12cff861ad18771c52928599d62c9b",
+        "trace-report.json": "4c6df68563320563b5e33e0b3796317fa44fd09b9c72b311086cb7a26993b145"
+      },
+      "name": "a1-full-trace-high_press",
+      "parts": [
+        {
+          "path": "a1-full-trace-high_press.zip",
+          "sha256": "63145ec8ac20c586159a0964cc4e03283246122b8a55192008b4106f0f26a2fe",
+          "size": 11480813
+        }
+      ],
+      "sha256": "63145ec8ac20c586159a0964cc4e03283246122b8a55192008b4106f0f26a2fe",
+      "size": 11480813,
+      "trace_report": {
+        "events": 204232,
+        "firstSha256": "f67c161bc9145e31dfca8eb945f7cff7222de054b7519d03b952b3cf2136ee9a",
+        "mismatches": 0,
+        "recoveredSha256": "f67c161bc9145e31dfca8eb945f7cff7222de054b7519d03b952b3cf2136ee9a",
+        "rows": 64,
+        "scenario": "high_press",
+        "secondSha256": "f67c161bc9145e31dfca8eb945f7cff7222de054b7519d03b952b3cf2136ee9a",
+        "shards": [
+          "trace-000.jsonl.gz",
+          "trace-001.jsonl.gz"
+        ]
+      }
+    }
+  ],
+  "baseline_sha": "c2c392d8b3ccc57985e87337e8994fd7033328ee",
+  "harness_sha": "365261da01501701bcca5a3b63668d6e062096fb",
+  "lock_sha256": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+  "run_id": 45611578006,
+  "schema": 1,
+  "total_events": 4320279,
+  "total_seeds": 1384
+}
