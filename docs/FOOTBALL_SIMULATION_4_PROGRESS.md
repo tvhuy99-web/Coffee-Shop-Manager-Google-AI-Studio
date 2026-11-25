@@ -7,25 +7,31 @@ Nhánh tích hợp: `refactor/football-simulation-4`. Main tại thời điểm 
 ## A-1 — IN PROGRESS (25/11/2026)
 
 ### Đã thực hiện và kiểm chứng
-- [x] Hai commit gốc tồn tại ở nhánh `baseline/pi-4.0.27`, `baseline/pi-4.0.28`. Main vẫn ở `c2c392d8`; chưa có tag/protection.
-- [x] Ghim Rust 1.100.0 theo log job 138915898432; NDK 27.2.12479018, JDK 17, Gradle 8.9, compileSdk 35, targetSdk 29 được ghi nhận.
-- [x] Lưu 19 ZIP lịch sử có SHA-256/CRC và commit gốc đúng trên nhánh `evidence/a1-historical`, commit `121c69fe1569e85c25e6ed2487fd6a0013e63186`. Hai bộ population 1.384 trận, audit 4.0.27 đủ 904.
-- [x] [Run 45593874053](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45593874053): 14/14 jobs PASS, 1.384 FastBatch + 12 FullEvent exact parity (hai lần chạy), 904 audit PI 4.0.28 (5 nhóm), 3 checkpoint tests, negative control kết quả.
-- [x] [Run 45604255587](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45604255587) PASS: 14 ZIP mới đã archive, commit `b82dbf0d4c01b100ec00a155e364fdae7bd1b7de`. Tổng 33 ZIP lịch sử và locked evidence đã lưu bền vững. Manifest tại nhánh archive.
-- [x] Cargo.lock do Cargo sinh, SHA-256 `41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099`, commit `b6353ea66112821b24f295bb201739198b1eb089` tại rust/football_match_engine/Cargo.lock. Workspace rust/ chưa tồn tại; chuyển lockfile có kiểm chứng tại A5.
-- [x] Inventory 34 legacy, 5 shared, 9 JNI, 10 workflow, 11 static checks (2 shared + 9 legacy), 50+4 thuộc tính, 48 OGG ở [baseline-inventory.json](evidence/a-1/baseline-inventory.json) và [attribute_contracts.json](evidence/a-1/attribute_contracts.json). Log [139134958569](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45593934894/job/139134958569) xác minh 101/101 static, 48 checksum OGG, 895 mẫu bình luận mỗi locale và token parity. Static không chứng minh build/device.
+- [x] Hai commit gốc tồn tại ở nhánh `baseline/pi-4.0.27`, `baseline/pi-4.0.28`. Main vẫn ở `c2c392d8`.
+- [x] Rust 1.100.0 ghim theo log job 138915898432. NDK 27.2.12479018, JDK 17, Gradle 8.9, compileSdk 35, targetSdk 29 ghi nhận.
+- [x] Cargo.lock SHA-256 `41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099`, commit `b6353ea66112821b24f295bb201739198b1eb089` tại rust/football_match_engine/Cargo.lock (crate hiện hành, chưa có workspace; chuyển workspace tại A5).
+- [x] Inventory 34 legacy, 5 shared, 9 JNI, 10 workflow, 11 static checks (2 shared + 9 legacy), 50+4 attributes, 48 OGG ở [baseline-inventory.json](evidence/a-1/baseline-inventory.json) và [attribute_contracts.json](evidence/a-1/attribute_contracts.json).
+- [x] [Run 45593874053](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45593874053): 14/14 PASS trên candidate lock, 1.396 exact parity, audit 904 trận PI 4.0.28, 3 checkpoint tests và negative result control.
+- [x] [Run 45606252958](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45606252958): 14/14 PASS trên Cargo.lock đã commit, 101/101 static, 48 OGG checksum, 895 templates/locale, 1.384 FastBatch + 12 FullEvent, 5 nhóm audit 904, checkpoint tests. Không tính hai lượt lặp là số seed mới.
+- [x] [Run 45604679705](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45604679705): 8/8 PASS, normalized input, result, initial/terminal state, RNG, scheduler, commands, 7 checkpoint markers thật (live, pass_flight, tackle_loose, goal_celebration, pending_tactics, halftime, period_end). Hai lượt raw JSONL byte-identical, 4 negative controls mỗi cohort. FastBatch event fingerprint; 12 FullEvent raw events. First differing field comparator; chưa coi đầy đủ raw event cho mọi seed.
+- [x] [Run 45611090146](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45611090146) PASS: xác minh ZIP hash, member hash, baseline, lockfile, harness commit và raw parity; 22 ZIP mới lưu tại commit `7bdc6afe4f64304bf929095c4b54655d6d84b5eb` nhánh evidence/a1-historical. Tổng 55 ZIP (19 lịch sử + 14 candidate + 22 committed/deep). 
+- [x] Thêm test-only replay toàn bộ 1.384 normalized FastBatch inputs dưới FullEvent; so event fingerprint, result, state/RNG/scheduler/commands với deep golden; capture toàn bộ events, hai lần byte-identical, gzip shard lossless 50 trận. [Run 45611578006](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45611578006) queued khi kiểm tra, chưa PASS. [PR #7](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/pull/7).
+- [x] Workflow tạo 2 tag baseline xác định, không force, không publish release: [run 45611607605](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45611607605) queued; chưa xác minh tag tồn tại.
 
-### Chưa hoàn thành — không đánh dấu PASS
-- [ ] [Run 45606252958](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45606252958): rerun dùng chính Cargo.lock đã commit; thiếu file/hash sai phải fail, không generate-lockfile lại. Đã kích hoạt, còn queued khi kiểm tra.
-- [ ] [PR #7](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/pull/7), [run 45604679705](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45604679705): test-only deep golden normalized input, result, terminal state/RNG/scheduler/command ledger, 7 marker restore, strict field-path comparison. Còn queued; chưa có PASS. FastBatch hiện chỉ fingerprint event, không phải toàn bộ raw event stream; FullEvent 12 trận có raw stream. Cần đối chiếu độ bao phủ Mục 11.3 trước nghiệm thu.
-- [ ] Archive và xác minh raw artifacts của các run mới sau khi hoàn tất; bổ sung event/state trace nếu chưa đủ 5 cấp.
-- [ ] Tag/ref protection và chốt ADR-001/002/003/008. Không tự coi tag/ADR đã duyệt; không tự quyết các ADR ảnh hưởng UX/gameplay.
+### Cổng A-1 còn thiếu
+- [ ] Full event trace 1.384 FastBatch shadow replays PASS và raw trace archive bền vững. Xác minh checkpoint state/command trace coverage Mục 11.3; module first-divergence attribution chưa tự động, report ghi unclassified nếu chưa xác định.
+- [ ] Xác minh tag thực tế và bảo vệ ref/tag; xác nhận ADR-001/002/003/008. Không tự coi tag/ADR đã được chủ dự án duyệt.
+- [ ] Tích hợp PR #7 sau các gate. Không thay đổi golden để làm xanh lỗi.
 
-### Chuẩn bị A0 (chưa triển khai)
-- [x] [Coverage map 10 workflow và triage](evidence/a0/CI_COVERAGE_AND_TRIAGE.md). Rust tổng 185 PASS, 2 FAIL (version literal và test giao bóng sau bàn), 8 ignored. P1 static 17/22, 5 lỗi đã phân loại theo mã nguồn thực tế. Hai hợp đồng thay người hàng loạt và chống ghi đè hiện có implementation; cần test hành vi trước khi kết luận thiếu tính năng.
-- [ ] Chỉ tích hợp A0 khi A-1 đạt. Không nới gate hoặc thay đổi gameplay để làm xanh CI.
+## A0 — chuẩn bị song song trên nhánh riêng, chưa merge
 
-**Chặn A1–A6:** A-1 chưa đủ 5 cấp và CI rerun còn chờ runner. Không xóa mã, không áp patch toàn khối, không sửa gameplay.
+- [x] [Coverage map 10 workflow và triage](evidence/a0/CI_COVERAGE_AND_TRIAGE.md).
+- [x] [PR #8](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/pull/8) test/CI only: manifest độc lập version + checkpoint negative cases, giữ nguyên 64 seed API/RNG; fail cứng khi thiếu công cụ; sửa 5 static assertion lỗi thời/khác implementation, bắt buộc JVM DES, thêm pause và archive-byte regressions.
+- [x] Thêm diagnostic goal/restart boundary 71001..71010. Test P0 gốc vẫn nguyên, chưa kết luận nguyên nhân. Rust tổng 185 PASS, 2 FAIL, 8 ignored; P1 static cũ 17/22.
+- [ ] [Run 45611400488](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45611400488) queued; chờ actual test results, phân loại goal restart, không giả PASS.
+- [ ] Hoàn tất A-1 trước khi merge A0. Sau đó hợp nhất L0–L4 và chạy đầy đủ Rust/Android/APK evidence, sửa production riêng chỉ nếu bằng chứng cho thấy thiếu nghiệp vụ.
+
+**Chặn A1–A6:** chưa đóng A-1. Không xóa legacy, không áp patch toàn khối, không đổi gameplay hay merge main.
 
 ## Trạng thái thực tế
 - [x] Nhập nguyên văn đặc tả Revision 3.
