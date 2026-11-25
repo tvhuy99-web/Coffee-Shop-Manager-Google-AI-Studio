@@ -1,9 +1,9 @@
 name: PingFootball L0-L4 acceptance
 on:
   push:
-    branches: [main, 'refactor/football-simulation-4', 'refactor/a0-consolidated', 'refactor/a1-a2-contracts', 'refactor/a3-a5-engine-workspace']
+    branches: [main, 'refactor/football-simulation-4', 'refactor/a0-consolidated', 'refactor/a1-a2-contracts', 'refactor/a3-a5-engine-workspace', 'refactor/a6-a8-android-boundary']
   pull_request:
-    branches: [main, 'refactor/football-simulation-4']
+    branches: [main, 'refactor/football-simulation-4', 'refactor/a3-a5-engine-workspace']
   workflow_dispatch:
 permissions:
   contents: read

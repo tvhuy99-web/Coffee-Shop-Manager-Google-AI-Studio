@@ -1,5 +1,7 @@
 package pl.mkrstudio.truefootball3.lab
 
+import pl.mkrstudio.truefootball3.match_playback.LabRustLiveSession
+
 import android.content.Context
 import android.util.AtomicFile
 import org.json.JSONObject
@@ -113,7 +115,7 @@ fun main() {
         .toString()
 
     val ckptStoreClass = try {
-        Class.forName("pl.mkrstudio.truefootball3.lab.MatchCheckpointStore")
+        Class.forName("pl.mkrstudio.truefootball3.match_playback.MatchCheckpointStore")
     } catch (_: ClassNotFoundException) {
         null
     }

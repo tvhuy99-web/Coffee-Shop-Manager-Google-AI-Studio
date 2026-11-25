@@ -1,4 +1,8 @@
 package pl.mkrstudio.truefootball3.lab
+
+import pl.mkrstudio.truefootball3.match_playback.MatchPlaybackController
+import pl.mkrstudio.truefootball3.match_playback.LabV4PlaybackCoordinator
+import pl.mkrstudio.truefootball3.match_playback.MatchCheckpointStore
 import android.content.Context
 import android.os.TestClock
 import pl.mkrstudio.truefootball3.audio.MatchTtsManager

@@ -1,4 +1,6 @@
-package pl.mkrstudio.truefootball3.lab
+package pl.mkrstudio.truefootball3.match_playback
+
+import pl.mkrstudio.truefootball3.lab.*
 
 import android.os.Handler
 import android.os.Looper

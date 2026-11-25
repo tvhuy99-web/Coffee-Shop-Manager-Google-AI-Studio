@@ -36,7 +36,7 @@ mod=get(R/'v4/mod.rs')
 bridge=get(K/'NativeBridge.kt')
 activity=get(K/'LabReferenceMatchActivity.kt')
 store=get(K/'LabGlobalSeedReplayStore.kt')
-wrapper=get(K/'LabRustLiveSession.kt')
+wrapper=get(K.parent/'match_playback'/'LabRustLiveSession.kt')
 chk('P0-1 offside snapshot + receiver involvement',
     ordered(ball, 'let receiver_in_offside_position =',
             'if receiver_contact.is_none() {',
