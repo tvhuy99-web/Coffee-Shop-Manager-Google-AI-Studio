@@ -168,6 +168,17 @@ impl VersionManifest4 {
         self
     }
 
+    /// Match-level continuation additionally requires identical normalized input,
+    /// seed and ruleset; build and presentation identities are not match identity.
+    pub fn check_match_compatibility(&self, other: &Self) -> Result<(), String> {
+        self.check_simulation_compatibility(other)?;
+        match (&self.config, &other.config) {
+            (Some(a), Some(b)) if a == b => Ok(()),
+            (Some(_), Some(_)) => Err("Incompatible match configuration".into()),
+            _ => Err("Missing match configuration".into()),
+        }
+    }
+
     /// Verifies that another manifest is simulation-compatible for checkpoint/replay continuation.
     pub fn check_simulation_compatibility(&self, other: &Self) -> Result<(), String> {
         if self.schemas.manifest_schema != VERSION_MANIFEST_SCHEMA || other.schemas.manifest_schema != VERSION_MANIFEST_SCHEMA { return Err("Unsupported manifest schema".into()); }
@@ -242,5 +253,44 @@ mod tests {
         tampered.gameplay.rules_version = "4.1.0".to_string();
         // compatibility_id intentionally NOT recomputed -> must reject tampered manifest
         assert!(base.check_simulation_compatibility(&tampered).is_err());
+    }
+}
+
+#[cfg(test)]
+mod a2_contract_tests {
+    use super::*;
+
+    #[test]
+    fn manifest_schema_build_and_match_configuration_contract() {
+        let base = VersionManifest4::current_engine_manifest();
+        let mut changed = base.clone();
+        changed.build.target_arch = "another-target".into();
+        changed.build.crate_version = "another-build".into();
+        assert!(base.check_simulation_compatibility(&changed).is_ok());
+
+        changed.schemas.manifest_schema += 1;
+        changed.compatibility_id = VersionManifest4::compute_compatibility_id(
+            &changed.schemas, &changed.gameplay);
+        assert!(base.check_simulation_compatibility(&changed).is_err());
+
+        changed = base.clone();
+        changed.schemas.checkpoint_schema_version += 1;
+        changed.compatibility_id = VersionManifest4::compute_compatibility_id(
+            &changed.schemas, &changed.gameplay);
+        assert!(base.check_simulation_compatibility(&changed).is_err());
+        assert!(serde_json::from_str::<VersionManifest4>("{\"schemas\":{}}").is_err());
+
+        let config = MatchConfigIdentity {
+            match_id: "fixture-a2".into(), seed: 42, ruleset_id: "ifab_league_standard".into(),
+            ruleset_version: 1, input_fingerprint: "fixed-input".into(),
+        };
+        let a = base.clone().with_config(config.clone());
+        assert!(a.check_match_compatibility(&a).is_ok());
+        assert!(a.check_match_compatibility(&base).is_err());
+        let mut wrong = config;
+        wrong.seed += 1;
+        let b = base.with_config(wrong);
+        assert!(a.check_simulation_compatibility(&b).is_ok());
+        assert!(a.check_match_compatibility(&b).is_err());
     }
 }
