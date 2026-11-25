@@ -6,3 +6,5 @@ pub mod defensive;
 pub mod off_ball;
 pub mod timing;
 pub mod version;
+
+pub mod goalkeeper;

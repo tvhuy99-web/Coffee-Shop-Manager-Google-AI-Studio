@@ -139,56 +139,22 @@ fn try_make_substitution(
         return None;
     }
 
-    let out_idx = if injury_only {
-        state
-            .players
-            .iter()
-            .position(|p| p.side == side && p.on_pitch && !p.sent_off && p.injury.is_some())?
-    } else {
-        let fatigue_threshold = if game_sec >= 4500 { 74.0 } else { 66.0 };
-        let mut worst_idx: Option<usize> = None;
-        let mut worst_score = f32::MAX;
-        for (idx, p) in state.players.iter().enumerate() {
-            if p.side != side || !p.on_pitch || p.sent_off || p.is_goalkeeper {
-                continue;
-            }
-            let card_pen = if p.yellow_cards > 0 { 10.0 } else { 0.0 };
-            let readiness = p.fatigue.aerobic - card_pen;
-            if readiness < fatigue_threshold && readiness < worst_score {
-                worst_score = readiness;
-                worst_idx = Some(idx);
-            }
-        }
-        worst_idx?
-    };
+    let observations: Vec<_> = state.players.iter().map(|p| coach_intelligence::SubstitutionCandidate {
+        eligible:p.side==side && p.on_pitch && !p.sent_off,
+        injured:p.injury.is_some(), goalkeeper:p.is_goalkeeper,
+        yellow_cards:p.yellow_cards, aerobic:p.fatigue.aerobic,
+    }).collect();
+    let out_idx=coach_intelligence::choose_outgoing(&observations,game_sec,injury_only)?;
 
     let target_slot = state.players[out_idx].slot_id.clone();
     let is_replacing_gk = state.players[out_idx].is_goalkeeper;
 
-    let mut best_bench_idx: Option<usize> = None;
-    let mut best_fit = -1.0f32;
-
-    for (b_idx, bp) in team_snap.bench.iter().enumerate() {
-        if bp.injured || !bp.eligible {
-            continue;
-        }
-        let already_entered = state.players.iter().any(|rp| rp.player_id == bp.player_id);
-        if already_entered {
-            continue;
-        }
-        let fam = compute_position_familiarity(
-            &bp.primary_position,
-            &bp.secondary_position,
-            &target_slot,
-        );
-        let fit = fam * 100.0 + (bp.condition as f32 * 0.25);
-        if fit > best_fit {
-            best_fit = fit;
-            best_bench_idx = Some(b_idx);
-        }
-    }
-
-    let bench_idx = best_bench_idx?;
+    let candidates:Vec<_>=team_snap.bench.iter().map(|bp| {
+        if bp.injured || !bp.eligible || state.players.iter().any(|rp|rp.player_id==bp.player_id){return None;}
+        let fam=compute_position_familiarity(&bp.primary_position,&bp.secondary_position,&target_slot);
+        Some((fam,bp.condition))
+    }).collect();
+    let bench_idx=coach_intelligence::choose_incoming(&candidates)?;
     let bench_snap = &team_snap.bench[bench_idx];
     let out_id = state.players[out_idx].player_id.clone();
     let target_slot_idx = state.players[out_idx].slot_idx;

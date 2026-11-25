@@ -58,3 +58,50 @@ mod tests {
         assert_eq!(propose_tactics(base.clone(),CoachObservation{down_to_ten:true,..o}).line_height,32);
     }
 }
+
+/// Observable own-team selection inputs. Indices are stable engine roster indices.
+#[derive(Debug,Clone,Copy)]
+pub struct SubstitutionCandidate {
+    pub eligible:bool,
+    pub injured:bool,
+    pub goalkeeper:bool,
+    pub yellow_cards:u8,
+    pub aerobic:f32,
+}
+pub fn choose_outgoing(players:&[SubstitutionCandidate],game_sec:i32,injury_only:bool)->Option<usize>{
+    if injury_only {return players.iter().position(|p|p.eligible&&p.injured);}
+    let fatigue_threshold=if game_sec>=4500 {74.0}else{66.0};
+    let mut worst_idx=None;
+    let mut worst_score=f32::MAX;
+    for (idx,p) in players.iter().enumerate(){
+        if !p.eligible||p.goalkeeper {continue;}
+        let card_pen=if p.yellow_cards>0 {10.0}else{0.0};
+        let readiness=p.aerobic-card_pen;
+        if readiness<fatigue_threshold&&readiness<worst_score {worst_score=readiness;worst_idx=Some(idx);}
+    }
+    worst_idx
+}
+/// Engine supplies original position familiarity; coach owns selection and tie order.
+pub fn choose_incoming(candidates:&[Option<(f32,u8)>])->Option<usize>{
+    let mut best_bench_idx=None;
+    let mut best_fit=-1.0f32;
+    for (idx,c) in candidates.iter().enumerate(){
+        let Some((fam,condition))=*c else{continue;};
+        let fit=fam*100.0+(condition as f32*0.25);
+        if fit>best_fit{best_fit=fit;best_bench_idx=Some(idx);}
+    }
+    best_bench_idx
+}
+#[cfg(test)]
+mod substitution_tests {
+    use super::*;
+    #[test]
+    fn injury_priority_fatigue_cards_and_stable_ties(){
+        let p=SubstitutionCandidate{eligible:true,injured:false,goalkeeper:false,yellow_cards:0,aerobic:70.0};
+        let players=[p,SubstitutionCandidate{injured:true,goalkeeper:true,..p},SubstitutionCandidate{yellow_cards:1,..p},SubstitutionCandidate{eligible:false,aerobic:1.0,..p}];
+        assert_eq!(choose_outgoing(&players,3600,true),Some(1));
+        assert_eq!(choose_outgoing(&players,3600,false),Some(2));
+        assert_eq!(choose_incoming(&[None,Some((0.8,80)),Some((0.8,80))]),Some(1));
+        assert_eq!(choose_incoming(&[None]),None);
+    }
+}

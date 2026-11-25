@@ -1564,16 +1564,22 @@ fn p2_50_match_attributes_have_explicit_runtime_wiring_and_4_are_career_hooks() 
         // PI owns these policies since stage 5.1; compatibility reexports
         // are not the implementation. Keep the original 50-attribute gate.
         include_str!("../player_intelligence/decision.rs"),
-        include_str!("../player_intelligence/timing.rs"),
-        include_str!("../player_intelligence/off_ball.rs"),
+        include_str!("../../../crates/player_intelligence/src/timing.rs"),
+        include_str!("../../../crates/player_intelligence/src/off_ball.rs"),
         include_str!("../player_intelligence/goalkeeper.rs"),
-        include_str!("../player_intelligence/utility.rs"),
+        include_str!("../../../crates/player_intelligence/src/utility.rs"),
         include_str!("../player_intelligence/on_ball.rs"),
-        include_str!("../player_intelligence/support.rs"),
-        include_str!("../player_intelligence/defensive.rs"),
+        include_str!("../../../crates/player_intelligence/src/support.rs"),
+        include_str!("../../../crates/player_intelligence/src/defensive.rs"),
         include_str!("../player_intelligence/tackle.rs"),
         include_str!("../player_intelligence/pass_forecast.rs"),
         include_str!("tactics.rs"), include_str!("psychology.rs"),
+        include_str!("../../../crates/player_condition/src/lib.rs"),
+        include_str!("../../../crates/match_tactics/src/lib.rs"),
+        include_str!("../../../crates/match_physics/src/lib.rs"),
+        include_str!("../../../crates/match_rules/src/lib.rs"),
+        include_str!("../../../crates/coach_intelligence/src/lib.rs"),
+        include_str!("../../../crates/player_intelligence/src/goalkeeper.rs"),
         include_str!("ai_manager.rs"), include_str!("session.rs"),
     ].join("
 ");
