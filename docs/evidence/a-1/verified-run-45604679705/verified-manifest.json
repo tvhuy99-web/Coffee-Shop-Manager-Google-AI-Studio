@@ -1,0 +1,169 @@
+{
+  "artifacts": [
+    {
+      "id": 15019696114,
+      "member_sha256": {
+        "Cargo.lock": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+        "SHA256SUMS": "6380b60466690a519ab83b5fb98e4cdcb1d5e84ccf24da2d1aa9441f624281eb",
+        "commit.txt": "45d2981a0b4662bdd58af6e059e6767f7d907eb104717118037b81380f6d9903",
+        "compare_deep_golden.py": "0f26f62d474bab6870e6bbadcda6aaaaac2f89405f9578f3dce55ea553c9a58c",
+        "deep_golden_fixture.rs": "b197750a38604bbc15e37201e35c77538d4f1572a520f7a9890f58195f028b1d",
+        "first.jsonl": "01eaa2b237591c9b20b50717e16ef51a0314294674fad2ac9329a814787bad82",
+        "first.log": "ad465fc514602aaab09310fbd88bba9c5caa9b3b81b8d4c05b5b58ca6708b5cf",
+        "harness-commit.txt": "85999a2e4ec9f8179f5ec1fd5c2ee470a57a2069c7ea61627720e5b16923586a",
+        "parity.log": "34027fa82aa5582d9550eeeab193232d3bd535c3377f0455c820c1dce0f26643",
+        "rustc.txt": "be69adad9137eaa0bdac1dd07e2fe286b1831fc8bad193ea27806ca0c7c8e7c6",
+        "second.jsonl": "01eaa2b237591c9b20b50717e16ef51a0314294674fad2ac9329a814787bad82",
+        "second.log": "a154d8c3197742d5b9b3b631cff860d68c3194bb9cb02fdf6e4bcc670ae7d2f8"
+      },
+      "name": "a1-deep-full_event",
+      "sha256": "dda7397664fde53a216e539e0107d5b6610ade08dd85e295897ba7c7003e9481",
+      "size": 4684815
+    },
+    {
+      "id": 15019666201,
+      "member_sha256": {
+        "Cargo.lock": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+        "SHA256SUMS": "4d65a46b073c223863e9248ff8fb0d7988cb78f3f9d4ecbd3658bec68bfc7f3b",
+        "commit.txt": "45d2981a0b4662bdd58af6e059e6767f7d907eb104717118037b81380f6d9903",
+        "compare_deep_golden.py": "0f26f62d474bab6870e6bbadcda6aaaaac2f89405f9578f3dce55ea553c9a58c",
+        "deep_golden_fixture.rs": "b197750a38604bbc15e37201e35c77538d4f1572a520f7a9890f58195f028b1d",
+        "first.jsonl": "bca751b79be05cd8684a3c6483c1b534690c59d7215b4cc806aafc7e8310cee7",
+        "first.log": "b4eef46de1bf4cb9ca84e9361dacdcb6d79caf96ecee13b8a83fe6b83a20c220",
+        "harness-commit.txt": "85999a2e4ec9f8179f5ec1fd5c2ee470a57a2069c7ea61627720e5b16923586a",
+        "parity.log": "d40f1a0a2cb71d6fbaccb5e73e76cd4c7dc1da20e0cc050adf0c7bf8c30a5b18",
+        "rustc.txt": "be69adad9137eaa0bdac1dd07e2fe286b1831fc8bad193ea27806ca0c7c8e7c6",
+        "second.jsonl": "bca751b79be05cd8684a3c6483c1b534690c59d7215b4cc806aafc7e8310cee7",
+        "second.log": "6891189dd6e16ba78cd075507669583441affe6cc2221d4df71da05cb8ca2c8d"
+      },
+      "name": "a1-deep-strong_away",
+      "sha256": "15d681c14737385b124ddc0d9cfebc59086a9ea69bb894dc164160cd079542b4",
+      "size": 2606168
+    },
+    {
+      "id": 15019621433,
+      "member_sha256": {
+        "Cargo.lock": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+        "SHA256SUMS": "8b1fccb1e9f08258b02b007979cc57048e8b2964d8815261d8bfea1a1f885f60",
+        "commit.txt": "45d2981a0b4662bdd58af6e059e6767f7d907eb104717118037b81380f6d9903",
+        "compare_deep_golden.py": "0f26f62d474bab6870e6bbadcda6aaaaac2f89405f9578f3dce55ea553c9a58c",
+        "deep_golden_fixture.rs": "b197750a38604bbc15e37201e35c77538d4f1572a520f7a9890f58195f028b1d",
+        "first.jsonl": "e49cca93de269f7432a788af61e54b2a19080b281929daf0297e6477508db2bf",
+        "first.log": "36d47cce8c3ac0de7c5e6ff4eb5582f29ddba13dd49d78c6bcb814a3e160762e",
+        "harness-commit.txt": "85999a2e4ec9f8179f5ec1fd5c2ee470a57a2069c7ea61627720e5b16923586a",
+        "parity.log": "bfe987e0e89858faecf24c8a8b348e118af7dfa3c4c66dc9662583a9f8451603",
+        "rustc.txt": "be69adad9137eaa0bdac1dd07e2fe286b1831fc8bad193ea27806ca0c7c8e7c6",
+        "second.jsonl": "e49cca93de269f7432a788af61e54b2a19080b281929daf0297e6477508db2bf",
+        "second.log": "cc6d8fe92282c1e12b7999f2e93d14b58596a00146a480a217fa99ae3c44e8f3"
+      },
+      "name": "a1-deep-checkpoint_markers",
+      "sha256": "a4fa52ac9568bcf5db110a8852ab182f2efc8470f52484c7aa2ee7dc884d7484",
+      "size": 1304713
+    },
+    {
+      "id": 15019536282,
+      "member_sha256": {
+        "Cargo.lock": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+        "SHA256SUMS": "556f105fcdd5d3208403d343001c97f7884943fbb029fd7d2a69decd25f0fcdf",
+        "commit.txt": "45d2981a0b4662bdd58af6e059e6767f7d907eb104717118037b81380f6d9903",
+        "compare_deep_golden.py": "0f26f62d474bab6870e6bbadcda6aaaaac2f89405f9578f3dce55ea553c9a58c",
+        "deep_golden_fixture.rs": "b197750a38604bbc15e37201e35c77538d4f1572a520f7a9890f58195f028b1d",
+        "first.jsonl": "62161a15f77001ec336b7d3fba23440d2fcdd324aa156526488c69defa75f06b",
+        "first.log": "8aa5da12fa29ad6ea4b6066ee917eaf5a76c134ef56791c517be40d389841b52",
+        "harness-commit.txt": "85999a2e4ec9f8179f5ec1fd5c2ee470a57a2069c7ea61627720e5b16923586a",
+        "parity.log": "b2ae13ba0ce58ef64d3eb69bd2b7b5b04ec88b7645fe70a9a243a27d56fb211d",
+        "rustc.txt": "be69adad9137eaa0bdac1dd07e2fe286b1831fc8bad193ea27806ca0c7c8e7c6",
+        "second.jsonl": "62161a15f77001ec336b7d3fba23440d2fcdd324aa156526488c69defa75f06b",
+        "second.log": "16363a607b39fe0294126a3ad70d01bf3dd29ae06e57bf7fc90671ed1b65d675"
+      },
+      "name": "a1-deep-low_block",
+      "sha256": "55964a0820655942ed9556baaceb1c6d293b461ee81c40dd11a227999aed812a",
+      "size": 2473010
+    },
+    {
+      "id": 15019166641,
+      "member_sha256": {
+        "Cargo.lock": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+        "SHA256SUMS": "33cd9eeb61286d53efa53ee1aa2e4f60ac5416c32888e9ef67c10a32232c2759",
+        "commit.txt": "45d2981a0b4662bdd58af6e059e6767f7d907eb104717118037b81380f6d9903",
+        "compare_deep_golden.py": "0f26f62d474bab6870e6bbadcda6aaaaac2f89405f9578f3dce55ea553c9a58c",
+        "deep_golden_fixture.rs": "b197750a38604bbc15e37201e35c77538d4f1572a520f7a9890f58195f028b1d",
+        "first.jsonl": "8dd371e88650e6f90b40e4516632f98d4693948a99d62cdbe24ef74ddd76c47d",
+        "first.log": "786bba6177d8e9927ad92146c0163a770eac416767b16b7fb041e474cccc23d5",
+        "harness-commit.txt": "85999a2e4ec9f8179f5ec1fd5c2ee470a57a2069c7ea61627720e5b16923586a",
+        "parity.log": "23a8d928d1d178f603ea9f18c0bf3480d13c5c152629eb94715b15884a4c661a",
+        "rustc.txt": "be69adad9137eaa0bdac1dd07e2fe286b1831fc8bad193ea27806ca0c7c8e7c6",
+        "second.jsonl": "8dd371e88650e6f90b40e4516632f98d4693948a99d62cdbe24ef74ddd76c47d",
+        "second.log": "5023ae935faaff95241b8d030b01f1999d02333328cc7023514960234998bec1"
+      },
+      "name": "a1-deep-strong_home",
+      "sha256": "f87d158a954879e07d2ef19e17243ddcb6bbb00392673dd91e745e08ed9eb77a",
+      "size": 2609092
+    },
+    {
+      "id": 15018325814,
+      "member_sha256": {
+        "Cargo.lock": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+        "SHA256SUMS": "6fcf877c24328bcb9525b8350aa2a3860a5181d89944224146911c59f36ad34f",
+        "commit.txt": "45d2981a0b4662bdd58af6e059e6767f7d907eb104717118037b81380f6d9903",
+        "compare_deep_golden.py": "0f26f62d474bab6870e6bbadcda6aaaaac2f89405f9578f3dce55ea553c9a58c",
+        "deep_golden_fixture.rs": "b197750a38604bbc15e37201e35c77538d4f1572a520f7a9890f58195f028b1d",
+        "first.jsonl": "7610c28e723c776beae2042e164001f3c5e75eb1671c1ec0ecd4e4d6ba2f885e",
+        "first.log": "4cdbf2e3ca8a406bca8696a808b7834032a06b7a007906b0bb7a3b825106846a",
+        "harness-commit.txt": "85999a2e4ec9f8179f5ec1fd5c2ee470a57a2069c7ea61627720e5b16923586a",
+        "parity.log": "42853753b33d6fae8b7d9d68bedcb662714c8ca73455c181c60e2a2c1ad0127c",
+        "rustc.txt": "be69adad9137eaa0bdac1dd07e2fe286b1831fc8bad193ea27806ca0c7c8e7c6",
+        "second.jsonl": "7610c28e723c776beae2042e164001f3c5e75eb1671c1ec0ecd4e4d6ba2f885e",
+        "second.log": "6e97598c81859f84b9f16a4061d70f8d605dee5c432db67da91b90a9bc226d57"
+      },
+      "name": "a1-deep-high_press",
+      "sha256": "887524fca2682eef8d66085e3ebf58aab50834a34aa8b2d5a5cd9f0965c1b857",
+      "size": 2470572
+    },
+    {
+      "id": 15018058449,
+      "member_sha256": {
+        "Cargo.lock": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+        "SHA256SUMS": "0dafe4b497a6cc34895a5aecffbd39e363342b713bb5d0044c8c966a23280c2c",
+        "commit.txt": "45d2981a0b4662bdd58af6e059e6767f7d907eb104717118037b81380f6d9903",
+        "compare_deep_golden.py": "0f26f62d474bab6870e6bbadcda6aaaaac2f89405f9578f3dce55ea553c9a58c",
+        "deep_golden_fixture.rs": "b197750a38604bbc15e37201e35c77538d4f1572a520f7a9890f58195f028b1d",
+        "first.jsonl": "a72495535ff861cd8628603e99d87f24e98a598709c44719f62eeb283021e847",
+        "first.log": "407e6178333313c9f29ceef728b23d7c7f37172929aab822155a3e1bf233a68b",
+        "harness-commit.txt": "85999a2e4ec9f8179f5ec1fd5c2ee470a57a2069c7ea61627720e5b16923586a",
+        "parity.log": "1d5720e1ef35ebfea99b426f170ab737ef68d5fecb8a2750eaef7577c1543ec5",
+        "rustc.txt": "be69adad9137eaa0bdac1dd07e2fe286b1831fc8bad193ea27806ca0c7c8e7c6",
+        "second.jsonl": "a72495535ff861cd8628603e99d87f24e98a598709c44719f62eeb283021e847",
+        "second.log": "4e881cab108d9f22c77b8f6c18ff110f26c6c92cdac35944bfcc9707e18639db"
+      },
+      "name": "a1-deep-baseline",
+      "sha256": "62b779bee3b7a645a22e79a5db2b069ae28691acd58f544c8a622e91eb9edbc2",
+      "size": 39979499
+    },
+    {
+      "id": 15017983502,
+      "member_sha256": {
+        "Cargo.lock": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+        "SHA256SUMS": "865eabb09a0d46f85264b1cf1a3f5b2649a8e4abb31243a3b37466d1c51aafa6",
+        "commit.txt": "45d2981a0b4662bdd58af6e059e6767f7d907eb104717118037b81380f6d9903",
+        "compare_deep_golden.py": "0f26f62d474bab6870e6bbadcda6aaaaac2f89405f9578f3dce55ea553c9a58c",
+        "deep_golden_fixture.rs": "b197750a38604bbc15e37201e35c77538d4f1572a520f7a9890f58195f028b1d",
+        "first.jsonl": "b5273c5b1c8c08a8e20289050c8a54fa57691a1247047f59523255ffaf045130",
+        "first.log": "e0eba30c063f0d5d8eae21a957813b8c6f46b8e87f300eadecf46cb4604304ef",
+        "harness-commit.txt": "85999a2e4ec9f8179f5ec1fd5c2ee470a57a2069c7ea61627720e5b16923586a",
+        "parity.log": "72f9c2d5b960777da94a05dc855b221030084b5183e6fd1d421e6d0ad8ba25db",
+        "rustc.txt": "be69adad9137eaa0bdac1dd07e2fe286b1831fc8bad193ea27806ca0c7c8e7c6",
+        "second.jsonl": "b5273c5b1c8c08a8e20289050c8a54fa57691a1247047f59523255ffaf045130",
+        "second.log": "4aa8ebaa028965cb82014cef219dce74aa32edc608d20205c70668fe260fabc6"
+      },
+      "name": "a1-deep-balanced",
+      "sha256": "85c08cf38372118736a89cf5165da4885ecdd49ad811cc59df45aa6edcff3fed",
+      "size": 4910371
+    }
+  ],
+  "baseline_sha": "c2c392d8b3ccc57985e87337e8994fd7033328ee",
+  "lock_sha256": "41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099",
+  "run_id": 45604679705,
+  "schema": 1,
+  "workflow_sha": "dca1db59fdfd37d5e125c68b3d95897a90d69950"
+}
