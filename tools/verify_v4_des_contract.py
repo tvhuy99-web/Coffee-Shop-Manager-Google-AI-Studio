@@ -239,7 +239,7 @@ def main() -> int:
 
     # 2. Version constants in Rust v4/mod.rs & lib.rs cast
     mod_rs = (RUST_V4 / "mod.rs").read_text(encoding="utf-8")
-    lib_rs = (RUST_SRC / "lib.rs").read_text(encoding="utf-8")
+    lib_rs = (RUST_SRC / "jni_bridge.rs").read_text(encoding="utf-8")
     check(
         "Rust JNI_BRIDGE_VERSION == 8",
         re.search(r"pub\s+const\s+JNI_BRIDGE_VERSION\s*:\s*i32\s*=\s*8\s*;", mod_rs) is not None,
@@ -256,9 +256,9 @@ def main() -> int:
         "Expected pub const EVENT_SCHEMA_VERSION_V4: u32 = 5 in v4/mod.rs",
     )
     check(
-        "Rust lib.rs casts ENGINE_PROTOCOL_VERSION_V4 as i32",
+        "Rust jni_bridge.rs casts ENGINE_PROTOCOL_VERSION_V4 as i32",
         "v4::ENGINE_PROTOCOL_VERSION_V4 as i32" in lib_rs,
-        "Expected `v4::ENGINE_PROTOCOL_VERSION_V4 as i32` in lib.rs",
+        "Expected `v4::ENGINE_PROTOCOL_VERSION_V4 as i32` in jni_bridge.rs",
     )
 
     # 3. Kotlin NativeBridge.isV4DesReady() matches bridge >= 8 & protocol >= 5
