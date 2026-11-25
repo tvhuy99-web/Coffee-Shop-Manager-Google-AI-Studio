@@ -96,7 +96,7 @@ for locale in ("values", "values-vi"):
     check(len(strings) == 895, f"{locale} has 895 commentary templates ({len(strings)})")
     commentary[locale] = strings
 
-renderer = KOTLIN / "LabCommentaryEngine.kt"
+renderer = KOTLIN.parent / "match_commentary" / "LabCommentaryEngine.kt"
 check(renderer.is_file(), "Kotlin commentary renderer present")
 known_variables = set()
 if renderer.is_file():

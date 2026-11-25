@@ -12,9 +12,9 @@ kotlinc \
   "$TEST/stubs/android/content/Context.kt" \
   "$TEST/stubs/org/json/JSONObject.kt" \
   "$TEST/stubs/LabEnums.kt" \
-  "$MAIN/LabNarrativeTracker.kt" \
-  "$MAIN/LabCommentaryTemplatePolicy.kt" \
-  "$MAIN/LabCommentaryEngine.kt" \
+  "$MAIN/../match_commentary/LabNarrativeTracker.kt" \
+  "$MAIN/../match_commentary/LabCommentaryTemplatePolicy.kt" \
+  "$MAIN/../match_commentary/LabCommentaryEngine.kt" \
   "$TEST/CommentaryRegression.kt" \
   -include-runtime -d "$OUT/test.jar"
 java -jar "$OUT/test.jar" "$ROOT/app/src/main/res"

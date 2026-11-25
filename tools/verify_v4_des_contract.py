@@ -303,7 +303,7 @@ def main() -> int:
     )
     session_rs = strip_comments_only((RUST_V4 / "session.rs").read_text(encoding="utf-8"))
     state_rs = strip_comments_only((ROOT / "rust/crates/player_condition/src/lib.rs").read_text(encoding="utf-8"))
-    audio_kt = strip_comments_only((KOTLIN_LAB / "LabAudioDirector.kt").read_text(encoding="utf-8"))
+    audio_kt = strip_comments_only((KOTLIN_LAB.parent / "match_audio" / "LabAudioDirector.kt").read_text(encoding="utf-8"))
 
     check(
         "Zero regression: 0 occurrences of `dt_sec.clamp(1.0, 6.0)` in v4/",
@@ -370,7 +370,7 @@ def main() -> int:
     diag_rs = (root / "rust/crates/match_telemetry/src/lib.rs").read_text()
     tests_rs = (root / "rust/football_match_engine/src/v4/tests.rs").read_text()
     ctrl_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/match_playback/MatchPlaybackController.kt").read_text()
-    ns_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/NarrationScheduler.kt").read_text()
+    ns_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/match_commentary/NarrationScheduler.kt").read_text()
     tts_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/audio/MatchTtsManager.kt").read_text()
     act_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/LabReferenceMatchActivity.kt").read_text()
 

@@ -1,5 +1,7 @@
 package pl.mkrstudio.truefootball3.match_playback
 
+import pl.mkrstudio.truefootball3.match_commentary.NarrationScheduler
+
 import pl.mkrstudio.truefootball3.lab.*
 
 import android.content.Context

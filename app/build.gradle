@@ -94,7 +94,7 @@ tasks.register("validateCommentaryTokens") {
     doLast {
         // Pure Kotlin project: the available tokens are defined by the map in
         // LabCommentaryEngine.kt. Never depend on deleted Java sources.
-        File rendererSource = file("src/main/java/pl/mkrstudio/truefootball3/lab/LabCommentaryEngine.kt")
+        File rendererSource = file("src/main/java/pl/mkrstudio/truefootball3/match_commentary/LabCommentaryEngine.kt")
         if (!rendererSource.isFile()) {
             throw new GradleException("Kotlin commentary renderer is missing: ${rendererSource}")
         }
