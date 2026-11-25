@@ -16,6 +16,19 @@ pub(crate) fn verify_commit_progress(before_ms:i64,after_ms:i64,before_events:u3
 use crate::contracts::{is_finite_vec2, is_finite_vec3};
 use crate::v4::state::{BallControlState, MatchStateV4};
 
+/// Stable commit-boundary validation. No clamping, no corrections, no RNG.
+/// This intentionally checks structural facts, not legacy restart ownership.
+pub(crate) fn verify_commit_structure(state:&MatchStateV4)->Result<(),V4Error>{
+    let mut ids=std::collections::HashSet::new();
+    if !is_finite_vec3(state.ball.pos)||!is_finite_vec3(state.ball.vel){return Err(V4Error::InvalidInput("INV-02: non-finite ball kinematics".into()));}
+    for p in &state.players {
+        if !ids.insert(p.player_id.as_str())||p.profile_idx>=state.player_profiles.len(){return Err(V4Error::InvalidInput(format!("INV-08: duplicate player ID or invalid profile: {}",p.player_id)));}
+        if !is_finite_vec2(p.pos)||!is_finite_vec2(p.vel)||!is_finite_vec2(p.target_pos)||!p.facing_rad.is_finite(){return Err(V4Error::InvalidInput(format!("INV-02: non-finite player kinematics: {}",p.player_id)));}
+        if !(0.0..=100.0).contains(&p.fatigue.aerobic)||!(0.0..=100.0).contains(&p.fatigue.anaerobic)||!p.fatigue.distance_m.is_finite()||p.fatigue.distance_m<0.0{return Err(V4Error::InvalidInput(format!("INV-07: invalid condition: {}",p.player_id)));}
+    }
+    Ok(())
+}
+
 /// Canonical stages of a single atomic DES transition in `match_engine`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitionStage {

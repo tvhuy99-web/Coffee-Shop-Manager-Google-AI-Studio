@@ -348,6 +348,8 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
         return Err(bad("envelope time differs from authoritative clock"));
     }
     if p.rng.root_seed!=p.input.seed {return Err(bad("RNG root seed differs from input"));}
+    crate::v4::transition::verify_commit_structure(&p.state)?;
+    p.scheduler.validate_snapshot().map_err(bad)?;
     if p.next_event_sequence!=p.stats.event_count {return Err(bad("event sequence mismatch"));}
     if p.stats.carrier_idx>=p.state.players.len() || p.stats.last_passer_idx.is_some_and(|i|i>=p.state.players.len()) {
         return Err(bad("carrier or passer index out of roster"));

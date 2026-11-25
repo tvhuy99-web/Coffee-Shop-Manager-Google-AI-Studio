@@ -463,7 +463,9 @@ mod pi_tackle_loose_tests {
         let mut loose=None;
         for seed in 1..=512 {
             s.state=initial.clone();
-            s.rng=DeterministicRng::new(seed*7907);
+            // Deliberately explore RNG cursor values, not a different match identity.
+            // Same stream state as the old fixture; retain the immutable root seed.
+            s.rng=DeterministicRng::from_seed_and_state(s.input.seed,seed*7907);
             let out=resolve_carry_contact(&mut s.state,&s.input,a,Some(b),ctx,false,&mut s.rng);
             if s.state.ball.control==BallControlState::Loose {loose=Some(out);break;}
         }
@@ -570,6 +572,31 @@ mod a4_atomic_api_tests {
         delta.players[1]=row;
         assert!(delta.apply(&mut s.state).is_err());
         assert_eq!(serde_json::to_string(&s.state).unwrap(),baseline);
+    }
+
+    #[test]
+    fn a4_invalid_candidate_commit_is_rejected_without_side_effects(){
+        let mut s=new_session();
+        let before=snapshot(&s);
+        let result=s.transact(|candidate|{
+            candidate.state.players[0].pos.x=f32::NAN;
+            candidate.rng.next_double();
+            candidate.next_command_id+=1;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(snapshot(&s),before);
+    }
+    #[test]
+    fn a4_checkpoint_rejects_duplicate_identity_and_invalid_condition(){
+        let s=new_session();
+        for mode in 0..2{
+            let mut ck=s.export_checkpoint().unwrap();
+            if mode==0 {ck.payload.state.players[1].player_id=ck.payload.state.players[0].player_id.clone();}
+            else {ck.payload.state.players[0].fatigue.aerobic=101.0;}
+            ck.checksum_hex=compute_checkpoint_checksum(&serde_json::to_string(&ck.payload).unwrap());
+            assert!(MatchSessionV4::from_checkpoint(ck).is_err());
+        }
     }
 
 }

@@ -316,6 +316,7 @@ impl MatchSessionV4 {
             self.event_count,candidate.event_count,
             self.completed_beats,candidate.completed_beats,
         )?;
+        crate::v4::transition::verify_commit_structure(&candidate.state)?;
         *self=candidate;
         Ok(result)
     }
