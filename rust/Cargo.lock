@@ -75,6 +75,9 @@ dependencies = [
  "coach_intelligence",
  "jni",
  "match_contracts",
+ "match_physics",
+ "match_tactics",
+ "player_condition",
  "player_intelligence",
  "rayon",
  "serde",
@@ -148,10 +151,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "match_physics"
+version = "0.4.0"
+dependencies = [
+ "match_contracts",
+ "serde",
+]
+
+[[package]]
+name = "match_tactics"
+version = "0.4.0"
+dependencies = [
+ "match_contracts",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "player_condition"
+version = "0.4.0"
+dependencies = [
+ "match_contracts",
+ "serde",
+]
 
 [[package]]
 name = "player_intelligence"
