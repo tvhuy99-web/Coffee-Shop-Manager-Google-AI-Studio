@@ -33,7 +33,8 @@ def check(condition, title):
 
 check(not list((ROOT / "app/src").rglob("*.java")), "Android app has no Java source files")
 check(len(list((APP / "java").rglob("*.kt"))) >= 20, "Kotlin application sources present")
-for module in ["clock", "fingerprints", "rng", "lib", "jni_bridge",
+check((ROOT / "rust/crates/football_match_engine_jni/src/lib.rs").is_file(), "Rust JNI boundary crate exists")
+for module in ["clock", "fingerprints", "rng", "lib",
                "contracts/mod", "contracts/units", "contracts/ports", "contracts/version",
                "contracts/attributes", "contracts/error", "contracts/input", "contracts/events", "contracts/spatial",
                "v4/session", "v4/rules", "v4/state", "player_intelligence/mod"]:

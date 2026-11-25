@@ -1,0 +1,15 @@
+[package]
+name = "football_match_engine_jni"
+version = "0.4.0"
+edition = "2021"
+license = "LicenseRef-PingFootball-User-Source"
+
+[lib]
+name = "football_match_engine"
+crate-type = ["cdylib"]
+
+[dependencies]
+match_engine = { path = "../../football_match_engine" }
+match_contracts = { path = "../match_contracts" }
+jni = "0.21"
+serde_json = { version = "1.0", features = ["float_roundtrip"] }

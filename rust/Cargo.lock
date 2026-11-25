@@ -69,22 +69,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
-name = "football_match_engine"
+name = "football_match_engine_jni"
 version = "0.4.0"
 dependencies = [
- "coach_intelligence",
  "jni",
  "match_contracts",
- "match_physics",
- "match_rules",
- "match_tactics",
- "match_telemetry",
- "player_condition",
- "player_intelligence",
- "rayon",
- "serde",
+ "match_engine",
  "serde_json",
- "thiserror",
 ]
 
 [[package]]
@@ -147,6 +138,24 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 name = "match_contracts"
 version = "0.4.0"
 dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "match_engine"
+version = "0.4.0"
+dependencies = [
+ "coach_intelligence",
+ "match_contracts",
+ "match_physics",
+ "match_rules",
+ "match_tactics",
+ "match_telemetry",
+ "player_condition",
+ "player_intelligence",
+ "rayon",
  "serde",
  "serde_json",
  "thiserror",

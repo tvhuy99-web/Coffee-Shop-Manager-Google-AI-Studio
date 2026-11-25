@@ -9,8 +9,8 @@ use jni::JNIEnv;
 
 use std::ffi::c_void;
 
-use crate::contracts::VersionManifest4;
-use crate::v4;
+use match_engine::contracts::VersionManifest4;
+use match_engine::v4;
 
 // ============================================================================
 // Match Engine V4.1 DES Safe JNI Entrypoints (jni crate + serde_json + rayon)

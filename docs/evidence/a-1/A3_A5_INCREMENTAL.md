@@ -1,6 +1,16 @@
 # A3–A5 incremental extraction
 
-- A3: actual decision/carry calls use exact spatial port (local context, passing lane and offside); RNG sampling trait replaces concrete RNG in decision/timing/movement, without changing sampling order. Remaining compatibility dependencies: state/input, actual player attributes, pass trajectory/contact and tackle forecasting, timing config; coach adapter still mutates authoritative state, not pure policy. Do not claim A3 closed.
-- A4: manual substitution execution moved to Engine/Rules; command DTO and replay extracted; session tests retained; read-only invariant verifier added. Full atomic transition pipeline and INV-01..12 still pending.
-- A5: first real workspace split: match_contracts (attributes, errors, spatial, units, ports, fingerprints) + existing football_match_engine. Canonical implementations, no dummy crates. External Cargo package graph identical; original lock archived and exact SHA checked. Full DTO/state dependency isolation, other eight production crates, JNI separation, and complete DAG remain pending. Keep old .so and V4 symbols.
-- This branch is stacked on A1–A2 and will not be integrated before that package passes. Use the frozen golden archive, never regenerate expected data.
+The four-package checkpoint d17062a passed all 19 L0–L4 jobs in run 45625297758. The subsequent candidate creates the full ten named production packages. No external registry dependency change; CI checks original lock graph and exact golden parity.
+
+- match_contracts: pure shared types, event fingerprints, rule vocabulary, units, port signatures.
+- player_intelligence: existing intent, utility, timing, support, defensive and off-ball policies. Complex on-ball, tackle/pass forecast and GK compatibility code still in engine.
+- coach_intelligence: read-only tactical proposal. Substitution selection/application and command scheduling still require separation.
+- match_physics: original trajectory/contact/recovery code. Execution involving world state still in engine.
+- player_condition: fatigue, match-day form, post-match morale; remaining psychology integration in engine.
+- match_tactics: instruction propagation, blending, press multiplier; shape and phase integration remains engine-side.
+- match_rules: original ruleset/timing/restart logic. Rules DTOs and legal application still require further separation.
+- match_telemetry: original diagnostics accumulation. Result envelope, stats audit and ratings still in engine.
+- match_engine: existing engine directory retained temporarily to keep fixture injection/build paths stable; package now match_engine (rlib only).
+- football_match_engine_jni: actual JNI bridge, cdylib named football_match_engine, depends only on engine/contracts internally.
+
+CI enforces explicit local DAG. A3/A4 ownership, full DTO isolation, strict formatting, physical crate directory for match_engine, and integration harness migration are outstanding. Candidate not claimed accepted until all gates green. No behavior version bump, no main merge.

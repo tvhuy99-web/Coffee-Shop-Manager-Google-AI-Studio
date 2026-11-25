@@ -12,13 +12,13 @@ for row in manifest['files']:
     assert not (ROOT/row['original']).exists(), row['original']
     rows.append({'path':row['archive'],'sha256':hashlib.sha256(data).hexdigest(),'size':len(data)})
 r=ROOT/'rust/football_match_engine/src'
-assert {p.name for p in r.glob('*.rs')}=={'lib.rs','clock.rs','rng.rs','fingerprints.rs','jni_bridge.rs'}
+assert {p.name for p in r.glob('*.rs')}=={'lib.rs','clock.rs','rng.rs','fingerprints.rs'}
 legacy=['nativePortVersion','rngSample','nativeCoreSelfCheck','nativeSimulateMatchJson','nativeCreateSession','nativeSubmitCommand','nativeAdvanceSession','nativeFinishSession','nativeDestroySession']
 for p in (ROOT/'app/src/main/java').rglob('*.kt'):
     s=p.read_text()
     assert not re.search(r'LabEngineVersion\.V3\b|\bproject54ForV3\b',s),p
     for name in legacy: assert not re.search(r'\b'+name+r'\b',s),(p,name)
-for p in [r/'lib.rs',r/'jni_bridge.rs']:
+for p in [r/'lib.rs',ROOT/'rust/crates/football_match_engine_jni/src/lib.rs']:
     s=p.read_text()
     for name in legacy: assert not re.search(r'NativeBridge_'+name+r'\b',s),(p,name)
 out=ROOT/'evidence';out.mkdir(exist_ok=True)

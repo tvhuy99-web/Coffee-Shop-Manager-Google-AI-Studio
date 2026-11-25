@@ -3,7 +3,6 @@ pub mod clock;
 pub mod fingerprints;
 pub mod rng;
 pub mod contracts;
-pub mod jni_bridge;
 pub mod player_intelligence;
 pub mod v4;
 #[cfg(test)]

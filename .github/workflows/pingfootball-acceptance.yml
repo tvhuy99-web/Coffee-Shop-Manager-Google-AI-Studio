@@ -46,12 +46,16 @@ jobs:
           from pathlib import Path
           m=json.loads(Path('evidence/cargo-metadata.json').read_text())
           local=[p for p in m['packages'] if p['source'] is None]
-          assert {p['name'] for p in local}=={'football_match_engine','match_contracts','player_intelligence','coach_intelligence','match_physics','player_condition','match_tactics','match_rules','match_telemetry'}
+          assert {p['name'] for p in local}=={'match_engine','football_match_engine_jni','match_contracts','player_intelligence','coach_intelligence','match_physics','player_condition','match_tactics','match_rules','match_telemetry'}
           assert {p['id'] for p in local}==set(m['workspace_members'])
           contracts=next(p for p in local if p['name']=='match_contracts')
           assert all(d['source'] is not None for d in contracts['dependencies']), 'contracts must remain leaf'
-          engine=next(p for p in local if p['name']=='football_match_engine')
+          engine=next(p for p in local if p['name']=='match_engine')
           assert {d['name'] for d in engine['dependencies'] if d['source'] is None}=={'match_contracts','player_intelligence','coach_intelligence','match_physics','player_condition','match_tactics','match_rules','match_telemetry'}
+          jni=next(p for p in local if p['name']=='football_match_engine_jni')
+          assert {d['name'] for d in jni['dependencies'] if d['source'] is None}=={'match_engine','match_contracts'}
+          assert not any(d['name']=='jni' for d in engine['dependencies'])
+          assert any(t['name']=='football_match_engine' and 'cdylib' in t['crate_types'] for t in jni['targets'])
           for name in ('player_intelligence','coach_intelligence','match_physics','player_condition','match_tactics','match_rules','match_telemetry'):
               p=next(p for p in local if p['name']==name)
               assert {d['name'] for d in p['dependencies'] if d['source'] is None}=={'match_contracts'}

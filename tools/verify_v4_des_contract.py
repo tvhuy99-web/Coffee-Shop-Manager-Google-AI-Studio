@@ -216,7 +216,7 @@ def main() -> int:
     rs_files = [
         RUST_SRC / "lib.rs",
         RUST_SRC / "clock.rs",
-        RUST_SRC / "jni_bridge.rs",
+        ROOT / "rust/crates/football_match_engine_jni/src/lib.rs",
         *sorted(RUST_V4.glob("*.rs")),
         *sorted((ROOT / "rust/crates").rglob("*.rs")),
     ]
@@ -240,7 +240,7 @@ def main() -> int:
 
     # 2. Version constants in Rust v4/mod.rs & lib.rs cast
     mod_rs = (RUST_V4 / "mod.rs").read_text(encoding="utf-8")
-    lib_rs = (RUST_SRC / "jni_bridge.rs").read_text(encoding="utf-8")
+    lib_rs = (ROOT / "rust/crates/football_match_engine_jni/src/lib.rs").read_text(encoding="utf-8")
     check(
         "Rust JNI_BRIDGE_VERSION == 8",
         re.search(r"pub\s+const\s+JNI_BRIDGE_VERSION\s*:\s*i32\s*=\s*8\s*;", mod_rs) is not None,
@@ -275,7 +275,7 @@ def main() -> int:
     )
 
     # 4. 100% match of 5 new JNI functions between jni_bridge.rs and NativeBridge.kt
-    jni_rs = (RUST_SRC / "jni_bridge.rs").read_text(encoding="utf-8")
+    jni_rs = (ROOT / "rust/crates/football_match_engine_jni/src/lib.rs").read_text(encoding="utf-8")
     missing_rust_jni = [
         fn_name
         for fn_name in REQUIRED_NEW_JNI_METHODS

@@ -2,7 +2,7 @@
 # Build JNI native Rust library for Android. Requires Rust + Android NDK + cargo-ndk.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CRATE="$ROOT/rust/football_match_engine"
+CRATE="$ROOT/rust/crates/football_match_engine_jni"
 OUT="$ROOT/app/src/main/jniLibs"
 
 if ! command -v cargo >/dev/null 2>&1; then
