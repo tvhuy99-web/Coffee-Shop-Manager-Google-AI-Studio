@@ -9,6 +9,7 @@ description = "Football Match Lab native engine: V4.1 DES 54-attribute 90-minute
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
+match_rules = { path = "../crates/match_rules" }
 match_physics = { path = "../crates/match_physics" }
 player_condition = { path = "../crates/player_condition" }
 match_tactics = { path = "../crates/match_tactics" }

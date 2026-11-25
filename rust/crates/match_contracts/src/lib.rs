@@ -8,3 +8,5 @@ pub mod units;
 
 pub mod team_instructions;
 pub mod tactical_phase;
+
+pub mod rule_types;

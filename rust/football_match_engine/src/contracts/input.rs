@@ -47,13 +47,7 @@ impl SimulationMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum RulesModeV4 {
-    #[default]
-    Standard,
-    Knockout,
-}
+pub use match_contracts::rule_types::RulesModeV4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -75,51 +69,9 @@ impl PreferredFoot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum WeatherCondition {
-    #[default]
-    Clear,
-    LightRain,
-    HeavyRain,
-    Windy,
-    Hot,
-}
+pub use match_contracts::rule_types::WeatherCondition;
 
-impl WeatherCondition {
-    #[inline]
-    pub fn code(self) -> i32 {
-        match self {
-            WeatherCondition::Clear => 0,
-            WeatherCondition::LightRain => 1,
-            WeatherCondition::HeavyRain => 2,
-            WeatherCondition::Windy => 3,
-            WeatherCondition::Hot => 4,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum PitchQuality {
-    Excellent,
-    #[default]
-    Good,
-    Heavy,
-    Poor,
-}
-
-impl PitchQuality {
-    #[inline]
-    pub fn code(self) -> i32 {
-        match self {
-            PitchQuality::Excellent => 0,
-            PitchQuality::Good => 1,
-            PitchQuality::Heavy => 2,
-            PitchQuality::Poor => 3,
-        }
-    }
-}
+pub use match_contracts::rule_types::PitchQuality;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

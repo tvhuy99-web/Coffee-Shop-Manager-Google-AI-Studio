@@ -1,33 +1,7 @@
 use serde::{Deserialize, Serialize};
 use match_contracts::spatial::Vec2;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PassKindV4 {
-    Short,
-    Long,
-    Switch,
-    Through,
-    Cross,
-}
-
-impl PassKindV4 {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            PassKindV4::Short => "SHORT",
-            PassKindV4::Long => "LONG",
-            PassKindV4::Switch => "SWITCH",
-            PassKindV4::Through => "THROUGH",
-            PassKindV4::Cross => "CROSS",
-        }
-    }
-
-    pub fn is_aerial(self) -> bool {
-        matches!(
-            self,
-            PassKindV4::Long | PassKindV4::Switch | PassKindV4::Cross
-        )
-    }
-}
+pub use match_contracts::rule_types::PassKindV4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum PlannedActionV4 {
