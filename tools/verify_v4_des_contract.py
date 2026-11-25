@@ -346,19 +346,21 @@ def main() -> int:
         f"Missing tests: {missing_tests}",
     )
 
-    # 7. OWN_GOAL included in SHORT_HIGHLIGHTS
+    # 7. V4 presentation uses the production coordinator, not the deleted V3 filter.
     ref_activity_kt = (KOTLIN_LAB / "LabReferenceMatchActivity.kt").read_text(encoding="utf-8")
+    coordinator_kt = (KOTLIN_LAB / "LabV4PlaybackCoordinator.kt").read_text(encoding="utf-8")
+    controller_kt = (KOTLIN_LAB / "MatchPlaybackController.kt").read_text(encoding="utf-8")
     short_hl_match = re.search(
-        r"LabViewingMode\.SHORT_HIGHLIGHTS\s*->\s*kind\s+in\s+setOf\(([\s\S]*?)\)",
-        ref_activity_kt,
+        r'LabViewingMode\.SHORT_HIGHLIGHTS\s*->\s*\{\s*if\s*\(([^)]*)\)',
+        coordinator_kt,
     )
-    has_own_goal_short = short_hl_match is not None and "LabEventType.OWN_GOAL" in short_hl_match.group(1)
+    has_own_goal_short = short_hl_match is not None and 'kind == "OWN_GOAL"' in short_hl_match.group(1)
     check(
-        "SHORT_HIGHLIGHTS includes LabEventType.OWN_GOAL",
-        has_own_goal_short,
-        "LabEventType.OWN_GOAL not found in SHORT_HIGHLIGHTS setOf(...) in LabReferenceMatchActivity.kt",
+        "Production V4 short highlights include OWN_GOAL and controller delegates filtering",
+        has_own_goal_short and "LabV4PlaybackCoordinator.filterEventsForViewingMode(" in controller_kt
+        and "convertV4StepEvents(stepObj, rawEvents, filteredEvents)" in ref_activity_kt,
+        "Missing OWN_GOAL or V4 production filter wiring",
     )
-
 
     # --- Rework Pass 2 checks (Independent Review CRITICAL-01..09 + QA-01..12) ---
     root = Path(__file__).resolve().parent.parent

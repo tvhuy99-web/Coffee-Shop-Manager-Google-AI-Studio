@@ -120,7 +120,6 @@ class LabMainActivity : Activity() {
     private fun showMain() {
         currentScreen = Screen.MAIN
         trialViewingSpinner = null
-        trialEngineSpinner = null
         val root = vertical("FOOTBALL MATCH LAB")
         button(root, "Bắt đầu") { Toast.makeText(this, "Chưa triển khai", Toast.LENGTH_SHORT).show() }
         button(root, "Tải lại") { Toast.makeText(this, "Chưa triển khai", Toast.LENGTH_SHORT).show() }
@@ -157,7 +156,6 @@ class LabMainActivity : Activity() {
     private fun showLogs() {
         currentScreen = Screen.LOGS
         trialViewingSpinner = null
-        trialEngineSpinner = null
         val root = vertical("NHẬT KÝ HOẠT ĐỘNG")
         val statusView = TextView(this).apply {
             textSize = 14f
@@ -231,7 +229,6 @@ class LabMainActivity : Activity() {
     private fun showSettingsMenu() {
         currentScreen = Screen.SETTINGS
         trialViewingSpinner = null
-        trialEngineSpinner = null
         val root = vertical("CÀI ĐẶT")
         button(root, "Cài đặt TTS") { startActivity(Intent(this, TtsSettingsActivity::class.java)) }
         button(root, "Cài đặt âm thanh") { startActivity(Intent(this, SoundSettingsActivity::class.java)) }
