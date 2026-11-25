@@ -99,6 +99,7 @@ pub struct MatchSessionV4 {
     pending_decision: Option<PendingDecisionV4>,
     pending_carry: Option<PendingCarryV4>,
     tackle_ready_at: BTreeMap<String,i64>,
+    goal_audit: Option<crate::v4::transition::GoalDeltaAudit>,
 }
 
 impl MatchSessionV4 {
@@ -157,6 +158,7 @@ impl MatchSessionV4 {
             pending_decision: None,
             pending_carry: None,
             tackle_ready_at: BTreeMap::new(),
+            goal_audit: None,
         })
     }
 
@@ -288,6 +290,7 @@ impl MatchSessionV4 {
             pending_decision: payload.pending_decision,
             pending_carry: payload.pending_carry,
             tackle_ready_at: payload.tackle_ready_at,
+            goal_audit: None,
         })
     }
 
@@ -317,6 +320,7 @@ impl MatchSessionV4 {
             self.completed_beats,candidate.completed_beats,
         )?;
         crate::v4::transition::verify_commit_structure(&candidate.state)?;
+        crate::v4::transition::verify_uncontrolled_ball(&candidate.state)?;
         crate::v4::transition::verify_clock_accounting(&candidate.state,candidate.home_possession_ms,candidate.away_possession_ms)?;
         crate::v4::transition::verify_command_journal(&candidate.command_timeline,candidate.next_command_id,candidate.sim_time_ms())?;
         crate::v4::transition::verify_event_journal(&candidate.events,candidate.event_count,candidate.last_delivered_event_index,
@@ -1064,6 +1068,16 @@ impl MatchSessionV4 {
     }
 
     pub(super) fn step_one_des_event(&mut self, auto_advance_breaks: bool) -> Result<(), V4Error> {
+        let before=crate::v4::transition::goal_counters(&self.state);
+        self.goal_audit=Some(crate::v4::transition::GoalDeltaAudit::default());
+        let result=self.step_one_des_event_inner(auto_advance_breaks);
+        let audit=self.goal_audit.take().expect("event audit initialized");
+        result?;
+        audit.verify(before,&self.state)?;
+        Ok(())
+    }
+
+    fn step_one_des_event_inner(&mut self, auto_advance_breaks: bool) -> Result<(), V4Error> {
         match self.stage {
             HalfStageV4::PreMatch => {
                 self.begin_next_period_internal()?;
@@ -3451,6 +3465,9 @@ impl MatchSessionV4 {
         target: Option<String>,
         metadata: EventMetadataV4,
     ) {
+        if let Some(audit)=&mut self.goal_audit {
+            audit.record(&self.state,kind,side,actor.as_deref());
+        }
         self.event_count = self.event_count.saturating_add(1);
         let ball_pos = self.state.ball.pos.clamp_to_pitch();
         let sim_time_ms = self.state.des_clock.sim_time_ms;

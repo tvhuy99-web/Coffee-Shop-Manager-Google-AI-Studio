@@ -193,3 +193,47 @@ pub(crate) fn verify_event_journal(
     }
     Ok(())
 }
+
+/// Transient event-local goal audit. It is never serialized, never affects RNG,
+/// and is identical in FastBatch and FullEvent. Shootout kicks are separate.
+#[derive(Debug,Clone,Default)]
+pub(crate) struct GoalDeltaAudit {
+    goals:[u16;2],
+    own_goals:[u16;2],
+    invalid_actor:bool,
+}
+impl GoalDeltaAudit {
+    pub(crate) fn record(&mut self,state:&MatchStateV4,kind:crate::v4::events::EventTypeV4,side:Option<crate::v4::spatial::TeamSideV4>,actor:Option<&str>){
+        use crate::v4::{events::EventTypeV4,spatial::TeamSideV4};
+        if !matches!(kind,EventTypeV4::Goal|EventTypeV4::OwnGoal){return;}
+        let Some(side)=side else{self.invalid_actor=true;return;};
+        let idx=if side==TeamSideV4::Home{0}else{1};
+        let expected_side=if kind==EventTypeV4::OwnGoal{side.opposite()}else{side};
+        if !actor.is_some_and(|id|state.players.iter().any(|p|p.player_id==id && p.side==expected_side)){
+            self.invalid_actor=true;
+        }
+        self.goals[idx]=self.goals[idx].saturating_add(1);
+        if kind==EventTypeV4::OwnGoal{self.own_goals[idx]=self.own_goals[idx].saturating_add(1);}
+    }
+    pub(crate) fn verify(&self,before:[u16;4],state:&MatchStateV4)->Result<(),V4Error>{
+        let after=goal_counters(state);
+        let expected=[self.goals[0],self.goals[1],self.own_goals[0],self.own_goals[1]];
+        if self.invalid_actor || (0..4).any(|i|after[i].checked_sub(before[i])!=Some(expected[i])){
+            return Err(V4Error::InvalidInput(format!("INV-05: goal accounting mismatch before={before:?} after={after:?} emitted={expected:?} invalid_actor={}",self.invalid_actor)));
+        }
+        Ok(())
+    }
+}
+pub(crate) fn goal_counters(s:&MatchStateV4)->[u16;4]{
+    [s.home.goals,s.away.goals,s.home.own_goals_for,s.away.own_goals_for]
+}
+
+/// In-flight and loose-ball ownership is never a last-touch alias.
+/// Dead-ball owner fields are left to the legacy restart adapter in Phase A.
+pub(crate) fn verify_uncontrolled_ball(state:&MatchStateV4)->Result<(),V4Error>{
+    if matches!(state.ball.control,BallControlState::Loose|BallControlState::InFlight) &&
+        (state.ball.owner_side.is_some() || state.ball.owner_player_id.is_some()) {
+        return Err(V4Error::InvalidInput("INV-01: uncontrolled ball has a control owner".into()));
+    }
+    Ok(())
+}

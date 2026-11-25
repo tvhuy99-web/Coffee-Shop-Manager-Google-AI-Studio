@@ -655,4 +655,53 @@ mod a4_atomic_api_tests {
         assert!(MatchSessionV4::from_checkpoint(s.export_checkpoint().unwrap()).is_ok());
     }
 
+    #[test]
+    fn a4_goal_audit_detects_missing_duplicate_and_wrong_beneficiary(){
+        use crate::v4::transition::{GoalDeltaAudit,goal_counters};
+        let mut s=new_session();
+        let home=s.state.players.iter().find(|p|p.side==TeamSideV4::Home).unwrap().player_id.clone();
+        let away=s.state.players.iter().find(|p|p.side==TeamSideV4::Away).unwrap().player_id.clone();
+        let before=goal_counters(&s.state);
+        s.state.home.goals+=1;
+        assert!(GoalDeltaAudit::default().verify(before,&s.state).is_err());
+        let mut audit=GoalDeltaAudit::default();
+        audit.record(&s.state,EventTypeV4::Goal,Some(TeamSideV4::Home),Some(&home));
+        assert!(audit.verify(before,&s.state).is_ok());
+        audit.record(&s.state,EventTypeV4::Goal,Some(TeamSideV4::Home),Some(&home));
+        assert!(audit.verify(before,&s.state).is_err());
+        s.state.home.own_goals_for+=1;
+        let mut own=GoalDeltaAudit::default();
+        own.record(&s.state,EventTypeV4::OwnGoal,Some(TeamSideV4::Home),Some(&away));
+        assert!(own.verify(before,&s.state).is_ok());
+        let mut wrong=GoalDeltaAudit::default();
+        wrong.record(&s.state,EventTypeV4::OwnGoal,Some(TeamSideV4::Home),Some(&home));
+        assert!(wrong.verify(before,&s.state).is_err());
+        let score=goal_counters(&s.state);
+        let mut shootout=GoalDeltaAudit::default();
+        shootout.record(&s.state,EventTypeV4::PenaltyShootoutKick,Some(TeamSideV4::Home),Some(&home));
+        assert!(shootout.verify(score,&s.state).is_ok());
+    }
+    #[test]
+    fn a4_uncontrolled_ball_cannot_have_owner_at_commit_or_restore(){
+        let mut s=new_session();
+        let before=snapshot(&s);
+        let owner=s.state.players[0].player_id.clone();
+        let side=s.state.players[0].side;
+        for control in [BallControlState::Loose,BallControlState::InFlight]{
+            assert!(s.transact(|c|{
+                c.state.ball.control=control;
+                c.state.ball.owner_side=Some(side);
+                c.state.ball.owner_player_id=Some(owner.clone());
+                Ok(())
+            }).is_err());
+            assert_eq!(snapshot(&s),before);
+            let mut ck=s.export_checkpoint().unwrap();
+            ck.payload.state.ball.control=control;
+            ck.payload.state.ball.owner_side=Some(side);
+            ck.payload.state.ball.owner_player_id=Some(owner.clone());
+            ck.checksum_hex=compute_checkpoint_checksum(&serde_json::to_string(&ck.payload).unwrap());
+            assert!(MatchSessionV4::from_checkpoint(ck).is_err());
+        }
+    }
+
 }
