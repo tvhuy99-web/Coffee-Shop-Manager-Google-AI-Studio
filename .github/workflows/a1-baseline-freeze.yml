@@ -21,6 +21,11 @@ jobs:
         with:
           ref: c2c392d8b3ccc57985e87337e8994fd7033328ee
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
       - name: Resolve and record exact inputs
         run: |
           set -euo pipefail
@@ -34,11 +39,17 @@ jobs:
           cargo +"$RUST_VERSION" -V > evidence/cargo.txt
           uname -a > evidence/runner.txt
           cd rust/football_match_engine
-          cargo +"$RUST_VERSION" generate-lockfile
+          if [ -f ../../control/rust/football_match_engine/Cargo.lock ]; then
+            cp ../../control/rust/football_match_engine/Cargo.lock Cargo.lock
+            printf 'committed lockfile at %s\n' "$GITHUB_SHA" > ../../evidence/lockfile-origin.txt
+          else
+            cargo +"$RUST_VERSION" generate-lockfile
+            printf 'new candidate dependency resolution; must be committed and rerun\n' > ../../evidence/lockfile-origin.txt
+          fi
           cargo +"$RUST_VERSION" metadata --locked --format-version 1 > ../../evidence/cargo-metadata.json
           cp Cargo.lock ../../evidence/Cargo.lock
           cd ../..
-          (cd evidence && sha256sum Cargo.lock cargo-metadata.json commit.txt git-tree.txt source.sha256 rustc.txt cargo.txt runner.txt > SHA256SUMS)
+          (cd evidence && sha256sum Cargo.lock cargo-metadata.json commit.txt git-tree.txt source.sha256 rustc.txt cargo.txt runner.txt lockfile-origin.txt > SHA256SUMS)
           git diff --exit-code
       - uses: actions/upload-artifact@v4
         with:
@@ -99,6 +110,23 @@ jobs:
           extra=()
           if [ "$DES_DIAG_SCENARIO" = full_event ]; then extra+=(--full); fi
           python3 scripts/compare_pi_extraction.py evidence/first.json evidence/second.json --expected "$DES_DIAG_MATCHES" "${extra[@]}" | tee evidence/parity.log
+          if [ "$DES_DIAG_SCENARIO" = baseline ]; then
+            mutant="$(mktemp)"
+            trap 'rm -f "$mutant"' EXIT
+            python3 - "$mutant" <<'PY'
+          import json, sys
+          from pathlib import Path
+          report = json.loads(Path('evidence/second.json').read_text())
+          report['matches'][0]['summary']['home']['goals'] += 1
+          Path(sys.argv[1]).write_text(json.dumps(report))
+          PY
+            if python3 scripts/compare_pi_extraction.py evidence/first.json "$mutant" --expected "$DES_DIAG_MATCHES" > evidence/negative-control.log 2>&1; then
+              echo 'ERROR: comparator accepted a deliberately changed result' >&2
+              exit 1
+            fi
+            grep -Fq 'Behavior changed during PI extraction' evidence/negative-control.log
+            echo 'Negative control rejected changed result as intended'
+          fi
           (cd evidence && sha256sum *.json *.log Cargo.lock commit.txt rustc.txt > SHA256SUMS)
           git diff --exit-code
       - uses: actions/upload-artifact@v4
@@ -143,6 +171,7 @@ jobs:
             cargo +"$RUST_VERSION" test --locked --lib v4::tests::pi_attribute_audit_changes_only_the_named_field_and_role -- --exact --nocapture
             PI_AUDIT_REPORT_PATH="$GITHUB_WORKSPACE/evidence/attribute-audit.json" cargo +"$RUST_VERSION" test --locked --release --lib v4::tests::pi_attribute_audit_population -- --ignored --exact --nocapture
           ) 2>&1 | tee evidence/attribute-audit.log
+          grep -Fq 'test v4::tests::pi_attribute_audit_changes_only_the_named_field_and_role ... ok' evidence/attribute-audit.log
           python3 tools/summarize_pi_attribute_audit.py evidence/attribute-audit.json evidence/attribute-summary.json
           python3 - <<'PY'
           import json, os
@@ -192,7 +221,8 @@ jobs:
             cargo +"$RUST_VERSION" test --locked --lib v4::tests::des_checkpoint_roundtrip_exact_continuation_all_states -- --exact --nocapture
             cargo +"$RUST_VERSION" test --locked --lib pi_checkpoint_ -- --nocapture
           ) 2>&1 | tee evidence/checkpoint.log
-          grep -q 'test result: ok. 1 passed' evidence/checkpoint.log
+          grep -Fq 'test v4::tests::des_checkpoint_roundtrip_exact_continuation_all_states ... ok' evidence/checkpoint.log
+          grep -Eq 'test .*pi_checkpoint_.* \.\.\. ok' evidence/checkpoint.log
           (cd evidence && sha256sum checkpoint.log Cargo.lock commit.txt rustc.txt > SHA256SUMS)
           git diff --exit-code
       - uses: actions/upload-artifact@v4
