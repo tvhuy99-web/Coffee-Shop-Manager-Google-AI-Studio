@@ -317,6 +317,13 @@ impl MatchSessionV4 {
             self.completed_beats,candidate.completed_beats,
         )?;
         crate::v4::transition::verify_commit_structure(&candidate.state)?;
+        crate::v4::transition::verify_clock_accounting(&candidate.state,candidate.home_possession_ms,candidate.away_possession_ms)?;
+        crate::v4::transition::verify_command_journal(&candidate.command_timeline,candidate.next_command_id,candidate.sim_time_ms())?;
+        crate::v4::transition::verify_event_journal(&candidate.events,candidate.event_count,candidate.last_delivered_event_index,
+            candidate.retain_events,candidate.finished,candidate.sim_time_ms())?;
+        if candidate.finished && !candidate.is_full_time() {
+            return Err(V4Error::InvalidInput("INV-12: result closed before full time".into()));
+        }
         *self=candidate;
         Ok(result)
     }
@@ -1088,7 +1095,9 @@ impl MatchSessionV4 {
 
                 self.diagnostics.record_des_step();
                 let prev_ms = self.state.des_clock.sim_time_ms;
-                let dt_ms = ev.event_time_ms.saturating_sub(prev_ms).max(0);
+                let dt_ms = ev.event_time_ms.checked_sub(prev_ms)
+                    .filter(|dt|*dt>=0)
+                    .ok_or_else(||V4Error::InvalidClock("INV-03: scheduled event precedes authoritative clock".into()))?;
                 self.last_dt_ms = dt_ms;
                 let is_ball_in_play = self.state.dead_ball.is_none();
 

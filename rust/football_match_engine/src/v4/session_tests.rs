@@ -599,4 +599,53 @@ mod a4_atomic_api_tests {
         }
     }
 
+    #[test]
+    fn a4_checkpoint_rejects_invalid_accounting_journal_and_terminal_state(){
+        let mut s=new_session();
+        s.submit_command(MatchCommandV4::StartNextPeriod).unwrap();
+        s.advance_steps(20).unwrap();
+        let original=s.export_checkpoint().unwrap();
+        assert!(MatchSessionV4::from_checkpoint(original.clone()).is_ok());
+        for mode in 0..6 {
+            let mut bad=original.clone();
+            match mode {
+                0=>bad.payload.state.des_clock.ball_out_of_play_ms+=1,
+                1=>bad.payload.stats.home_possession_ms+=1,
+                2=>bad.payload.applied_commands.push(bad.payload.applied_commands[0].clone()),
+                3=>bad.payload.applied_commands[0].actual_effective_sim_time_ms=Some(bad.sim_time_ms+1),
+                4=>bad.payload.stats.retained_events[0].sequence=2,
+                _=>{bad.payload.stats.finished=true;bad.payload.stats.retained_events.clear();}
+            }
+            bad.checksum_hex=compute_checkpoint_checksum(&serde_json::to_string(&bad.payload).unwrap());
+            assert!(MatchSessionV4::from_checkpoint(bad).is_err(),"corruption mode {mode}");
+        }
+    }
+
+    #[test]
+    fn a4_reject_invalid_commit_accounting_without_publishing(){
+        let mut s=new_session();
+        s.start_next_period().unwrap();
+        let before=snapshot(&s);
+        let result=s.transact(|candidate|{
+            candidate.home_possession_ms+=1;
+            candidate.rng.next_double();
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(snapshot(&s),before);
+    }
+
+    #[test]
+    fn a4_result_closes_once_and_rejects_post_match_commands(){
+        let mut s=new_session();
+        let result=s.run_to_full_time().unwrap();
+        assert!(s.is_full_time());
+        assert_eq!(result.events.iter().filter(|e|e.kind==EventTypeV4::FullTime).count(),1);
+        let before=snapshot(&s);
+        assert!(s.run_to_full_time().is_err());
+        assert!(s.submit_command(MatchCommandV4::StartNextPeriod).is_err());
+        assert_eq!(snapshot(&s),before);
+        assert!(MatchSessionV4::from_checkpoint(s.export_checkpoint().unwrap()).is_ok());
+    }
+
 }

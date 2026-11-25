@@ -143,3 +143,53 @@ mod tests {
         assert!(verify_authoritative_invariants(&state).is_ok());
     }
 }
+
+/// Shared commit/restore checks for cumulative match accounting (INV-03, INV-10).
+/// Use checked arithmetic; a malformed restored counter must not overflow.
+pub(crate) fn verify_clock_accounting(state:&MatchStateV4,home_ms:i64,away_ms:i64)->Result<(),V4Error>{
+    let c=&state.des_clock;
+    if c.sim_time_ms<0 || c.ball_in_play_ms<0 || c.ball_out_of_play_ms<0 ||
+        c.ball_in_play_ms.checked_add(c.ball_out_of_play_ms)!=Some(c.sim_time_ms) {
+        return Err(V4Error::InvalidClock("INV-10: live/dead duration differs from match clock".into()));
+    }
+    if home_ms<0 || away_ms<0 || home_ms.checked_add(away_ms)!=Some(c.ball_in_play_ms) {
+        return Err(V4Error::InvalidClock("INV-10: possession durations differ from live time".into()));
+    }
+    Ok(())
+}
+
+/// Match-local command identity and temporal consistency (INV-03, INV-08).
+/// Do not require contiguous IDs: older snapshots may contain rejected-command gaps.
+pub(crate) fn verify_command_journal(
+    commands:&[crate::v4::session::AppliedCommandV4],next_id:u64,now_ms:i64,
+)->Result<(),V4Error>{
+    let mut previous=0;
+    if next_id==0 {return Err(V4Error::InvalidInput("INV-08: invalid next command ID".into()));}
+    for cmd in commands {
+        if cmd.command_id<=previous || cmd.command_id>=next_id ||
+            cmd.accepted_sim_time_ms<0 || cmd.accepted_sim_time_ms>now_ms ||
+            cmd.scheduled_effective_sim_time_ms<cmd.accepted_sim_time_ms ||
+            cmd.actual_effective_sim_time_ms.is_some_and(|ms|ms<cmd.accepted_sim_time_ms || ms>now_ms) {
+            return Err(V4Error::InvalidInput(format!("INV-08: invalid command journal entry {}",cmd.command_id)));
+        }
+        previous=cmd.command_id;
+    }
+    Ok(())
+}
+
+/// Validate retained event order, not commentary or gameplay decisions (INV-03, INV-11).
+/// Finalization transfers the event vector into MatchResult, so finalized sessions
+/// legitimately retain no events. FastBatch has no retained vector by design.
+pub(crate) fn verify_event_journal(
+    events:&[crate::v4::events::MatchEventV4],count:u32,cursor:usize,
+    retain:bool,finished:bool,now_ms:i64,
+)->Result<(),V4Error>{
+    if (!finished && cursor>events.len()) ||
+        (!finished && retain && events.len()!=count as usize) ||
+        ((!retain || finished) && !events.is_empty()) ||
+        events.iter().enumerate().any(|(i,e)|e.sequence as usize!=i+1 || e.sim_time_ms<0 || e.sim_time_ms>now_ms) ||
+        events.windows(2).any(|pair|pair[0].sim_time_ms>pair[1].sim_time_ms) {
+        return Err(V4Error::InvalidInput("INV-11: inconsistent retained event journal".into()));
+    }
+    Ok(())
+}

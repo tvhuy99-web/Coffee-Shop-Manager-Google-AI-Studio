@@ -380,15 +380,12 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
             _=>{}
         }
     }
-    if !p.stats.finished && p.stats.last_delivered_event_index>p.stats.retained_events.len(){
-        return Err(bad("event delivery cursor exceeds retained history"));
-    }
-    if p.stats.retained_events.iter().enumerate().any(|(i,event)|event.sequence as usize!=i+1 || event.sim_time_ms>ckpt.sim_time_ms)
-        || p.stats.retained_events.windows(2).any(|w|w[0].sim_time_ms>w[1].sim_time_ms){
-        return Err(bad("retained event sequence/time is invalid"));
-    }
-    if !p.stats.finished && p.input.simulation_mode.retain_events() && p.stats.retained_events.len()!=p.stats.event_count as usize {
-        return Err(bad("retained full-event history count mismatch"));
+    crate::v4::transition::verify_clock_accounting(&p.state,p.stats.home_possession_ms,p.stats.away_possession_ms)?;
+    crate::v4::transition::verify_command_journal(&p.applied_commands,p.stats.next_command_id,ckpt.sim_time_ms)?;
+    crate::v4::transition::verify_event_journal(&p.stats.retained_events,p.stats.event_count,p.stats.last_delivered_event_index,
+        p.input.simulation_mode.retain_events(),p.stats.finished,ckpt.sim_time_ms)?;
+    if p.stats.finished && !matches!(p.half_stage,HalfStageV4::FullTime) {
+        return Err(bad("result closed before full time"));
     }
 
     Ok(())
