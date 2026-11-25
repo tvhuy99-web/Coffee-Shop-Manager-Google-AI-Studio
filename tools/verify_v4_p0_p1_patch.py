@@ -28,6 +28,8 @@ def between(source, start, end):
     return source[begin:stop] if stop >= 0 else ''
 ball=get(R/'v4/ball_play.rs')
 sess=get(R/'v4/session.rs')
+commands=get(R/'v4/session_commands.rs')
+replay=get(R/'v4/session_replay.rs')
 jni=get(R/'jni_bridge.rs')
 events=get(R/'contracts/events.rs')
 mod=get(R/'v4/mod.rs')
@@ -70,7 +72,7 @@ chk('P0-4 atomic authoritative kickoff restart',
             'self.possession_side = kickoff_side;', 'self.carrier_idx = kicker;',
             'EventTypeV4::Kickoff'))
 chk('P0-5 command journal emitted by Rust',
-    'pub struct AppliedCommandV4' in sess and
+    'pub struct AppliedCommandV4' in commands and
     all('status: CommandLifecycleStatus::'+status in sess
         for status in ('Applied','Scheduled','QueuedForDeadBall')) and
     all(field in sess for field in ('accepted_sim_time_ms:',
@@ -79,7 +81,7 @@ chk('P0-5 command journal emitted by Rust',
     'command_timeline: self.command_timeline.clone()' in sess and
     'replay_v4_with_timeline' in sess and 'command_timeline:' in events)
 chk('P0-5 JNI replay boundary', 'nativeReplayV4Json' in jni and
-    'pub fn replay_v4_with_timeline' in sess and 'nativeReplayV4Json' in bridge)
+    'pub fn replay_v4_with_timeline' in replay and 'nativeReplayV4Json' in bridge)
 chk('P0-5 Android snapshot uses Rust timeline and fingerprint',
     'commandTimelineJson = finalObj.optJSONArray("commandTimeline")' in activity and
     'eventTimelineFingerprint = finalObj.optString' in activity and

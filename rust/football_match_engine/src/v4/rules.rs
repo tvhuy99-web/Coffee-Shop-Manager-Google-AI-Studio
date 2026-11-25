@@ -234,7 +234,7 @@ impl BoundedDurationRangeMs {
     /// Samples a deterministic duration from a truncated triangular distribution in `[min_ms, max_ms]`.
     /// `context_scale` shifts the mode smoothly within the bounded interval without ever collapsing
     /// to a hardcoded constant when `min_ms < max_ms`.
-    pub fn sample_triangular(&self, rng: &mut DeterministicRng, context_scale: f32) -> i64 {
+    pub fn sample_triangular(&self, rng: &mut impl crate::contracts::RngSampleSource, context_scale: f32) -> i64 {
         let min_bound = self.min_ms.min(self.max_ms);
         let max_bound = self.max_ms.max(self.min_ms);
         if min_bound == max_bound {
@@ -951,7 +951,7 @@ pub fn estimate_reaction_decision_ms(
     pressure: f32,
     tempo: u8,
     one_touch: bool,
-    rng: &mut DeterministicRng,
+    rng: &mut impl crate::contracts::RngSampleSource,
 ) -> i64 {
     let ft = normalize_attr(first_touch);
     let vis = normalize_attr(vision);

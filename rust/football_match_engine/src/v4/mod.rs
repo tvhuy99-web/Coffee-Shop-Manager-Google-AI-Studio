@@ -11,6 +11,7 @@ pub mod input;
 pub mod interaction;
 pub mod movement;
 pub mod coach_adapter;
+pub mod observation;
 pub mod own_goal;
 pub mod perception;
 pub mod psychology;

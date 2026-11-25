@@ -10,13 +10,7 @@ use crate::v4::spatial::{
 use crate::v4::state::{BallControlState, MatchStateV4, PlayerRuntimeStateV4};
 use crate::v4::tactics::effective_press_multiplier;
 
-#[derive(Debug, Clone, Copy)]
-pub struct LocalSpatialContext {
-    pub pressure: f32,
-    pub nearest_defender_idx: Option<usize>,
-    pub nearest_defender_dist_m: f32,
-    pub overload: bool,
-}
+pub use crate::contracts::ports::LocalSpatialContext;
 
 /// O(1) lookup of a player's 54 attributes via `MatchStateV4::player_profiles[player.profile_idx]`.
 #[inline]

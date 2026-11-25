@@ -1,8 +1,10 @@
 use crate::contracts::RngSampleSource;
 use crate::contracts::attributes::{normalize_attr, normalize_attr_elite};
-use crate::v4::ball_play::offside_reference_progress_m;
+use crate::contracts::SpatialForecastPort;
+use crate::v4::observation::EngineForecastAdapter;
 use crate::contracts::input::MatchInputV4;
-use crate::v4::movement::{evaluate_local_context, evaluate_passing_lane, player_attrs, LocalSpatialContext};
+use crate::v4::movement::player_attrs;
+use crate::contracts::ports::LocalSpatialContext;
 use crate::v4::rules::{estimate_reaction_decision_ms, TimingModelConfig};
 use crate::contracts::spatial::{attacking_progress_m, distance_to_attacking_goal, is_in_attacking_penalty_box, PITCH_WIDTH_M};
 use crate::v4::state::{MatchStateV4, TacticalPhaseV4};
@@ -44,7 +46,7 @@ pub(crate) fn observe_pass_risk(state:&MatchStateV4,input:&MatchInputV4,idx:usiz
 /// kinds are noticed. No random draw occurs inside the scorer itself.
 fn collect_pass_candidates(
     state:&MatchStateV4,input:&MatchInputV4,timing:&TimingModelConfig,
-    carrier_idx:usize,carrier_ctx:LocalSpatialContext,mut notice:impl FnMut(PassKindV4)->bool,
+    carrier_idx:usize,carrier_ctx:LocalSpatialContext,forecast:&impl SpatialForecastPort,mut notice:impl FnMut(PassKindV4)->bool,
 )->Vec<CandidateOption> {
     let carrier=&state.players[carrier_idx];
     let att_side=carrier.side;
@@ -72,7 +74,7 @@ fn collect_pass_candidates(
     let readiness=(carrier.fatigue.anaerobic/100.0).clamp(0.25,1.0);
     let pass_forecast=PassForecast::new(state,att_side,perception_quality);
     let mut candidates: Vec<CandidateOption> = Vec::with_capacity(14);
-    let offside_line = offside_reference_progress_m(state, att_side, carrier.pos);
+    let offside_line = forecast.offside_reference(att_side, carrier.pos);
     // Perception is fallible, especially under pressure; the Law 11 check remains exact.
     let timing_awareness = (vision * 0.40 + decisions * 0.40 + concentration * 0.20)
         * (1.0 - pressure_norm * 0.25);
@@ -106,15 +108,13 @@ fn collect_pass_candidates(
 
         if !notice(kind) {continue;}
 
-        let (lane_risk, interceptor_idx) = evaluate_passing_lane(
-            state,
-            input,
+        let (lane_risk, interceptor_idx) = forecast.passing_lane(
             att_side,
             carrier.pos,
             mate.pos,
             kind.is_aerial(),
         );
-        let mate_ctx = evaluate_local_context(state, input, att_side, mate.pos);
+        let mate_ctx = forecast.local_context(att_side, mate.pos);
         let mate_attrs = player_attrs(state, mate);
         let target_pressure = (mate_ctx.pressure / 100.0).clamp(0.0, 1.0);
         let skill = match kind {
@@ -186,7 +186,7 @@ pub(crate) fn reconsider_short_pass(state:&MatchStateV4,input:&MatchInputV4,idx:
     let PlannedActionV4::Pass{target_idx,kind:PassKindV4::Short,..}=action else{return None;};
     let carrier=state.players.get(idx)?;
     let original=state.players.get(target_idx)?;
-    let options=collect_pass_candidates(state,input,&input.timing_model,idx,ctx,|kind|kind==PassKindV4::Short);
+    let options=collect_pass_candidates(state,input,&input.timing_model,idx,ctx,&EngineForecastAdapter::new(state,input),|kind|kind==PassKindV4::Short);
     let baseline=options.iter().find(|o|matches!(o.action,PlannedActionV4::Pass{target_idx:t,..} if t==target_idx))?;
     let attrs=player_attrs(state,carrier);
     let technique=normalize_attr(attrs.technical.technique);
@@ -263,6 +263,19 @@ pub fn perceive_evaluate_and_decide_des(
     carrier_ctx: LocalSpatialContext,
     rng: &mut impl RngSampleSource,
 ) -> DecisionPlanV4 {
+    let forecast=EngineForecastAdapter::new(state,input);
+    decide_with_forecast(state,input,timing,carrier_idx,carrier_ctx,&forecast,rng)
+}
+
+fn decide_with_forecast(
+    state: &MatchStateV4,
+    input: &MatchInputV4,
+    timing: &TimingModelConfig,
+    carrier_idx: usize,
+    carrier_ctx: LocalSpatialContext,
+    forecast: &impl SpatialForecastPort,
+    rng: &mut impl RngSampleSource,
+) -> DecisionPlanV4 {
     let carrier = &state.players[carrier_idx];
     let att_side = carrier.side;
     let def_side = att_side.opposite();
@@ -295,7 +308,7 @@ pub fn perceive_evaluate_and_decide_des(
     } else { 0.0 };
     let readiness = (carrier.fatigue.anaerobic / 100.0).clamp(0.25,1.0);
 
-    let mut candidates=collect_pass_candidates(state,input,timing,carrier_idx,carrier_ctx,|kind|{
+    let mut candidates=collect_pass_candidates(state,input,timing,carrier_idx,carrier_ctx,forecast,|kind|{
         if matches!(kind,PassKindV4::Through|PassKindV4::Switch) {
             let notice_prob=(0.30+vision*0.65-pressure_norm*0.20).clamp(0.15,0.96);
             (rng.next_double() as f32)<=notice_prob
@@ -321,7 +334,7 @@ pub fn perceive_evaluate_and_decide_des(
             * (1.0 - pressure_norm * (0.30 - composure * 0.14))
             * (0.8 + 0.2 * readiness) * if one_v_one {1.32} else {1.0}).clamp(0.015,0.72);
         let goal_center=crate::contracts::spatial::attacking_goal_center(att_side);
-        let (block_risk,_)=evaluate_passing_lane(state,input,att_side,carrier.pos,goal_center,false);
+        let (block_risk,_)=forecast.passing_lane(att_side,carrier.pos,goal_center,false);
         let unblocked=if one_v_one {1.0} else {1.0-0.60*block_risk};
         let on_target=(0.34+0.34*fin-pressure_norm*(0.30-composure*0.14)*0.55).clamp(0.18,0.78);
         // Neutral keeper prior, not omniscient knowledge of GK attributes.
@@ -344,7 +357,7 @@ pub fn perceive_evaluate_and_decide_des(
     }
 
     let carry=if carrier.is_goalkeeper {None} else {
-        choose_carry(state,input,carrier_idx,carrier_ctx,loss,urgency,counter,readiness)
+        choose_carry(state,forecast,carrier_idx,carrier_ctx,loss,urgency,counter,readiness)
     };
     if let Some((_,utility,risk))=carry {
         candidates.push(CandidateOption {

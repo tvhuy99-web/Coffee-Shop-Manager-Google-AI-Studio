@@ -1,8 +1,9 @@
 //! Directional carry and protection intentions. No state writes or RNG.
 use crate::v4::attributes::normalize_attr;
 use crate::v4::ball_play::pass_reach_candidate;
-use crate::v4::input::MatchInputV4;
-use crate::v4::movement::{evaluate_local_context, evaluate_passing_lane, player_attrs, LocalSpatialContext};
+use crate::contracts::SpatialForecastPort;
+use crate::v4::movement::player_attrs;
+use crate::contracts::ports::LocalSpatialContext;
 use crate::v4::spatial::{attacking_progress_m, TeamSideV4, Vec2};
 use crate::v4::state::MatchStateV4;
 use super::intent::CarryIntentV4;
@@ -11,7 +12,7 @@ use super::utility::{ActionValue, possession_value, turnover_cost};
 /// Generate a small, symmetric set of directions. Select one option by
 /// deterministic utility before comparing action families; adding directions
 /// must not confer extra independent random draws.
-pub(crate) fn choose_carry(state:&MatchStateV4,input:&MatchInputV4,idx:usize,ctx:LocalSpatialContext,
+pub(crate) fn choose_carry(state:&MatchStateV4,forecast:&impl SpatialForecastPort,idx:usize,ctx:LocalSpatialContext,
     loss:f32,urgency:f32,counter:f32,readiness:f32)->Option<(CarryIntentV4,f32,f32)> {
     let p=&state.players[idx];
     let attrs=player_attrs(state,p);
@@ -31,8 +32,8 @@ pub(crate) fn choose_carry(state:&MatchStateV4,input:&MatchInputV4,idx:usize,ctx
         let target=carry_target(p.pos,profile.speed_mps,intent);
         let end=profile.position_toward(target,intent.duration_ms);
         if p.pos.distance(end)<0.4 {continue;}
-        let end_ctx=evaluate_local_context(state,input,p.side,end);
-        let (risk,_)=evaluate_passing_lane(state,input,p.side,p.pos,end,false);
+        let end_ctx=forecast.local_context(p.side,end);
+        let (risk,_)=forecast.passing_lane(p.side,p.pos,end,false);
         let target_pressure=(end_ctx.pressure/100.0).clamp(0.0,1.0);
         let next_progress=attacking_progress_m(p.side,end);
         let success=(0.70+0.20*drib+0.08*agility+0.05*accel-0.40*risk

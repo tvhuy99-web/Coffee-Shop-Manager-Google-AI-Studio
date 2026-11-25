@@ -89,9 +89,18 @@ pub struct TackleGeometryForecast {
 
 /// Read-only spatial & timing forecast port implemented by `match_engine`
 /// (delegating authoritative math to `match_physics` and `match_rules`).
+/// Exact legacy spatial query contract, preserving pressure units, index identity
+/// and float operation order. More restrictive observations can be introduced
+/// in B2; A3 must not silently replace the original forecast with approximations.
+#[derive(Debug, Clone, Copy)]
+pub struct LocalSpatialContext {
+    pub pressure: f32,
+    pub nearest_defender_idx: Option<usize>,
+    pub nearest_defender_dist_m: f32,
+    pub overload: bool,
+}
 pub trait SpatialForecastPort {
-    fn estimate_pass_reach(&self, query: &PassReachQuery) -> PassReachForecast;
-    fn evaluate_local_context(&self, query: &LocalContextQuery) -> LocalContextView;
-    fn estimate_tackle_geometry(&self, query: &TackleGeometryQuery) -> TackleGeometryForecast;
-    fn nominal_flight_ms(&self, kind: BallFlightKindContract, distance_m: f32) -> DurationMs;
+    fn local_context(&self, side: TeamSideV4, point: Vec2) -> LocalSpatialContext;
+    fn passing_lane(&self, side: TeamSideV4, from: Vec2, to: Vec2, aerial: bool) -> (f32, Option<usize>);
+    fn offside_reference(&self, side: TeamSideV4, ball: Vec2) -> Option<f32>;
 }
