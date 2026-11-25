@@ -2276,7 +2276,7 @@ impl MatchSessionV4 {
                 let defender_side = p.side;
                 let spot = h.ball_pos.clamp_to_pitch();
                 let rebound = blocked_ball_velocity(incoming, p.pos, spot);
-                flight.counter_delta.apply(&mut self.state);
+                flight.counter_delta.apply(&mut self.state)?;
                 self.state.ball.pos = spot;
                 self.state.ball.vel = rebound;
                 self.state.ball.control = BallControlState::Loose;
@@ -2331,7 +2331,7 @@ impl MatchSessionV4 {
                     && is_receiver_offside(&self.state, origin_side, flight.ball_after.pos.xy(), p.pos))
                     .map(|(_,p)|p.player_id.clone()).collect()
             } else { flight.offside_at_launch };
-            flight.counter_delta.apply(&mut self.state);
+            flight.counter_delta.apply(&mut self.state)?;
             self.state.ball = flight.ball_after;
             self.flush_play_events(flight.outcome.events, origin_side);
             self.emit(EventTypeV4::LooseBall, HighlightTier::None, None,
@@ -2339,7 +2339,7 @@ impl MatchSessionV4 {
                 EventMetadataV4 { cause: Some(cause.into()), ..EventMetadataV4::default() });
             return self.start_pass_recovery(origin_side, offside, cause);
         }
-        flight.counter_delta.apply(&mut self.state);
+        flight.counter_delta.apply(&mut self.state)?;
         self.state.ball = flight.ball_after;
         match flight.action {
             FlightActionV4::Pass { passer_idx, kind, distance_m, is_one_touch } => {

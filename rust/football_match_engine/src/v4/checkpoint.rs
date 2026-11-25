@@ -151,16 +151,27 @@ impl FlightCounterDeltaV4 {
         }).collect();
         Self { home: TeamFlightDeltaV4::between(&before.home, &after.home), away: TeamFlightDeltaV4::between(&before.away, &after.away), players }
     }
-    pub fn apply(&self, state: &mut MatchStateV4) {
-        self.home.apply(&mut state.home); self.away.apply(&mut state.away);
-        for delta in &self.players {
-            if let Some(player) = state.players.iter_mut().find(|p| p.player_id == delta.player_id) {
-                player.goals = player.goals.saturating_add(delta.goals);
-                player.own_goals = player.own_goals.saturating_add(delta.own_goals);
-                player.assists = player.assists.saturating_add(delta.assists);
-                player.rating_tenths = (i16::from(player.rating_tenths) + delta.rating_delta).clamp(0, 100) as u8;
+    /// Validate the entire delta before touching team or player counters.
+    pub fn validate_references(&self,state:&MatchStateV4)->Result<(),V4Error>{
+        let mut seen=std::collections::HashSet::new();
+        for delta in &self.players{
+            if !seen.insert(delta.player_id.as_str()) || !state.players.iter().any(|p|p.player_id==delta.player_id){
+                return Err(V4Error::InvalidInput(format!("INV-08: unknown or duplicate flight delta player {}",delta.player_id)));
             }
         }
+        Ok(())
+    }
+    pub fn apply(&self, state: &mut MatchStateV4) -> Result<(),V4Error> {
+        self.validate_references(state)?;
+        self.home.apply(&mut state.home); self.away.apply(&mut state.away);
+        for delta in &self.players {
+            let player=state.players.iter_mut().find(|p| p.player_id==delta.player_id).expect("validated delta");
+            player.goals = player.goals.saturating_add(delta.goals);
+            player.own_goals = player.own_goals.saturating_add(delta.own_goals);
+            player.assists = player.assists.saturating_add(delta.assists);
+            player.rating_tenths = (i16::from(player.rating_tenths) + delta.rating_delta).clamp(0,100) as u8;
+        }
+        Ok(())
     }
 }
 
@@ -348,6 +359,8 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
         return Err(bad("pending carry index out of roster"));
     }
     if let Some(f)=&p.pending_flight {
+        f.counter_delta.validate_references(&p.state)?;
+        if f.outcome.next_carrier_idx>=p.state.players.len(){return Err(bad("pending next carrier index out of roster"));}
         match f.action {
             FlightActionV4::Pass{passer_idx,..} if passer_idx>=p.state.players.len()=>return Err(bad("pending passer index out of roster")),
             FlightActionV4::Shot{shooter_idx} if shooter_idx>=p.state.players.len()=>return Err(bad("pending shooter index out of roster")),

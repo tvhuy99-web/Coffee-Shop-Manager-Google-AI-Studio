@@ -555,4 +555,21 @@ mod a4_atomic_api_tests {
         }
         assert_eq!(snapshot(&MatchSessionV4::from_checkpoint(original).unwrap()),snapshot(&s));
     }
+    #[test]
+    fn a4_flight_delta_with_invalid_or_duplicate_id_changes_no_counters(){
+        let mut s=new_session();
+        let baseline=serde_json::to_string(&s.state).unwrap();
+        let mut delta=FlightCounterDeltaV4::between(&s.state,&s.state);
+        delta.home.goals=1;
+        let valid=s.state.players[0].player_id.clone();
+        let row=crate::v4::checkpoint::PlayerFlightDeltaV4{player_id:valid,goals:1,own_goals:0,assists:0,rating_delta:0};
+        delta.players.push(row.clone());
+        delta.players.push(crate::v4::checkpoint::PlayerFlightDeltaV4{player_id:"unknown".into(),..row.clone()});
+        assert!(delta.apply(&mut s.state).is_err());
+        assert_eq!(serde_json::to_string(&s.state).unwrap(),baseline);
+        delta.players[1]=row;
+        assert!(delta.apply(&mut s.state).is_err());
+        assert_eq!(serde_json::to_string(&s.state).unwrap(),baseline);
+    }
+
 }
