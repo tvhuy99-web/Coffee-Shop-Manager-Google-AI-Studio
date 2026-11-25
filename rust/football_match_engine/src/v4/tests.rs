@@ -1130,25 +1130,78 @@ fn p1_regulation_clock_uses_independent_period_elapsed_seconds() {
         ft.sim_time_ms,summary.first_half_elapsed_seconds,summary.second_half_elapsed_seconds,summary.final_game_second);
 }
 
+// Only a legal end of the period may supersede the goal restart. Ordinary
+// live-play events before the next kickoff are not accepted.
+fn p0_check_goal_restart(goal: &crate::v4::MatchEventV4, suffix: &[crate::v4::MatchEventV4]) -> Result<&'static str, String> {
+    let side = goal.side.ok_or_else(|| "goal has no beneficiary".to_string())?;
+    for (idx, e) in suffix.iter().enumerate() {
+        if e.sequence <= goal.sequence || e.sim_time_ms < goal.sim_time_ms {
+            return Err("nonmonotonic restart timeline".into());
+        }
+        match e.kind {
+            EventTypeV4::Kickoff => {
+                if e.period != goal.period || e.side != Some(side.opposite())
+                    || (e.ball_pos.x - 52.5).abs() >= 0.01 || (e.ball_pos.y - 34.0).abs() >= 0.01
+                    || e.actor.is_none() {
+                    return Err("invalid opponent kickoff at centre".into());
+                }
+                return Ok("opponent_kickoff");
+            }
+            EventTypeV4::HalfTime if goal.period == 1 && e.period == 1 => return Ok("period_boundary"),
+            EventTypeV4::ExtraTimeHalfTime if goal.period == 3 && e.period == 3 => return Ok("period_boundary"),
+            EventTypeV4::FullTime if (goal.period == 2 || goal.period == 4) && idx+1 == suffix.len() => return Ok("period_boundary"),
+            EventTypeV4::ExtraTimeStarted if goal.period == 2 => return Ok("period_boundary"),
+            EventTypeV4::PenaltyShootoutStarted if goal.period == 4 => return Ok("period_boundary"),
+            // Stoppage bookkeeping is permitted, but passes, shots, possession,
+            // another goal or any other live action require a restart first.
+            EventTypeV4::AddedTimeAnnounced | EventTypeV4::TacticalPhaseChanged |
+            EventTypeV4::Substitution | EventTypeV4::YellowCard | EventTypeV4::RedCard |
+            EventTypeV4::Injury => {},
+            _ => return Err(format!("unexpected event {:?} before goal restart/boundary", e.kind)),
+        }
+    }
+    Err("goal has neither kickoff nor valid period boundary".into())
+}
+
 #[test]
 fn p0_every_goal_is_followed_by_opponent_kickoff_at_centre() {
     let mut n_goals = 0;
+    let mut n_kickoffs = 0;
+    let mut n_boundaries = 0;
+    let mut negative_checked = false;
     for seed in 71001..71011 {
         let result = simulate_v4(make_v4_input(
             seed, SimulationMode::FullEvent, RulesModeV4::Standard)).unwrap();
         for (idx, ev) in result.events.iter().enumerate() {
-            if ev.kind != EventTypeV4::Goal { continue; }
+            if !matches!(ev.kind, EventTypeV4::Goal | EventTypeV4::OwnGoal) { continue; }
             n_goals += 1;
-            let restart = result.events[idx+1..].iter().find(|e|
-                e.kind == EventTypeV4::Kickoff || e.kind == EventTypeV4::Goal).unwrap();
-            assert_eq!(restart.kind, EventTypeV4::Kickoff);
-            assert_eq!(restart.side, Some(ev.side.unwrap().opposite()));
-            assert!((restart.ball_pos.x - 52.5).abs() < 0.01);
-            assert!((restart.ball_pos.y - 34.0).abs() < 0.01);
-            assert!(restart.actor.is_some());
+            let suffix = &result.events[idx+1..];
+            let category = p0_check_goal_restart(ev, suffix).unwrap_or_else(|err|
+                panic!("seed={seed}, goal sequence={}, time={}: {err}", ev.sequence, ev.sim_time_ms));
+            if category == "opponent_kickoff" {
+                n_kickoffs += 1;
+                if !negative_checked {
+                    let kickoff = suffix.iter().position(|e| e.kind == EventTypeV4::Kickoff).unwrap();
+                    let mut missing = suffix.to_vec();
+                    missing.remove(kickoff);
+                    assert!(p0_check_goal_restart(ev, &missing).is_err(), "missing live restart must fail");
+                    let mut wrong_side = suffix.to_vec();
+                    wrong_side[kickoff].side = ev.side;
+                    assert!(p0_check_goal_restart(ev, &wrong_side).is_err(), "wrong restart side must fail");
+                    let mut wrong_spot = suffix.to_vec();
+                    wrong_spot[kickoff].ball_pos.x += 1.0;
+                    assert!(p0_check_goal_restart(ev, &wrong_spot).is_err(), "wrong restart spot must fail");
+                    assert!(p0_check_goal_restart(ev, &[]).is_err(), "truncated timeline must fail");
+                    negative_checked = true;
+                }
+            } else {
+                n_boundaries += 1;
+            }
         }
     }
-    assert!(n_goals > 0);
+    assert!(n_goals > 0 && n_kickoffs > 0 && n_boundaries > 0 && negative_checked,
+        "frozen sample must exercise restart, valid period boundary and negative controls");
+    println!("A0_GOAL_RESTART_GATE goals={n_goals} kickoffs={n_kickoffs} boundaries={n_boundaries}");
 }
 
 // Diagnostic evidence only: preserve the original red gate until the period-end
