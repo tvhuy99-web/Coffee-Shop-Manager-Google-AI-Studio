@@ -31,6 +31,11 @@ jobs:
           set -euo pipefail
           (cd rust/football_match_engine && cargo +1.100.0 test --locked --lib v4::tests::pi4_legacy_api_and_direct_policy_match -- --exact --nocapture) 2>&1 | tee evidence/identity.log
           grep -Fq 'test v4::tests::pi4_legacy_api_and_direct_policy_match ... ok' evidence/identity.log
+      - name: Enforce goal restart invariant with negative controls
+        run: |
+          set -euo pipefail
+          (cd rust/football_match_engine && cargo +1.100.0 test --locked --lib v4::tests::p0_every_goal_is_followed_by_opponent_kickoff_at_centre -- --exact --nocapture) 2>&1 | tee evidence/goal-restart-gate.log
+          grep -Fq 'test v4::tests::p0_every_goal_is_followed_by_opponent_kickoff_at_centre ... ok' evidence/goal-restart-gate.log
       - name: Export actual goal boundary observations
         if: always()
         run: |
@@ -58,6 +63,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Install locked Rust for missing-tool controls
+        run: rustup toolchain install 1.100.0 --profile minimal
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
