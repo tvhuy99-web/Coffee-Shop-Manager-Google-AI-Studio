@@ -14,7 +14,6 @@ class LabMatchInputFactory(context: Context, assetPath: String = "england_v2/clu
     private val playerNames = HashMap<String, String>()
 
     companion object {
-        const val ENGINE_VERSION = "v3.17.0-realism-1"
         const val ENGINE_VERSION_V4 = "v4.1.1-des"
         const val ENGINE_PROTOCOL_V4 = 5
     }
@@ -57,38 +56,6 @@ class LabMatchInputFactory(context: Context, assetPath: String = "england_v2/clu
             appendLine("  Đá phạt gần: ${playerBySlot[sp.closeFreeKickTakerSlotIds.firstOrNull()] ?: "-"}")
             appendLine("  Dự bị (${plan.bench.size}): ${plan.bench.take(5).joinToString(", ") { it.displayName }}")
         }
-    }
-
-    // --- V3 Reference JSON Factory (preserved 100%) ---
-
-    fun createRustInputJson(
-        homeName: String,
-        awayName: String,
-        seed: Long,
-        simulatedActionMinutes: Int = 20,
-        knockout: Boolean = false,
-        homeTactics: LabTacticalPresets.TacticalConfig = LabTacticalPresets.TacticalConfig(),
-        awayTactics: LabTacticalPresets.TacticalConfig = LabTacticalPresets.TacticalConfig(),
-        aiHomeManager: Boolean = false,
-        aiAwayManager: Boolean = true
-    ): String {
-        require(homeName.isNotBlank() && awayName.isNotBlank() && homeName != awayName) { "Invalid teams" }
-        val homeId = findClubId(homeName)
-        val awayId = findClubId(awayName)
-        val root = JSONObject().apply {
-            put("matchId", "LAB-ENG-V2-$homeId-$awayId")
-            put("seed", seed)
-            put("engineVersion", ENGINE_VERSION)
-            put("neutralGround", false)
-            put("competitionContext", findClub(homeName).optString("league_id", "ENG_1"))
-            put("simulatedActionMinutes", simulatedActionMinutes)
-            put("rulesMode", if (knockout) "KNOCKOUT" else "STANDARD")
-            put("aiHomeManager", aiHomeManager)
-            put("aiAwayManager", aiAwayManager)
-            put("homeTeam", serializeTeam(homeId, homeName, homeTactics))
-            put("awayTeam", serializeTeam(awayId, awayName, awayTactics))
-        }
-        return root.toString()
     }
 
     // --- V4.0 Native 54-Attribute 90-Minute JSON Factory ---
@@ -175,7 +142,7 @@ class LabMatchInputFactory(context: Context, assetPath: String = "england_v2/clu
                 LabPlayerSnapshot(
                     playerId = id,
                     displayName = playerName,
-                    attributes = project54ForV3(row),
+                    attributes = project54ForLineupPlanning(row),
                     condition = 100,
                     morale = 65,
                     form = 55,
@@ -192,21 +159,6 @@ class LabMatchInputFactory(context: Context, assetPath: String = "england_v2/clu
         for (p in plan.starters) lineupArr.put(serializePlayerV4(v4ById.getValue(p.playerId)))
         val benchArr = JSONArray()
         for (p in plan.bench) benchArr.put(serializePlayerV4(v4ById.getValue(p.playerId)))
-
-        return buildCommonTeamPayload(teamId, teamName, tactics, plan, lineupArr, benchArr)
-    }
-
-    private fun serializeTeam(
-        teamId: String,
-        teamName: String,
-        tactics: LabTacticalPresets.TacticalConfig
-    ): JSONObject {
-        val squad = loadSquadSnapshots(teamName)
-        val plan = LabTacticalPresets.planOptimalLineup(squad, tactics.formation, benchSize = 9)
-        val lineupArr = JSONArray()
-        for (p in plan.starters) lineupArr.put(serializePlayer(p))
-        val benchArr = JSONArray()
-        for (p in plan.bench) benchArr.put(serializePlayer(p))
 
         return buildCommonTeamPayload(teamId, teamName, tactics, plan, lineupArr, benchArr)
     }
@@ -285,23 +237,6 @@ class LabMatchInputFactory(context: Context, assetPath: String = "england_v2/clu
             .put("slotInstructions", siArr)
             .put("setPiecePlan", spObj)
             .put("collectiveState", collObj)
-    }
-
-    private fun serializePlayer(p: LabPlayerSnapshot): JSONObject {
-        val attrs = JSONArray()
-        for (v in p.attributes.toIntArray()) attrs.put(v)
-        return JSONObject()
-            .put("playerId", p.playerId)
-            .put("displayName", p.displayName)
-            .put("attributes", attrs)
-            .put("condition", p.condition)
-            .put("morale", p.morale)
-            .put("form", p.form)
-            .put("age", p.age)
-            .put("injured", p.isInjured)
-            .put("eligible", p.isEligible)
-            .put("primaryPosition", p.primaryPosition)
-            .put("secondaryPosition", p.secondaryPosition)
     }
 
     private fun serializePlayerV4(p: LabPlayerSnapshotV4): JSONObject {
@@ -566,7 +501,7 @@ class LabMatchInputFactory(context: Context, assetPath: String = "england_v2/clu
      * the database. The existing Rust JNI match engine still accepts the 20 V3
      * fields. Only project for V3 parity/exhibition matches.
      */
-    private fun project54ForV3(row: JSONObject): LabPlayerAttributes {
+    private fun project54ForLineupPlanning(row: JSONObject): LabPlayerAttributes {
         val attr = row.getJSONObject("simulation").getJSONObject("attributes")
         fun v(group: String, name: String): Int =
             attr.getJSONObject(group).optInt(name, 10).coerceIn(1, 20)
@@ -623,7 +558,7 @@ class LabMatchInputFactory(context: Context, assetPath: String = "england_v2/clu
             LabPlayerSnapshot(
                 playerId = id,
                 displayName = playerName,
-                attributes = project54ForV3(row),
+                attributes = project54ForLineupPlanning(row),
                 condition = 100,
                 morale = 65,
                 form = 55,

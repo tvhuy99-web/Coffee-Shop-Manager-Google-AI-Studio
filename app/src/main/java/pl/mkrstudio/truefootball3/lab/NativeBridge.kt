@@ -8,18 +8,7 @@ object NativeBridge {
         false
     }
 
-    // --- V3 Reference Engine JNI (preserved 100% for parity/fallback) ---
-    external fun nativePortVersion(): Int
-    external fun rngSample(seed: Long, bound: Int): Int
-    external fun nativeCoreSelfCheck(): Int
-    external fun nativeSimulateMatchJson(inputJson: String): String
-    external fun nativeCreateSession(inputJson: String): Long
-    external fun nativeSubmitCommand(handle: Long, commandJson: String): Int
-    external fun nativeAdvanceSession(handle: Long, maxSteps: Int): String
-    external fun nativeFinishSession(handle: Long): String
-    external fun nativeDestroySession(handle: Long)
-
-    // --- V4.0 Engine JNI (batch, single, and interactive step-by-step session) ---
+    // --- V4.0 / V4.1 DES Engine JNI ---
     external fun nativeBridgeVersion(): Int
     external fun nativeEngineProtocolVersion(): Int
     external fun nativeSimulateMatchV4Json(inputJson: String): String
@@ -30,19 +19,12 @@ object NativeBridge {
     external fun nativeFinishV4Session(handle: Long): String
     external fun nativeDestroyV4Session(handle: Long)
     external fun nativeReplayV4Json(inputJson: String, commandTimelineJson: String): String
-
-    // --- V4.1 DES Engine JNI (millisecond advance, period transition, checkpoints, JSON command result) ---
     external fun nativeAdvanceV4SessionUntilMs(handle: Long, targetSimTimeMs: Long, maxStepsGuard: Int): String
     external fun nativeStartNextPeriod(handle: Long): String
     external fun nativeExportV4Checkpoint(handle: Long): String
     external fun nativeImportV4Checkpoint(checkpointJson: String): Long
     external fun nativeSubmitV4CommandJson(handle: Long, commandJson: String): String
-
-    fun isFullEngineReady(): Boolean = loaded && try {
-        nativePortVersion() >= 4
-    } catch (_: UnsatisfiedLinkError) {
-        false
-    }
+    external fun nativeGetVersionManifestJson(): String
 
     fun isV4EngineReady(): Boolean = loaded && try {
         nativeBridgeVersion() >= 5 && nativeEngineProtocolVersion() >= 4
@@ -60,15 +42,6 @@ object NativeBridge {
         nativeBridgeVersion() >= 8 && nativeEngineProtocolVersion() >= 5
     } catch (_: UnsatisfiedLinkError) {
         false
-    }
-
-    fun simulateMatch(inputJson: String): String {
-        if (!loaded) return """{"ok":false,"error":"Rust native library not packaged"}"""
-        return try {
-            nativeSimulateMatchJson(inputJson)
-        } catch (e: UnsatisfiedLinkError) {
-            """{"ok":false,"error":"JNI symbol mismatch: ${e.message}"}"""
-        }
     }
 
     fun simulateMatchV4(inputJson: String): String {
@@ -138,26 +111,26 @@ object NativeBridge {
         }
     }
 
+    fun getVersionManifestJson(): String {
+        if (!loaded) return """{"ok":false,"error":"Rust native library not packaged"}"""
+        return try {
+            nativeGetVersionManifestJson()
+        } catch (e: UnsatisfiedLinkError) {
+            """{"ok":false,"error":"VersionManifest4 JNI symbol missing: ${e.message}"}"""
+        }
+    }
+
     fun status(): String = if (!loaded) {
         "Rust native chưa được đóng gói (.so)"
     } else {
         try {
-            val ver = nativePortVersion()
-            val check = Integer.bitCount(nativeCoreSelfCheck())
-            if (isV4DesReady()) {
-                val bridgeVer = nativeBridgeVersion()
-                val protoVer = nativeEngineProtocolVersion()
-                "Rust V4.1 DES sẵn sàng (bridge v$bridgeVer • protocol v$protoVer • V3 self-check $check/5)"
-            } else if (isV4InteractiveReady()) {
-                val bridgeVer = nativeBridgeVersion()
-                val protoVer = nativeEngineProtocolVersion()
-                "Rust V4 tương tác sẵn sàng (bridge v$bridgeVer • protocol v$protoVer • cần bridge v8 cho DES • V3 self-check $check/5)"
-            } else if (isV4EngineReady()) {
-                "Rust V4 batch sẵn sàng (cần build lại .so bridge v8 cho phiên tương tác)"
-            } else if (ver >= 4) {
-                "Rust engine v$ver sẵn sàng (self-check $check/5)"
-            } else {
-                "Rust port v$ver: self-check $check/5 (cần build lại .so mới)"
+            val bridgeVer = nativeBridgeVersion()
+            val protoVer = nativeEngineProtocolVersion()
+            when {
+                isV4DesReady() -> "Rust V4.1 DES sẵn sàng (bridge v$bridgeVer • protocol v$protoVer)"
+                isV4InteractiveReady() -> "Rust V4 tương tác sẵn sàng (bridge v$bridgeVer • protocol v$protoVer • cần bridge v8 cho DES)"
+                isV4EngineReady() -> "Rust V4 batch sẵn sàng (cần build lại .so bridge v8 cho phiên tương tác)"
+                else -> "Thư viện Rust V4 chưa tương thích (bridge v$bridgeVer • protocol v$protoVer)"
             }
         } catch (_: UnsatisfiedLinkError) {
             "Thư viện Rust không khớp bản Kotlin"

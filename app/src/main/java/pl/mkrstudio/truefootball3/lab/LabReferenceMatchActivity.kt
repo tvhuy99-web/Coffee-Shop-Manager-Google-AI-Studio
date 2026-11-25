@@ -86,8 +86,6 @@ class LabReferenceMatchActivity : Activity() {
     // Legacy V3 playback state
     private var played = 0
     private var paused = false
-    private var playbackMs = 320L
-    private var manualSpeedOverride = false
     private var finished = false
     private var liveGameSecond = 0
     private var lastV4PlayingPeriod = 1
@@ -130,59 +128,6 @@ class LabReferenceMatchActivity : Activity() {
     private var knockout = false
     private var seed = 123456789L
 
-    private fun currentV3StepDelayMs(): Long {
-        if (manualSpeedOverride) return playbackMs
-        val simSettings = SimulationSettingsStore(this).load()
-        if (!simSettings.syncMatchSpeedWithTts) return playbackMs
-        val rate = (TtsSettingsStore(this).load().ratePercent / 100f).coerceIn(0.5f, 5.0f)
-        return (playbackMs / rate).roundToLong().coerceAtLeast(100L)
-    }
-
-    /** Legacy V3 tick loop (preserved untouched for V3 compatibility). */
-    private val v3Tick = object : Runnable {
-        override fun run() {
-            if (engineVersion != LabEngineVersion.V3) return
-            if (isFinishing || isDestroyed || paused || commandDialogActive) return
-            if (played >= narration.size) {
-                val session = liveRustSession
-                if (session != null && session.isOpen && !finished && !simulationStepPending) {
-                    simulationStepPending = true
-                    executor.execute { stepLegacyV3Session() }
-                    return
-                }
-                if (finished) {
-                    state.text = "Hết giờ. Chọn bất kỳ dòng nào trong danh sách để nghe lại."
-                }
-                return
-            }
-            val item = narration[played++]
-            header.text = "$home ${item.homeGoals} – ${item.awayGoals} $away  (${item.displayMinute}')"
-            records.add(hashMapOf("time" to item.minute, "commentary" to item.text))
-            if (played % 3 == 0 || played == narration.size || item.kind == LabEventType.GOAL) {
-                recordAdapter.notifyDataSetChanged()
-                list.setSelection(records.size - 1)
-            }
-            state.text = "Phút ${item.displayMinute}' • ${engineVersion.labelVi} • ${viewingMode.labelVi} ($played/${narration.size})"
-            audioDirector?.onEvent(
-                kind = item.kind,
-                side = item.side,
-                minute = item.minute,
-                goalDiffAbs = abs(item.homeGoals - item.awayGoals),
-                simTimeMs = item.simTimeMs,
-                isWoodwork = item.isWoodwork,
-                isPenalty = item.isPenalty,
-                isShootoutScored = item.isShootoutScored
-            )
-            val delayMs = currentV3StepDelayMs()
-            val manager = tts
-            if (manager != null && manager.isEnabled()) {
-                manager.speak(item.text, Runnable { main.postDelayed(this, delayMs) })
-            } else {
-                main.postDelayed(this, delayMs)
-            }
-        }
-    }
-
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -203,9 +148,7 @@ class LabReferenceMatchActivity : Activity() {
         viewingMode = intent.getStringExtra(EXTRA_VIEWING_MODE)?.let {
             try { LabViewingMode.valueOf(it) } catch (_: IllegalArgumentException) { null }
         } ?: savedSim.viewingMode
-        engineVersion = intent.getStringExtra(EXTRA_ENGINE_VERSION)?.let {
-            try { LabEngineVersion.valueOf(it) } catch (_: IllegalArgumentException) { null }
-        } ?: savedSim.engineVersion
+        engineVersion = LabEngineVersion.V4
         includeTurningPointsInShort = savedSim.includeTurningPointsInShort
         knockout = intent.getBooleanExtra(EXTRA_KNOCKOUT, false)
         seed = intent.getLongExtra(EXTRA_SEED, 123456789L)
@@ -246,7 +189,7 @@ class LabReferenceMatchActivity : Activity() {
         playbackRow.addView(playButton, LinearLayout.LayoutParams(0, dp(48), 1f))
 
         speedButton = Button(this).apply {
-            text = if (engineVersion == LabEngineVersion.V4) "Tốc độ: 1.0x" else "Tốc độ"
+            text = "Tốc độ: 1.0x"
             isAllCaps = false
             setOnClickListener { cyclePlaybackSpeed() }
         }
@@ -307,7 +250,7 @@ class LabReferenceMatchActivity : Activity() {
         }
         root.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
         list.setOnItemClickListener { _, _, position, _ ->
-            if (engineVersion != LabEngineVersion.V4 || finished) (records.getOrNull(position)?.get("commentary") as? String)?.let { tts?.speak(it) }
+            if (finished) (records.getOrNull(position)?.get("commentary") as? String)?.let { tts?.speak(it) }
         }
         root.addView(
             Button(this).apply {
@@ -330,12 +273,12 @@ class LabReferenceMatchActivity : Activity() {
         checkpointStore = MatchCheckpointStore(this)
         // Resume on the main thread, before any new native session can be created.
         val requestedResumeId = intent.getStringExtra("resume_checkpoint_match_id")
-        if (engineVersion == LabEngineVersion.V4 && !requestedResumeId.isNullOrBlank()) {
+        if (!requestedResumeId.isNullOrBlank()) {
             if (!tryResumeActiveV4Checkpoint(requestedResumeId)) {
                 state.text = "Không thể khôi phục trận đã lưu. Dữ liệu cũ vẫn được giữ lại."
             }
         } else {
-            val saved = if (engineVersion == LabEngineVersion.V4) checkpointStore?.listActiveCheckpoints()?.firstOrNull() else null
+            val saved = checkpointStore?.listActiveCheckpoints()?.firstOrNull()
             if (saved != null) {
                 AlertDialog.Builder(this)
                     .setTitle("Có trận đấu đang lưu")
@@ -350,51 +293,28 @@ class LabReferenceMatchActivity : Activity() {
     }
 
     private fun togglePlayPause() {
-        if (engineVersion == LabEngineVersion.V4) {
-            val ctrl = playbackController ?: return
-            if (ctrl.isPaused()) {
-                continuePeriodButton.visibility = View.GONE
-                paused = false
-                playButton.text = "Tạm dừng"
-                audio?.resumeAll()
-                ctrl.resume()
-            } else {
-                paused = true
-                playButton.text = "Tiếp tục"
-                audio?.pauseAll()
-                ctrl.pause()
-            }
-            return
-        }
-        paused = !paused
-        playButton.text = if (paused) "Tiếp tục" else "Tạm dừng"
-        if (paused) {
-            main.removeCallbacks(v3Tick)
-            tts?.stop()
-            audio?.pauseAll()
-        } else {
+        val ctrl = playbackController ?: return
+        if (ctrl.isPaused()) {
+            continuePeriodButton.visibility = View.GONE
+            paused = false
+            playButton.text = "Tạm dừng"
             audio?.resumeAll()
-            main.post(v3Tick)
+            ctrl.resume()
+        } else {
+            paused = true
+            playButton.text = "Tiếp tục"
+            audio?.pauseAll()
+            ctrl.pause()
         }
     }
 
     private fun cyclePlaybackSpeed() {
-        if (engineVersion == LabEngineVersion.V4) {
-            val rates = NarrationScheduler.SUPPORTED_PLAYBACK_RATES
-            desRateIndex = (desRateIndex + 1) % rates.size
-            val nextRate = rates[desRateIndex]
-            speedButton.text = "Tốc độ: ${formatRateLabel(nextRate)}"
-            playbackController?.setPlaybackRate(nextRate)
-            Toast.makeText(this, "Tốc độ DES: ${formatRateLabel(nextRate)}", Toast.LENGTH_SHORT).show()
-            return
-        }
-        manualSpeedOverride = true
-        playbackMs = when (playbackMs) {
-            320L -> 800L
-            800L -> 150L
-            else -> 320L
-        }
-        Toast.makeText(this, "Tốc độ: ${playbackMs}ms/câu", Toast.LENGTH_SHORT).show()
+        val rates = NarrationScheduler.SUPPORTED_PLAYBACK_RATES
+        desRateIndex = (desRateIndex + 1) % rates.size
+        val nextRate = rates[desRateIndex]
+        speedButton.text = "Tốc độ: ${formatRateLabel(nextRate)}"
+        playbackController?.setPlaybackRate(nextRate)
+        Toast.makeText(this, "Tốc độ DES: ${formatRateLabel(nextRate)}", Toast.LENGTH_SHORT).show()
     }
 
     private fun formatRateLabel(rate: Float): String {
@@ -403,25 +323,17 @@ class LabReferenceMatchActivity : Activity() {
 
     private fun openCommandDialog() {
         commandDialogActive = true
-        if (engineVersion == LabEngineVersion.V4) {
-            playbackController?.pause()
-        } else {
-            main.removeCallbacks(v3Tick)
-        }
+        playbackController?.pause()
     }
 
     private fun closeCommandDialog() {
         commandDialogActive = false
-        if (engineVersion == LabEngineVersion.V4) {
-            val ctrl = playbackController
-            if (!paused && ctrl != null &&
-                ctrl.currentHalfStage() == DesHalfStage.IN_HALF &&
-                !isFinishing && !isDestroyed
-            ) {
-                ctrl.resume()
-            }
-        } else if (!paused && !isFinishing && !isDestroyed) {
-            main.post(v3Tick)
+        val ctrl = playbackController
+        if (!paused && ctrl != null &&
+            ctrl.currentHalfStage() == DesHalfStage.IN_HALF &&
+            !isFinishing && !isDestroyed
+        ) {
+            ctrl.resume()
         }
     }
 
@@ -447,7 +359,7 @@ class LabReferenceMatchActivity : Activity() {
                     else -> "CHANGE_LINE_HEIGHT"
                 }
                 val value = when (which) { 0 -> 85; 1 -> 80; 2 -> 30; else -> 35 }
-                if (engineVersion == LabEngineVersion.V4) {
+                run {
                     val ctrl = playbackController
                     val live = liveRustSession
                     if (ctrl != null && live != null) {
@@ -476,20 +388,6 @@ class LabReferenceMatchActivity : Activity() {
                         }
                     }
                     closeCommandDialog()
-                } else {
-                    closeCommandDialog()
-                    executor.execute {
-                        val ok = session.submitTeamInstruction(liveGameSecond, "HOME", type, value)
-                        main.post {
-                            if (!isDestroyed) {
-                                Toast.makeText(
-                                    this,
-                                    if (ok) "Đã gửi chỉ đạo" else "Không gửi được chỉ đạo",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        }
-                    }
                 }
             }
             .setNegativeButton("Đóng") { _, _ -> closeCommandDialog() }
@@ -498,56 +396,7 @@ class LabReferenceMatchActivity : Activity() {
     }
 
     private fun showSubstitutionDialog() {
-        if (engineVersion == LabEngineVersion.V4) {
-            showV4BatchSubstitutionDialog()
-            return
-        }
-        val session = liveRustSession
-        if (session == null || !session.isOpen || finished) {
-            Toast.makeText(this, "Chỉ thay người trực tiếp khi trận Rust đang diễn ra.", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (homeSubsUsed >= MAX_SUBSTITUTIONS) {
-            Toast.makeText(this, "Đã dùng hết $MAX_SUBSTITUTIONS lượt thay người.", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (homeOnPitch.isEmpty() || homeBench.isEmpty()) {
-            Toast.makeText(this, "Không còn cầu thủ dự bị để thay.", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val outOptions = homeOnPitch.map { it.label }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Chọn cầu thủ ra sân (Còn ${MAX_SUBSTITUTIONS - homeSubsUsed} lượt)")
-            .setItems(outOptions) { _, outIdx ->
-                val outPlayer = homeOnPitch.getOrNull(outIdx) ?: return@setItems
-                val inOptions = homeBench.map { it.label }.toTypedArray()
-                AlertDialog.Builder(this)
-                    .setTitle("Vào thay ${outPlayer.label}")
-                    .setItems(inOptions) { _, inIdx ->
-                        val inPlayer = homeBench.getOrNull(inIdx) ?: return@setItems
-                        executor.execute {
-                            val ok = session.submitSubstitution(liveGameSecond, "HOME", outPlayer.id, inPlayer.id)
-                            main.post {
-                                if (ok) {
-                                    homeOnPitch[outIdx] = inPlayer
-                                    homeBench.removeAt(inIdx)
-                                    homeSubsUsed++
-                                    Toast.makeText(
-                                        this,
-                                        "Đã thay người: ${outPlayer.name} → ${inPlayer.name}",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                } else {
-                                    Toast.makeText(this, "Không thể gửi lệnh thay người.", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        }
-                    }
-                    .setNegativeButton("Hủy", null)
-                    .show()
-            }
-            .setNegativeButton("Đóng", null)
-            .show()
+        showV4BatchSubstitutionDialog()
     }
 
     private fun showV4BatchSubstitutionDialog() {
@@ -716,30 +565,20 @@ class LabReferenceMatchActivity : Activity() {
                 "START [$engineVersion/$viewingMode] $home (${homeTactics.formation.label}/${homeTactics.style.label}) vs " +
                     "$away (${awayTactics.formation.label}/${awayTactics.style.label}) | knockout=$knockout seed=$seed"
             )
-            val inputJson = when (engineVersion) {
-                LabEngineVersion.V4 -> {
-                    if (!NativeBridge.isV4DesReady()) {
-                        throw IllegalStateException("Thư viện lõi Rust V4 DES (bridge v8 / protocol v5) chưa được đóng gói trong APK.")
-                    }
-                    factory.createRustV4InputJson(
-                        homeName = home,
-                        awayName = away,
-                        seed = seed,
-                        knockout = knockout,
-                        simulationMode = LabSimulationMode.FULL_EVENT,
-                        homeTactics = homeTactics,
-                        awayTactics = awayTactics
-                    ).also { generated ->
-                        v4InputJson = generated
-                        v4MatchId = JSONObject(generated).optString("matchId", v4MatchId)
-                    }
-                }
-                LabEngineVersion.V3 -> {
-                    if (!NativeBridge.isFullEngineReady()) {
-                        throw IllegalStateException("Thư viện lõi Rust V3 (libfootball_match_engine.so) chưa được biên dịch/đóng gói vào APK.")
-                    }
-                    factory.createRustInputJson(home, away, seed, simMinutes, knockout, homeTactics, awayTactics)
-                }
+            if (!NativeBridge.isV4DesReady()) {
+                throw IllegalStateException("Thư viện lõi Rust V4 DES (bridge v8 / protocol v5) chưa được đóng gói trong APK.")
+            }
+            val inputJson = factory.createRustV4InputJson(
+                homeName = home,
+                awayName = away,
+                seed = seed,
+                knockout = knockout,
+                simulationMode = LabSimulationMode.FULL_EVENT,
+                homeTactics = homeTactics,
+                awayTactics = awayTactics
+            ).also { generated ->
+                v4InputJson = generated
+                v4MatchId = JSONObject(generated).optString("matchId", v4MatchId)
             }
             populateHomeRoster(inputJson)
             val session = LabRustLiveSession.open(inputJson, engineVersion)
@@ -751,15 +590,10 @@ class LabReferenceMatchActivity : Activity() {
             liveRustSession = session
             rustCommentary = LabCommentaryEngine(this, home, away, seed)
 
-            if (engineVersion == LabEngineVersion.V4) {
-                main.post {
-                    if (!isFinishing && !isDestroyed) {
-                        startV4DesPlayback(session)
-                    }
+            main.post {
+                if (!isFinishing && !isDestroyed) {
+                    startV4DesPlayback(session)
                 }
-            } else {
-                simulationStepPending = true
-                stepLegacyV3Session()
             }
         } catch (error: Exception) {
             LabLogStore.error("ERROR", "startMatch failed", error)
@@ -991,36 +825,12 @@ class LabReferenceMatchActivity : Activity() {
         return out
     }
 
-    private fun shouldIncludeV3Event(kind: LabEventType): Boolean {
-        return when (viewingMode) {
-            LabViewingMode.FULL_MATCH -> true
-            LabViewingMode.EXTENDED_HIGHLIGHTS -> kind in setOf(
-                LabEventType.MATCH_STARTED, LabEventType.HALF_TIME, LabEventType.FULL_TIME,
-                LabEventType.EXTRA_TIME_STARTED, LabEventType.EXTRA_TIME_HALF_TIME,
-                LabEventType.PENALTY_SHOOTOUT_STARTED, LabEventType.PENALTY_SHOOTOUT_KICK, LabEventType.PENALTY_SHOOTOUT_ENDED,
-                LabEventType.GOAL, LabEventType.OWN_GOAL, LabEventType.SHOT, LabEventType.SHOT_ON_TARGET,
-                LabEventType.SHOT_OFF_TARGET, LabEventType.HEADER, LabEventType.SAVE, LabEventType.REBOUND,
-                LabEventType.CORNER, LabEventType.FREE_KICK, LabEventType.PENALTY_AWARDED, LabEventType.PENALTY_KICK,
-                LabEventType.YELLOW_CARD, LabEventType.RED_CARD, LabEventType.INJURY, LabEventType.SUBSTITUTION,
-                LabEventType.OFFSIDE
-            )
-            LabViewingMode.SHORT_HIGHLIGHTS -> kind in setOf(
-                LabEventType.MATCH_STARTED, LabEventType.HALF_TIME, LabEventType.FULL_TIME,
-                LabEventType.EXTRA_TIME_STARTED, LabEventType.PENALTY_SHOOTOUT_STARTED,
-                LabEventType.PENALTY_SHOOTOUT_KICK, LabEventType.PENALTY_SHOOTOUT_ENDED,
-                LabEventType.GOAL, LabEventType.OWN_GOAL
-            ) || (includeTurningPointsInShort && kind in setOf(
-                LabEventType.PENALTY_AWARDED, LabEventType.PENALTY_KICK, LabEventType.RED_CARD
-            ))
-        }
-    }
-
     private fun formatDisplayMinute(
         period: Int,
         gameSecond: Int,
         periodElapsedSecond: Int? = null
     ): String {
-        if (engineVersion == LabEngineVersion.V4 && periodElapsedSecond != null) {
+        if (periodElapsedSecond != null) {
             val elapsed = periodElapsedSecond.coerceAtLeast(0)
             val base = when (period) {
                 1 -> 0
@@ -1077,96 +887,6 @@ class LabReferenceMatchActivity : Activity() {
             LabEventType.PENALTY_SHOOTOUT_ENDED -> "Loạt sút luân lưu đã khép lại!"
             LabEventType.FULL_TIME -> "Trọng tài thổi còi kết thúc trận đấu!"
             else -> null
-        }
-    }
-
-    private fun stepLegacyV3Session() {
-        val session = liveRustSession ?: return
-        val factory = matchFactory ?: return
-        val engine = rustCommentary ?: return
-        try {
-            val added = ArrayList<LabNarration>()
-            var guard = 0
-            while (added.isEmpty() && !finished && guard++ < 80) {
-                val stepObj = session.advance(maxSteps = 8)
-                if (!stepObj.optBoolean("ok", false)) {
-                    throw IllegalStateException(stepObj.optString("error", "Rust V3 step failed"))
-                }
-                liveGameSecond = stepObj.optInt("gameSecond", liveGameSecond)
-                val eventsArr = stepObj.optJSONArray("events")
-                if (eventsArr != null) {
-                    for (i in 0 until eventsArr.length()) {
-                        val ev = eventsArr.getJSONObject(i)
-                        val kind = try {
-                            LabEventType.valueOf(ev.getString("type"))
-                        } catch (_: IllegalArgumentException) {
-                            continue
-                        }
-                        if (!shouldIncludeV3Event(kind)) continue
-                        val side = when (ev.optString("side", "")) {
-                            "HOME" -> LabTeamSide.HOME
-                            "AWAY" -> LabTeamSide.AWAY
-                            else -> null
-                        }
-                        val evSec = ev.optInt("gameSecond", liveGameSecond)
-                        val minute = ev.optInt("minute", (evSec + 59) / 60).coerceAtLeast(1)
-                        val displayMin = ev.optString("displayMinute", minute.toString())
-                        val hg = ev.optInt("homeGoals", 0)
-                        val ag = ev.optInt("awayGoals", 0)
-                        val actorName = factory.name(ev.optString("actor", "").takeIf { it != "null" })
-                        val targetName = factory.name(ev.optString("target", "").takeIf { it != "null" })
-                        val text = engine.renderRustEvent(ev, kind, side, actorName, targetName, minute, hg, ag)
-                            ?: continue
-                        val metaObj = ev.optJSONObject("metadata")
-                        val isWoodwork = metaObj?.optString("woodwork") == "true" ||
-                            metaObj?.optString("outcome")?.equals("WOODWORK", ignoreCase = true) == true
-                        val isPenalty = metaObj?.optString("source")?.equals("PENALTY", ignoreCase = true) == true ||
-                            kind == LabEventType.PENALTY_KICK
-                        val shootoutScored = if (kind == LabEventType.PENALTY_SHOOTOUT_KICK) {
-                            metaObj?.optString("scored") == "true" ||
-                                metaObj?.optString("outcome")?.equals("SCORED", ignoreCase = true) == true
-                        } else null
-                        LabLogStore.log("EVENT", "${displayMin}' [V3:$kind] side=${side ?: "-"} actor=$actorName target=$targetName score=$hg-$ag | $text")
-                        added.add(
-                            LabNarration(
-                                minute = minute,
-                                displayMinute = displayMin,
-                                homeGoals = hg,
-                                awayGoals = ag,
-                                text = text,
-                                kind = kind,
-                                side = side,
-                                isWoodwork = isWoodwork,
-                                isPenalty = isPenalty,
-                                isShootoutScored = shootoutScored,
-                                gameSecond = evSec,
-                                simTimeMs = evSec * 1000L
-                            )
-                        )
-                    }
-                }
-                if (stepObj.optBoolean("fullTime", false)) {
-                    val finalObj = session.finish()
-                    updateStatsFromRustJson(finalObj)
-                    session.close()
-                    finished = true
-                    break
-                }
-            }
-            main.post {
-                simulationStepPending = false
-                if (isFinishing || isDestroyed) return@post
-                narration.addAll(added)
-                if (added.isNotEmpty() || finished) main.post(v3Tick)
-                else main.postDelayed(v3Tick, currentV3StepDelayMs())
-            }
-        } catch (error: Exception) {
-            LabLogStore.error("ERROR", "stepLegacyV3Session failed", error)
-            main.post {
-                simulationStepPending = false
-                finished = true
-                state.text = "Lỗi phiên Rust: ${error.message}"
-            }
         }
     }
 
@@ -1285,7 +1005,7 @@ class LabReferenceMatchActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
-        if (engineVersion == LabEngineVersion.V4 && !finished) {
+        if (!finished) {
             playbackController?.onHostPaused()
             paused = true
             playButton.text = "Tiếp tục"
@@ -1295,14 +1015,13 @@ class LabReferenceMatchActivity : Activity() {
 
     override fun onStop() {
         super.onStop()
-        if (engineVersion == LabEngineVersion.V4 && !finished) {
+        if (!finished) {
             playbackController?.onHostPaused()
         }
     }
 
     override fun onDestroy() {
         commandDialogActive = false
-        main.removeCallbacks(v3Tick)
         playbackController?.release()
         narrationScheduler?.release()
         executor.shutdownNow()
@@ -1320,7 +1039,7 @@ class LabReferenceMatchActivity : Activity() {
      * the exact saved `playbackSimTimeMs`.
      */
     private fun tryResumeActiveV4Checkpoint(matchIdToResume: String? = null): Boolean {
-        if (engineVersion != LabEngineVersion.V4 || !NativeBridge.isV4DesReady()) return false
+        if (!NativeBridge.isV4DesReady()) return false
         val store = checkpointStore ?: MatchCheckpointStore(this).also { checkpointStore = it }
         val targetId = matchIdToResume ?: store.listActiveCheckpoints().firstOrNull()?.matchId ?: return false
         val envelope = store.loadVerified(targetId) ?: return false

@@ -5,8 +5,8 @@ import android.content.SharedPreferences
 
 /**
  * Independent storage for the "Cài đặt mô phỏng" menu (separate from TTS and Sound settings).
- * Synchronizes viewing mode (Full trận / Chi tiết / Ngắn gọn), simulation engine mode (3.0 / 4.0),
- * and TTS-driven match pacing between Settings and the Trial match screen.
+ * Synchronizes viewing mode (Full trận / Chi tiết / Ngắn gọn) and TTS-driven match pacing
+ * between Settings and the Trial match screen on Match Engine 4.0.
  */
 class SimulationSettingsStore(context: Context) {
     data class Settings(
@@ -26,15 +26,9 @@ class SimulationSettingsStore(context: Context) {
         } catch (_: IllegalArgumentException) {
             LabViewingMode.FULL_MATCH
         }
-        val rawEngine = preferences.getString(ENGINE_VERSION, LabEngineVersion.V4.name)
-        val engine = try {
-            LabEngineVersion.valueOf(rawEngine ?: LabEngineVersion.V4.name)
-        } catch (_: IllegalArgumentException) {
-            LabEngineVersion.V4
-        }
         return Settings(
             viewingMode = mode,
-            engineVersion = engine,
+            engineVersion = LabEngineVersion.V4,
             includeTurningPointsInShort = preferences.getBoolean(INCLUDE_TURNING_POINTS, true),
             syncMatchSpeedWithTts = preferences.getBoolean(SYNC_SPEED_WITH_TTS, true)
         )
@@ -43,7 +37,7 @@ class SimulationSettingsStore(context: Context) {
     fun save(settings: Settings) {
         preferences.edit()
             .putString(VIEWING_MODE, settings.viewingMode.name)
-            .putString(ENGINE_VERSION, settings.engineVersion.name)
+            .putString(ENGINE_VERSION, LabEngineVersion.V4.name)
             .putBoolean(INCLUDE_TURNING_POINTS, settings.includeTurningPointsInShort)
             .putBoolean(SYNC_SPEED_WITH_TTS, settings.syncMatchSpeedWithTts)
             .apply()
@@ -51,10 +45,6 @@ class SimulationSettingsStore(context: Context) {
 
     fun updateViewingMode(mode: LabViewingMode) {
         preferences.edit().putString(VIEWING_MODE, mode.name).apply()
-    }
-
-    fun updateEngineVersion(version: LabEngineVersion) {
-        preferences.edit().putString(ENGINE_VERSION, version.name).apply()
     }
 
     companion object {
