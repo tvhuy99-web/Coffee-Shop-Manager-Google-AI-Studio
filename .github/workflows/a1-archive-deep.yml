@@ -1,0 +1,90 @@
+name: A-1 archive final locked and deep replay evidence
+on:
+  push:
+    branches: ['refactor/football-simulation-4']
+    paths:
+      - '.github/workflows/a1-archive-deep.yml'
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: pingfootball-a1-evidence-archive
+  cancel-in-progress: false
+jobs:
+  archive:
+    if: github.repository == 'tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio' && github.ref == 'refs/heads/refactor/football-simulation-4'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: evidence/a1-historical
+      - name: Verify and preserve exact archive bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, re, subprocess, zipfile
+          from pathlib import Path
+          repo = 'tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio'
+          baseline = 'c2c392d8b3ccc57985e87337e8994fd7033328ee'
+          lock_hash = '41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099'
+          runs = json.loads(r'''[{"run_id":45604679705,"head_sha":"dca1db59fdfd37d5e125c68b3d95897a90d69950","path":".github/workflows/a1-deep-golden.yml","artifacts":[{"id":15019696114,"name":"a1-deep-full_event","sha256":"dda7397664fde53a216e539e0107d5b6610ade08dd85e295897ba7c7003e9481","size":4684815},{"id":15019666201,"name":"a1-deep-strong_away","sha256":"15d681c14737385b124ddc0d9cfebc59086a9ea69bb894dc164160cd079542b4","size":2606168},{"id":15019621433,"name":"a1-deep-checkpoint_markers","sha256":"a4fa52ac9568bcf5db110a8852ab182f2efc8470f52484c7aa2ee7dc884d7484","size":1304713},{"id":15019536282,"name":"a1-deep-low_block","sha256":"55964a0820655942ed9556baaceb1c6d293b461ee81c40dd11a227999aed812a","size":2473010},{"id":15019166641,"name":"a1-deep-strong_home","sha256":"f87d158a954879e07d2ef19e17243ddcb6bbb00392673dd91e745e08ed9eb77a","size":2609092},{"id":15018325814,"name":"a1-deep-high_press","sha256":"887524fca2682eef8d66085e3ebf58aab50834a34aa8b2d5a5cd9f0965c1b857","size":2470572},{"id":15018058449,"name":"a1-deep-baseline","sha256":"62b779bee3b7a645a22e79a5db2b069ae28691acd58f544c8a622e91eb9edbc2","size":39979499},{"id":15017983502,"name":"a1-deep-balanced","sha256":"85c08cf38372118736a89cf5165da4885ecdd49ad811cc59df45aa6edcff3fed","size":4910371}]},{"run_id":45606252958,"head_sha":"d5a53faef9814abbf66a77711b5f60ade268fc6e","path":".github/workflows/a1-baseline-freeze.yml","artifacts":[{"id":15019850679,"name":"a1-parity-full_event","sha256":"8cd1c4fb963fc77c0a1688bf8d642afdc9f771b3bb46793ba2790f29e61030c8","size":4206793},{"id":15019516437,"name":"a1-parity-strong_home","sha256":"030e33fc34ac44520f453abe2c923488e1b739471003235cd273223cd368aa6f","size":241898},{"id":15019481785,"name":"a1-parity-strong_away","sha256":"57b099909274c701363c895b52d4184b86cfca5760bedc3f7275903d08c7d3bd","size":243395},{"id":15019411320,"name":"a1-audit-hidden","sha256":"8a3360bdd6b09292fbfd4593452c80e729d60feb4853865ad55987c4b5b75459","size":183234},{"id":15019346228,"name":"a1-audit-goalkeeping","sha256":"b63225fcb366c07104cba92f00ad066e9a4caefcca73ce5ea7cf72cecf655b3f","size":177122},{"id":15019176418,"name":"a1-audit-physical","sha256":"dc9eabfed9ff365681f255c35cc7a880902cd13813048205c1e668f33187c060","size":208871},{"id":15018901099,"name":"a1-audit-technical","sha256":"56c87643216f633d19b57c3e16017643aa051b4933a36eeaea65c6ca51fee478","size":287633},{"id":15018877963,"name":"a1-parity-low_block","sha256":"1333ccee0a161ed030e5b851fc39f530a0f597d8fb7df9c6943b88862e4b5d0f","size":243294},{"id":15018680267,"name":"a1-locked-inputs","sha256":"096b72cea53dc3421f506b0ecd86fe87fdb55fb1b373beca8f47296bda82491b","size":47378},{"id":15018537296,"name":"a1-parity-baseline","sha256":"ee3501046ca4c260a671d05aa6ba0c0500407164ad54bcc6d77bd037058c99b6","size":3612913},{"id":15018456159,"name":"a1-audit-mental","sha256":"793ea72fced256d2db55f9607ce27e47ba9809322f864b0d4e4da5122285ade3","size":353118},{"id":15018311430,"name":"a1-continuation","sha256":"e741bb46645a2a6ae9c34a39612f0291efcddb36d8a77503fedf5cffb2e48fba","size":5068},{"id":15017932695,"name":"a1-parity-high_press","sha256":"5e5234832f9559158e571486bd2a2393a1750b0e950869de4582ef97e3c09c86","size":240025},{"id":15017898397,"name":"a1-parity-balanced","sha256":"60cb31ad35d279d49ce76b8d88ed6c77bb387df5524579ec23105f80aec66ce5","size":464148}]}]''')
+          def hash_stream(f):
+              h=hashlib.sha256()
+              for chunk in iter(lambda:f.read(1024*1024),b''):
+                  h.update(chunk)
+              return h.hexdigest()
+          for run in runs:
+              meta=json.loads(subprocess.check_output(['gh','api',f"/repos/{repo}/actions/runs/{run['run_id']}"]))
+              assert meta['conclusion']=='success' and meta['head_sha']==run['head_sha'] and meta['path']==run['path']
+              dest=Path(f"docs/evidence/a-1/verified-run-{run['run_id']}")
+              dest.mkdir(parents=True,exist_ok=True)
+              rows=[]
+              for a in run['artifacts']:
+                  assert re.fullmatch(r'[a-z0-9_-]+',a['name'])
+                  path=dest/(a['name']+'.zip')
+                  if not path.exists():
+                      tmp=path.with_suffix('.tmp')
+                      with tmp.open('wb') as f:
+                          subprocess.run(['gh','api',f"/repos/{repo}/actions/artifacts/{a['id']}/zip"],stdout=f,check=True)
+                      with tmp.open('rb') as f: assert hash_stream(f)==a['sha256']
+                      tmp.rename(path)
+                  with path.open('rb') as f: assert hash_stream(f)==a['sha256']
+                  assert path.stat().st_size==a['size']
+                  with zipfile.ZipFile(path) as z:
+                      assert z.testzip() is None
+                      assert z.read('commit.txt').decode().strip()==baseline
+                      assert hashlib.sha256(z.read('Cargo.lock')).hexdigest()==lock_hash
+                      if run['run_id']==45604679705:
+                          assert z.read('harness-commit.txt').decode().strip()==run['head_sha']
+                      elif a['name']=='a1-locked-inputs':
+                          assert z.read('lockfile-origin.txt').decode().strip()==f"committed lockfile at {run['head_sha']}"
+                      members={}
+                      for n in z.namelist():
+                          if not n.endswith('/'):
+                              with z.open(n) as f: members[n]=hash_stream(f)
+                      for line in z.read('SHA256SUMS').decode().splitlines():
+                          digest,name=line.split('  ',1)
+                          assert members[name]==digest,name
+                      if run['run_id']==45604679705:
+                          report=json.loads(z.read('parity.log').decode().strip().splitlines()[-1])
+                          assert report['mismatches']==0 and report['negativeControls']==4
+                          assert report['firstSha256']==members['first.jsonl']==members['second.jsonl']==report['secondSha256']
+                      rows.append({**a,'member_sha256':members})
+              (dest/'verified-manifest.json').write_text(json.dumps({'schema':1,'baseline_sha':baseline,'lock_sha256':lock_hash,'run_id':run['run_id'],'workflow_sha':run['head_sha'],'artifacts':rows},indent=2,sort_keys=True)+'\n')
+              print(f"Verified {len(rows)} original ZIPs for {run['run_id']}")
+          PY
+      - name: Commit verified evidence only
+        run: |
+          set -euo pipefail
+          test "$(git branch --show-current)" = evidence/a1-historical
+          git add -- docs/evidence/a-1/verified-run-45604679705/ docs/evidence/a-1/verified-run-45606252958/
+          if git diff --cached --quiet; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'evidence(A-1): archive 22 verified locked and deep golden artifacts'
+          git push origin HEAD:refs/heads/evidence/a1-historical
