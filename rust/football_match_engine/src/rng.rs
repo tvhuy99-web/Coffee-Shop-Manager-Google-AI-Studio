@@ -44,3 +44,10 @@ fn avalanche(mut value: u64) -> u64 {
     value ^= value >> 33;
     value
 }
+
+impl crate::contracts::RngSampleSource for DeterministicRng {
+    fn next_long(&mut self) -> i64 { DeterministicRng::next_long(self) }
+    fn next_int(&mut self, bound: i32) -> i32 { DeterministicRng::next_int(self, bound) }
+    fn next_boolean(&mut self) -> bool { DeterministicRng::next_boolean(self) }
+    fn next_double(&mut self) -> f64 { DeterministicRng::next_double(self) }
+}
