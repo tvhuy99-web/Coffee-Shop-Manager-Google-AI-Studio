@@ -7,7 +7,7 @@ V = R / 'rust/football_match_engine/src/v4'
 assert (V/'own_goal.rs').is_file() and (V/'stats.rs').is_file()
 assert 'pub mod own_goal;' in (V/'mod.rs').read_text()
 assert 'pub mod stats;' in (V/'mod.rs').read_text()
-base=(V/'events.rs').read_text()
+base=(V.parent/'contracts/events.rs').read_text()
 for required in ['pub own_goals: u8','pub own_goals_for: u16','pub own_goals_conceded: u16',
                  'pub shots_off_target: u16','pub shots_blocked: u16','pub saves: u16']:
  assert required in base, required

@@ -1,7 +1,7 @@
 name: PingFootball L0-L4 acceptance
 on:
   push:
-    branches: [main, 'refactor/football-simulation-4', 'refactor/a0-consolidated']
+    branches: [main, 'refactor/football-simulation-4', 'refactor/a0-consolidated', 'refactor/a1-a2-contracts']
   pull_request:
     branches: [main, 'refactor/football-simulation-4']
   workflow_dispatch:
@@ -48,9 +48,7 @@ jobs:
           local=[p for p in m['packages'] if p['source'] is None]
           assert len(local)==1 and local[0]['id'] in m['workspace_members'], 'A0 expects original single crate; A5 must replace with explicit DAG'
           PY
-          # At A0 the production Rust and app sources must remain byte identical.
-          git diff --name-only "$BASELINE" -- rust/football_match_engine/src app/src/main | grep -vFx 'rust/football_match_engine/src/v4/tests.rs' > evidence/production-diff.txt || test "$?" -eq 1
-          test ! -s evidence/production-diff.txt
+          python3 tools/verify_a1_boundary.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -360,5 +358,5 @@ jobs:
           import json,os
           results=json.loads(os.environ['RESULTS'])
           assert len(results)==7 and all(v['result']=='success' for v in results.values()), results
-          print('All required A0 layers passed (signed release/device/strict legacy formatting tracked separately).')
+          print('All required A1-A2 layers passed (signed release/device/strict legacy formatting tracked separately).')
           PY

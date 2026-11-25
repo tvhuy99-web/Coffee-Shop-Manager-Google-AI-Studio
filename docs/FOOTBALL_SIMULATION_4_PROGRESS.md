@@ -1,3 +1,12 @@
+# PingFootball 4.0 — Tiến độ
+
+- A-1 technical freeze PASS; 61 archived artifacts, 1.396 golden cases, 904 audit matches, 4.320.279 gameplay events; exact tags verified. Formal tag protection/ADR policy outstanding.
+- A0 consolidated L0–L4 19/19 PASS [45617999177](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45617999177); integration accepted c703d82. Strict legacy formatting debt and release signing separate.
+- A1–A2 candidate: 34 legacy Rust modules and nine JNI removed, historical archive, Android V4-only, canonical contracts relocated. Pending actual CI acceptance; no main merge.
+- A3–B6 pending.
+
+Historical progress below for provenance (superseded by current statuses above):
+
 # PingFootball 4.0 — Theo dõi tái cấu trúc
 
 Ngày khởi tạo: 25/11/2026. Đặc tả: [Revision 3](FOOTBALL_SIMULATION_4_SPEC.md).

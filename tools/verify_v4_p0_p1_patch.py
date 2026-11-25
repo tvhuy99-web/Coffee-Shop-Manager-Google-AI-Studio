@@ -29,7 +29,7 @@ def between(source, start, end):
 ball=get(R/'v4/ball_play.rs')
 sess=get(R/'v4/session.rs')
 jni=get(R/'jni_bridge.rs')
-events=get(R/'v4/events.rs')
+events=get(R/'contracts/events.rs')
 mod=get(R/'v4/mod.rs')
 bridge=get(K/'NativeBridge.kt')
 activity=get(K/'LabReferenceMatchActivity.kt')

@@ -15,7 +15,7 @@ def test(name, condition):
 def read(p):return p.read_text(encoding='utf-8')
 a = read(R/'ai_manager.rs')
 s = read(R/'session.rs')
-e = read(R/'events.rs')
+e = read(R.parent/'contracts/events.rs')
 t = read(R/'tests.rs')
 w = read(K/'LabRustLiveSession.kt')
 ui = read(K/'LabReferenceMatchActivity.kt')
