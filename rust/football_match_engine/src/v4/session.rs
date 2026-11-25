@@ -321,7 +321,7 @@ impl MatchSessionV4 {
         crate::v4::transition::verify_command_journal(&candidate.command_timeline,candidate.next_command_id,candidate.sim_time_ms())?;
         crate::v4::transition::verify_event_journal(&candidate.events,candidate.event_count,candidate.last_delivered_event_index,
             candidate.retain_events,candidate.finished,candidate.sim_time_ms())?;
-        if candidate.finished && !candidate.is_full_time() {
+        if candidate.finished && !matches!(candidate.stage,HalfStageV4::FullTime) {
             return Err(V4Error::InvalidInput("INV-12: result closed before full time".into()));
         }
         *self=candidate;

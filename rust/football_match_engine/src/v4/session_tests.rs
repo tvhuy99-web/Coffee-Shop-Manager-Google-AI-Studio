@@ -633,6 +633,13 @@ mod a4_atomic_api_tests {
         });
         assert!(result.is_err());
         assert_eq!(snapshot(&s),before);
+        let result=s.transact(|candidate|{
+            candidate.finished=true;
+            candidate.events.clear();
+            Ok(())
+        });
+        assert!(result.is_err(),"premature finalization must not pass");
+        assert_eq!(snapshot(&s),before);
     }
 
     #[test]
