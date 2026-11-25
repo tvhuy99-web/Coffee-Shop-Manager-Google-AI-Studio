@@ -39,17 +39,19 @@ jobs:
           cargo +"$RUST_VERSION" -V > evidence/cargo.txt
           uname -a > evidence/runner.txt
           cd rust/football_match_engine
-          if [ -f ../../control/rust/football_match_engine/Cargo.lock ]; then
-            cp ../../control/rust/football_match_engine/Cargo.lock Cargo.lock
-            printf 'committed lockfile at %s\n' "$GITHUB_SHA" > ../../evidence/lockfile-origin.txt
-          else
-            cargo +"$RUST_VERSION" generate-lockfile
-            printf 'new candidate dependency resolution; must be committed and rerun\n' > ../../evidence/lockfile-origin.txt
-          fi
+          # A-1 has promoted the original lock; never silently resolve dependencies again.
+          git -C ../../control ls-files --error-unmatch rust/football_match_engine/Cargo.lock
+          cp ../../control/rust/football_match_engine/Cargo.lock Cargo.lock
+          echo '41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099  Cargo.lock' | sha256sum -c -
+          printf 'committed lockfile at %s\n' "$GITHUB_SHA" > ../../evidence/lockfile-origin.txt
           cargo +"$RUST_VERSION" metadata --locked --format-version 1 > ../../evidence/cargo-metadata.json
           cp Cargo.lock ../../evidence/Cargo.lock
           cd ../..
-          (cd evidence && sha256sum Cargo.lock cargo-metadata.json commit.txt git-tree.txt source.sha256 rustc.txt cargo.txt runner.txt lockfile-origin.txt > SHA256SUMS)
+          python3 tools/verify_lab_v2.py | tee evidence/static-integrity.log
+          grep -Fq 'PASS exactly 48 checksum entries (48)' evidence/static-integrity.log
+          grep -Fq 'PASS values has 895 commentary templates (895)' evidence/static-integrity.log
+          grep -Fq 'PASS values-vi has 895 commentary templates (895)' evidence/static-integrity.log
+          (cd evidence && sha256sum Cargo.lock cargo-metadata.json commit.txt git-tree.txt source.sha256 rustc.txt cargo.txt runner.txt lockfile-origin.txt static-integrity.log > SHA256SUMS)
           git diff --exit-code
       - uses: actions/upload-artifact@v4
         with:
