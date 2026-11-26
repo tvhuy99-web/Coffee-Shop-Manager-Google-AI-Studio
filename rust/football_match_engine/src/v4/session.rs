@@ -1069,6 +1069,34 @@ impl MatchSessionV4 {
     }
 
     pub(super) fn step_one_des_event(&mut self, auto_advance_breaks: bool) -> Result<(), V4Error> {
+        // The retained journal is append-only inside a DES step. Exclude it
+        // from the candidate clone to avoid quadratic copying in FullEvent.
+        // The live session retains the old journal throughout execution.
+        let history=std::mem::take(&mut self.events);
+        let mut candidate=self.clone();
+        self.events=history;
+        let before_count=self.event_count;
+        candidate.step_one_des_event_checked(auto_advance_breaks)?;
+        let new_count=candidate.event_count.checked_sub(before_count)
+            .ok_or_else(||V4Error::InvalidInput("INV-11: event sequence regressed".into()))?;
+        if candidate.retain_events {
+            if candidate.events.len()!=new_count as usize ||
+                candidate.events.iter().enumerate().any(|(i,event)|event.sequence as u64!=before_count as u64+i as u64+1) ||
+                candidate.events.windows(2).any(|w|w[0].sim_time_ms>w[1].sim_time_ms) ||
+                self.events.last().zip(candidate.events.first()).is_some_and(|(old,new)|old.sim_time_ms>new.sim_time_ms) {
+                return Err(V4Error::InvalidInput("INV-11: invalid event-local journal".into()));
+            }
+        } else if !candidate.events.is_empty(){
+            return Err(V4Error::InvalidInput("INV-11: unexpected FastBatch journal".into()));
+        }
+        let mut history=std::mem::take(&mut self.events);
+        history.append(&mut candidate.events);
+        candidate.events=history;
+        *self=candidate;
+        Ok(())
+    }
+
+    fn step_one_des_event_checked(&mut self, auto_advance_breaks: bool) -> Result<(), V4Error> {
         let before=crate::v4::transition::goal_counters(&self.state);
         let before_ms=self.sim_time_ms();
         let before_events=self.event_count;
