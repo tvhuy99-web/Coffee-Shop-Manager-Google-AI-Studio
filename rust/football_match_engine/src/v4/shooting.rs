@@ -700,7 +700,39 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 },
             });
 
-            // Kinematic race to the loose rebound (NO player teleportation).
+            // Experimental shots are single-flight transactions. A save
+            // cannot recursively resolve a second shot from launch-state
+            // coordinates or publish a second shot's contact as this one's.
+            // Keep the legacy parry location as an explicit provisional
+            // loose-ball spawn until goalkeeper/deflection physics lands.
+            if experimental {
+                state.ball.pos=reb_pos;
+                state.ball.vel=Vec3::default();
+                state.ball.control=BallControlState::Loose;
+                state.ball.owner_side=None;
+                state.ball.owner_player_id=None;
+                state.ball.last_touch_side=Some(def_side);
+                state.ball.last_touch_player_id=Some(gk_id);
+                return DesShotOutcome {
+                    trajectory:shot_traj.clone(),
+                    planned_flight_ms:shot_flight_ms,
+                    outcome:BallPlayOutcome {
+                        next_side:att_side,
+                        // Placeholder, never treated as a controlled owner.
+                        next_carrier_idx:shooter_idx,
+                        stoppage_seconds:0,
+                        events,
+                    },
+                    won_corner:false,
+                    flight_ms:shot_flight_ms,
+                    dead_ball_kind:None,
+                    restart_spot:None,
+                    early_interaction:ShotContactResolution::None,
+                };
+            }
+
+            // Legacy-only combined rebound path: preserve its RNG, counters
+            // and timing exactly for production golden parity.
             let att_follow = nearest_box_player(state, att_side, reb_pos.xy());
             let def_follow = nearest_box_player(state, def_side, reb_pos.xy());
 
@@ -763,7 +795,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 follow.flight_ms = shot_flight_ms
                     .saturating_add(rebound_chase_ms)
                     .saturating_add(follow.flight_ms);
-                return follow;
+                return follow.map_contact(|hit|hit.map_or(ShotContactResolution::None,ShotContactResolution::LegacyHit));
             }
 
             // Defender clears / collects the loose rebound after realistic movement.

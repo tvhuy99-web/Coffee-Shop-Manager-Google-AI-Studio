@@ -401,6 +401,25 @@ impl MatchSessionV4 {
                 EventMetadataV4 { cause: Some(cause.into()), ..EventMetadataV4::default() });
             return self.start_pass_recovery(origin_side, offside, cause);
         }
+        // A parried experimental shot ends at the save. Only then, from
+        // live committed positions, schedule the separate loose-ball race.
+        // The save's counter delta and events are committed exactly once.
+        if self.uses_locomotion_experiment() && matches!(&flight.action,FlightActionV4::Shot{..})
+            && flight.ball_after.control==BallControlState::Loose {
+            let FlightActionV4::Shot{shooter_idx}=flight.action else {unreachable!()};
+            let origin_side=self.state.players[shooter_idx].side;
+            if !flight.outcome.events.iter().any(|e|e.kind==EventTypeV4::Rebound)
+                || flight.ball_after.owner_side.is_some() || flight.ball_after.owner_player_id.is_some() {
+                return Err(V4Error::InvalidInput("invalid experimental shot rebound".into()));
+            }
+            flight.counter_delta.apply(&mut self.state)?;
+            self.state.ball=flight.ball_after;
+            self.flush_play_events(flight.outcome.events,origin_side);
+            self.emit(EventTypeV4::LooseBall,HighlightTier::None,None,
+                self.state.ball.last_touch_side,self.state.ball.last_touch_player_id.clone(),None,
+                EventMetadataV4{cause:Some("SHOT_REBOUND_LOOSE".into()),..EventMetadataV4::default()});
+            return self.start_pass_recovery(origin_side,flight.offside_at_launch,"SHOT_REBOUND_LOOSE");
+        }
         flight.counter_delta.apply(&mut self.state)?;
         self.state.ball = flight.ball_after;
         match flight.action {
@@ -494,7 +513,7 @@ impl MatchSessionV4 {
         if cause=="TACKLE_CONTACT_LOOSE" {
             self.diagnostics.record_tackle_loose_recovery(side==origin_side);
         }
-        if cause=="TACKLE_CONTACT_LOOSE" && side!=origin_side {
+        if matches!(cause,"TACKLE_CONTACT_LOOSE"|"SHOT_REBOUND_LOOSE") && side!=origin_side {
             let avg_wr=self.team_avg_work_rate(side);
             let ball=self.state.ball.pos;
             let phase_events=update_tactical_phases(&mut self.state,origin_side,side,ball,0,avg_wr);
@@ -686,6 +705,15 @@ impl MatchSessionV4 {
         };
         let delta = FlightCounterDeltaV4::between(&self.state, &resolved);
         self.state.next_highlight_sequence_id = resolved.next_highlight_sequence_id;
+        // A deliberate save does not reset Law 11. Keep the shot-launch
+        // positions of other attackers for subsequent rebound involvement.
+        let offside_at_launch=if experimental && resolved.ball.control==BallControlState::Loose {
+            let shooter_pos=self.state.players[shooter_idx].pos;
+            self.state.players.iter().enumerate().filter(|(i,p)|*i!=shooter_idx
+                && p.on_pitch && !p.sent_off && p.side==side
+                && is_receiver_offside(&self.state,side,shooter_pos,p.pos))
+                .map(|(_,p)|p.player_id.clone()).collect()
+        } else {Vec::new()};
         let flight = PendingFlightSnapshotV4 {
             trajectory: shot.trajectory,
             planned_arrival_ms: now.saturating_add(shot.planned_flight_ms.max(1)),
@@ -694,7 +722,7 @@ impl MatchSessionV4 {
             outcome: shot.outcome, ball_after: resolved.ball, counter_delta: delta,
             won_corner: shot.won_corner, early_interaction,
             pass_contact_motion: block_motion,
-            offside_at_launch: Vec::new(),
+            offside_at_launch,
         };
         let payload = DesEventPayload::ShotArrival { shooter_id: self.state.players[shooter_idx].player_id.clone(), side,
             target_y_mm: 34_000, target_z_mm: 1_100 };
