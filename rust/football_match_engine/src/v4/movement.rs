@@ -958,6 +958,26 @@ mod b12_experimental_workload_tests {
     }
 
     #[test]
+    fn b12_exp7_keeper_facing_is_independent_of_guard_movement() {
+        let (_, mut state) = fixture();
+        let idx = state.players.iter().position(|p| p.is_goalkeeper && p.on_pitch).unwrap();
+        let attrs = *player_attrs(&state, &state.players[idx]);
+        let p = &mut state.players[idx];
+        p.pos = Vec2::new(5.0, 34.0);
+        p.vel = Vec2::default();
+        p.facing_rad = 0.0;
+        let start = p.pos;
+        let (bound, load) = integrate_experimental_actor_with_facing(
+            p, &attrs, Vec2::new(5.0, 42.0), Some(3.0), Some(0.0), 500).unwrap();
+        assert!(p.pos.y > start.y && p.vel.y > 0.0);
+        assert!((p.pos.x-start.x).abs() < 0.0001);
+        assert!(p.facing_rad.abs() < 0.0001);
+        assert!(p.last_moved_m > 0.0 && p.last_moved_m <= bound);
+        assert_eq!(load.high_entries, 0);
+        assert_eq!(load.sprint_entries, 0);
+    }
+
+    #[test]
     fn b12_workload_consumes_committed_prefix_once() {
         let cap=MovementCapability{max_speed_mps:8.0,acceleration_mps2:4.0,
             braking_mps2:5.0,lateral_mps2:3.0,body_turn_radps:3.0};

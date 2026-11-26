@@ -36,6 +36,7 @@ jobs:
           cargo test --release --locked -p match_physics --lib b12_goalkeeper_contact_respects_box_reaction_and_momentum -- --nocapture
           cargo test --release --locked -p match_physics --lib b12_acceleration_filter_preserves_direct_contact_results -- --nocapture
           cargo test --release --locked --lib b12_exp7_keeper_guard_geometry_is_mirrored_and_goal_side -- --nocapture
+          cargo test --release --locked --lib b12_exp7_keeper_facing_is_independent_of_guard_movement -- --nocapture
       - name: Replay eight previous exp5 and exp5r1 failures
         run: |
           set -euo pipefail

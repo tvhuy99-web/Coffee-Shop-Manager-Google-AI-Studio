@@ -1487,7 +1487,9 @@ mod locomotion_full_match_experiment {
         let b = run(full,true);
         assert_eq!(a["ok"],true,"{a}");
         assert_eq!(b["ok"],true,"{b}");
-        for key in ["fingerprint","events","time_ms","home_goals","away_goals","players"] {
+        for key in ["fingerprint","events","time_ms","home_goals","away_goals","players",
+            "shot_probe_on_target","shot_probe_no_reach","shot_probe_reachable_goal",
+            "shot_probe_keeper_segment_m","shot_probe_keeper_depth_m","shot_probe_keeper_speed_mps"] {
             assert_eq!(a[key],b[key],"mismatch {key}");
         }
     }
