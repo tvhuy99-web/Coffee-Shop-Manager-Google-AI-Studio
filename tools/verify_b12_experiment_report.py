@@ -79,10 +79,20 @@ def main(directory):
                     "keeper probe counts exceed observed on-target launches")
             for field in FIELDS:
                 old, new = number(a[field], field), number(b[field], field)
+                if field.startswith("shot_probe_"):
+                    require(old == 0, f"legacy probe unexpectedly measured: {field}")
                 for group in ("all", cohort):
                     cohorts[group]["legacy_" + field].append(old)
                     cohorts[group]["experiment_" + field].append(new)
                     cohorts[group]["delta_" + field].append(new - old)
+            # Total goals must be paired before calculating quantiles; summing
+            # per-team medians/percentiles would not give the match distribution.
+            old_goals = a["home_goals"] + a["away_goals"]
+            new_goals = b["home_goals"] + b["away_goals"]
+            for group in ("all", cohort):
+                cohorts[group]["legacy_total_goals"].append(old_goals)
+                cohorts[group]["experiment_total_goals"].append(new_goals)
+                cohorts[group]["delta_total_goals"].append(new_goals - old_goals)
             ap, bp = {p["id"]: p for p in a["players"]}, {p["id"]: p for p in b["players"]}
             require(len(ap) == len(bp) == 22 and ap.keys() == bp.keys(), "roster mismatch")
             for pid in ap:

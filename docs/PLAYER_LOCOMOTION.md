@@ -191,3 +191,7 @@ Runs 45815966311 and 45815966365 failed during Rust test compilation: the enlarg
 ### Exp7r2 — test fixture scope repair
 
 Runs 45817366257 and 45817366154 passed macro expansion but failed test compilation (E0425): the keeper-facing regression called a private fixture in a sibling test module. Construct the same existing test input and MatchStateV4 directly inside the regression, keeping every assertion. No behavior change. Both prior failed runs have no paired evidence. Do not mark Exp7 accepted until the corrected preflight, population, and legacy gates pass.
+
+### Exp7r2 — evidence validator regression coverage
+
+Preflight now runs three Python unit tests of the report validator using temporary synthetic fixtures only: pooled rate/total-goal distribution arithmetic, impossible launch-probe counts, and illegal legacy probe measurements. These fixtures are not match evidence and never enter the population artifact. Add per-match total-goal distributions and paired deltas (not sums of marginal percentiles), and reject nonzero legacy-only probe values. Existing 1000 actual paired matches, Rust checks, golden references and all acceptance gates remain required. No change to Exp7 simulation or experimental identity.

@@ -7,6 +7,7 @@ on:
     paths:
       - 'rust/**'
       - 'tools/verify_b12_experiment_report.py'
+      - 'tools/test_verify_b12_experiment_report.py'
       - '.github/workflows/b12-locomotion-experiment.yml'
   workflow_dispatch:
 
@@ -25,6 +26,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Report validator unit tests (synthetic fixtures only)
+        run: python3 -m unittest discover -s tools -p test_verify_b12_experiment_report.py -v
       - name: Focused atomic-contact and checkpoint regressions
         run: |
           set -euo pipefail
