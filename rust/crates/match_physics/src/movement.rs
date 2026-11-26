@@ -160,6 +160,14 @@ pub struct ReachHit {
     pub motion: MotionResult,
 }
 
+/// Physical reach at a common integer timestamp. This is not ball control.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BallReachHit {
+    pub elapsed_ms: i64,
+    pub ball_position: match_contracts::spatial::Vec3,
+    pub motion: MotionResult,
+}
+
 /// Immutable snapshot for both prediction and execution. Sampling at an absolute
 /// elapsed time never replans, consumes RNG or depends on previous queries.
 /// Not yet wired to production or serialized in checkpoints.
@@ -296,6 +304,60 @@ impl MotionPlan {
             let motion = self.sample_at(elapsed_ms)?;
             Ok(ReachHit { elapsed_ms, motion })
         }).transpose()
+    }
+
+    /// Search the immutable player path against a moving ball. The caller
+    /// selects the intercept intent before planning. A known boundary time
+    /// is exclusive; no contact at or after it. Millisecond samples are
+    /// local to the query and do not advance the world.
+    pub fn first_ball_reach(
+        &self, ball: &crate::BallTrajectory, started_at_ms: i64,
+        horizon_ms: i64, reach_m: f32, playable_height_m: f32,
+        boundary_at_ms: Option<i64>,
+    ) -> Result<Option<BallReachHit>, MotionError> {
+        use match_contracts::units::is_finite_vec3;
+        if !reach_m.is_finite() || reach_m < 0.0
+            || !playable_height_m.is_finite() || playable_height_m < 0.0
+            || !is_finite_vec3(ball.start_pos) || !is_finite_vec3(ball.initial_vel)
+            || !ball.gravity_z.is_finite() || ball.gravity_z < 0.0
+            || !ball.drag.is_finite() || ball.drag < 0.0 {
+            return Err(MotionError::InvalidReach);
+        }
+        if !(0..=MAX_MOTION_HORIZON_MS).contains(&horizon_ms)
+            || started_at_ms < 0 || started_at_ms < ball.start_time_ms
+            || started_at_ms.checked_add(horizon_ms).is_none() {
+            return Err(MotionError::InvalidHorizon);
+        }
+        let end = if let Some(boundary) = boundary_at_ms {
+            if boundary <= started_at_ms { return Ok(None); }
+            horizon_ms.min(boundary - started_at_ms - 1)
+        } else { horizon_ms };
+        let mut hit = None;
+        let mut invalid = false;
+        let mut inspect = |at: i64, p: D2| {
+            let ball_pos = ball.position_at_ms(started_at_ms + at);
+            if !is_finite_vec3(ball_pos) { invalid = true; return true; }
+            if ball_pos.z <= playable_height_m
+                && D2::from_vec(p.to_vec()).sub(D2::from_vec(ball_pos.xy())).norm() <= reach_m as f64 {
+                hit = Some((at, ball_pos));
+                return true;
+            }
+            false
+        };
+        if !inspect(0, D2::from_vec(self.initial.position)) {
+            self.walk(end, |at, span, p, v, dv| {
+                for ms in 1..=span {
+                    let f = ms as f64 / span as f64;
+                    let pos = p.add(v.add(dv.scale(0.5 * f)).scale(ms as f64 / 1000.0));
+                    if inspect(at + ms, pos) { return true; }
+                }
+                false
+            })?;
+        }
+        if invalid { return Err(MotionError::NonFiniteResult); }
+        hit.map(|(elapsed_ms, ball_position)| Ok(BallReachHit {
+            elapsed_ms, ball_position, motion: self.sample_at(elapsed_ms)?,
+        })).transpose()
     }
 
     fn walk(&self, elapsed_ms: i64, mut visit: impl FnMut(i64, i64, D2, D2, D2) -> bool)
@@ -528,6 +590,27 @@ mod solver_tests {
         let hit=coast.first_reach(Vec2::new(40.2,34.0),0.01,50).unwrap().unwrap();
         assert!((23..=26).contains(&hit.elapsed_ms));
         assert_eq!(hit.motion,coast.sample_at(hit.elapsed_ms).unwrap());
+    }
+
+    #[test]
+    fn b12_moving_ball_reach_matches_committed_path_and_boundary() {
+        use match_contracts::spatial::Vec3;
+        let p = plan(initial(0.0, 0.0), intent(60.0, 34.0, 1.0));
+        let ball = crate::BallTrajectory { start_time_ms: 100, start_pos: Vec3::ground(50.0,34.0),
+            initial_vel: Vec3::new(-3.0,0.0,0.0), gravity_z: 9.81, drag: 0.0,
+            is_shot: false, is_carrier_dribble: false };
+        let hit = p.first_ball_reach(&ball,100,3000,0.5,1.2,None).unwrap().unwrap();
+        assert!(hit.elapsed_ms > 0);
+        assert_eq!(hit.motion,p.sample_at(hit.elapsed_ms).unwrap());
+        assert_eq!(hit.ball_position,ball.position_at_ms(100+hit.elapsed_ms));
+        assert!(hit.motion.state.position.distance(hit.ball_position.xy()) <= 0.50001);
+        let prior = p.sample_at(hit.elapsed_ms-1).unwrap();
+        assert!(prior.state.position.distance(ball.position_at_ms(99+hit.elapsed_ms).xy()) > 0.5);
+        assert!(p.first_ball_reach(&ball,100,3000,0.5,1.2,Some(100+hit.elapsed_ms)).unwrap().is_none());
+        let airborne = crate::BallTrajectory { start_pos: Vec3::new(40.0,34.0,4.0),
+            initial_vel: Vec3::default(), gravity_z: 0.0, ..ball };
+        assert!(p.first_ball_reach(&airborne,100,1000,1.0,1.2,None).unwrap().is_none());
+        assert_eq!(p.first_ball_reach(&ball,99,1000,1.0,1.2,None),Err(MotionError::InvalidHorizon));
     }
 
     #[test]
