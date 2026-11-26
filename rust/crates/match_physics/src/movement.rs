@@ -174,6 +174,7 @@ pub struct BallReachHit {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpeedExposure {
     pub above_threshold_s: f32,
+    pub above_threshold_distance_m: f32,
     pub entries: u32,
 }
 
@@ -198,6 +199,62 @@ impl D2 {
     fn scale(self, k: f64) -> Self { Self(self.0 * k, self.1 * k) }
     fn dot(self, other: Self) -> f64 { self.0 * other.0 + self.1 * other.1 }
     fn norm(self) -> f64 { self.0.hypot(self.1) }
+}
+
+#[derive(Default)]
+struct ExposureAccumulator {
+    seconds: f64,
+    distance: f64,
+    entries: u32,
+}
+
+impl ExposureAccumulator {
+    fn add(&mut self, span: i64, v: D2, dv: D2, threshold: f32) {
+        let threshold_sq = (threshold as f64).powi(2);
+        let a = dv.dot(dv);
+        let b = 2.0*v.dot(dv);
+        let c = v.dot(v)-threshold_sq;
+        let end = v.add(dv);
+        let end_above = end.dot(end)>threshold_sq;
+        let dt = span as f64/1000.0;
+        // Integrate the norm on the portions outside the quadratic's
+        // below-threshold interval. Quadrature uses the same segment
+        // approximation as MotionResult (not endpoint displacement).
+        let mut integrate = |lo: f64, hi: f64| {
+            if hi<=lo { return; }
+            let width=hi-lo;
+            self.seconds+=dt*width;
+            self.distance+=dt*width*(v.add(dv.scale(lo)).norm()
+                +4.0*v.add(dv.scale((lo+hi)*0.5)).norm()+v.add(dv.scale(hi)).norm())/6.0;
+        };
+        let mut below = false;
+        if a==0.0 {
+            if c>0.0 { integrate(0.0,1.0); }
+        } else {
+            let discriminant=b*b-4.0*a*c;
+            if discriminant>0.0 {
+                let root=discriminant.sqrt();
+                let lo=((-b-root)/(2.0*a)).clamp(0.0,1.0);
+                let hi=((-b+root)/(2.0*a)).clamp(0.0,1.0);
+                if hi>lo {
+                    below=true;
+                    integrate(0.0,lo);
+                    integrate(hi,1.0);
+                } else if c>0.0 || end_above {
+                    integrate(0.0,1.0);
+                }
+            } else if c>0.0 || end_above {
+                integrate(0.0,1.0);
+            }
+        }
+        // No new episode merely for a tangent touch of the threshold.
+        if end_above && (c<=0.0 || below) { self.entries+=1; }
+    }
+
+    fn finish(self) -> SpeedExposure {
+        SpeedExposure { above_threshold_s: self.seconds as f32,
+            above_threshold_distance_m: self.distance as f32, entries: self.entries }
+    }
 }
 
 fn angle_delta(from: f64, to: f64) -> f64 {
@@ -376,36 +433,28 @@ impl MotionPlan {
     pub fn speed_exposure_at(&self, elapsed_ms: i64, threshold_mps: f32)
         -> Result<SpeedExposure, MotionError>
     {
-        if !threshold_mps.is_finite() || threshold_mps <= 0.0 {
+        let (_, high, _) = self.sample_with_exposure(elapsed_ms, threshold_mps, threshold_mps)?;
+        Ok(high)
+    }
+
+    /// Sample kinematics and two speed bands in one traversal. Bands are
+    /// cumulative, so differences between samples of a committed plan
+    /// measure only the interval that was actually executed.
+    pub fn sample_with_exposure(&self, elapsed_ms: i64, high_mps: f32, sprint_mps: f32)
+        -> Result<(MotionResult, SpeedExposure, SpeedExposure), MotionError>
+    {
+        if !high_mps.is_finite() || high_mps <= 0.0
+            || !sprint_mps.is_finite() || sprint_mps < high_mps {
             return Err(MotionError::InvalidReach);
         }
-        let threshold_sq = (threshold_mps as f64).powi(2);
-        let mut above_s = 0.0_f64;
-        let mut entries = 0_u32;
-        self.walk(elapsed_ms, |_, span, _, v, dv| {
-            let a = dv.dot(dv);
-            let b = 2.0 * v.dot(dv);
-            let c = v.dot(v) - threshold_sq;
-            let end = v.add(dv);
-            let end_above = end.dot(end) > threshold_sq;
-            let below_fraction = if a == 0.0 {
-                if c <= 0.0 { 1.0 } else { 0.0 }
-            } else {
-                let discriminant = b*b - 4.0*a*c;
-                if discriminant > 0.0 {
-                    let root = discriminant.sqrt();
-                    let low = (-b-root)/(2.0*a);
-                    let high = (-b+root)/(2.0*a);
-                    (high.min(1.0)-low.max(0.0)).clamp(0.0,1.0)
-                } else { 0.0 }
-            };
-            above_s += span as f64 / 1000.0 * (1.0-below_fraction);
-            if end_above && (c <= 0.0 || below_fraction > 0.0) {
-                entries += 1;
-            }
+        let mut high = ExposureAccumulator::default();
+        let mut sprint = ExposureAccumulator::default();
+        let motion = self.walk(elapsed_ms, |_, span, _, v, dv| {
+            high.add(span, v, dv, high_mps);
+            sprint.add(span, v, dv, sprint_mps);
             false
         })?;
-        Ok(SpeedExposure { above_threshold_s: above_s as f32, entries })
+        Ok((motion, high.finish(), sprint.finish()))
     }
 
     fn walk(&self, elapsed_ms: i64, mut visit: impl FnMut(i64, i64, D2, D2, D2) -> bool)
@@ -677,6 +726,25 @@ mod solver_tests {
         assert_eq!(exposure.entries,1);
         near(exposure.above_threshold_s,1.3,1e-4);
         assert_eq!(p.speed_exposure_at(1000,0.0),Err(MotionError::InvalidReach));
+    }
+
+    #[test]
+    fn b12_speed_bands_measure_distance_and_time_on_same_motion() {
+        let p=plan(initial(0.0,0.0),intent(100.0,34.0,1.0));
+        let (motion, high, sprint)=p.sample_with_exposure(3000,4.0,7.0).unwrap();
+        assert_eq!(motion,p.sample_at(3000).unwrap());
+        near(high.above_threshold_s,2.0,1e-5);
+        near(high.above_threshold_distance_m,14.0,1e-4);
+        near(sprint.above_threshold_s,1.25,1e-5);
+        near(sprint.above_threshold_distance_m,9.875,1e-4);
+        assert_eq!((high.entries,sprint.entries),(1,1));
+        let (_,_,mid)=p.sample_with_exposure(1777,4.0,7.0).unwrap();
+        assert_eq!(mid.entries,1);
+        assert!(mid.above_threshold_distance_m<sprint.above_threshold_distance_m);
+        let coast=plan(initial(8.0,0.0),MovementIntent{reaction_ms:1000,..intent(100.0,34.0,1.0)});
+        let (_,_,e)=coast.sample_with_exposure(500,4.0,7.0).unwrap();
+        assert_eq!(e.entries,0);
+        near(e.above_threshold_distance_m,4.0,1e-5);
     }
 
     #[test]
