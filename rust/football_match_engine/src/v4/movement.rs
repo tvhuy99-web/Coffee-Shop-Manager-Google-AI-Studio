@@ -959,7 +959,11 @@ mod b12_experimental_workload_tests {
 
     #[test]
     fn b12_exp7_keeper_facing_is_independent_of_guard_movement() {
-        let (_, mut state) = fixture();
+        let input = crate::v4::tests::make_v4_input(
+            12046, crate::v4::input::SimulationMode::FullEvent,
+            crate::v4::input::RulesModeV4::Standard,
+        );
+        let mut state = MatchStateV4::from_input(&input);
         let idx = state.players.iter().position(|p| p.is_goalkeeper && p.on_pitch).unwrap();
         let attrs = *player_attrs(&state, &state.players[idx]);
         let p = &mut state.players[idx];

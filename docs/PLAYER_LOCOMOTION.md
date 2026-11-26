@@ -187,3 +187,7 @@ Remaining restart execution audit: engine/v4/set_pieces.rs execute_corner_v4 sti
 ### Exp7r1 — report compilation repair
 
 Runs 45815966311 and 45815966365 failed during Rust test compilation: the enlarged json! object in session_tests.rs exceeded the macro recursion limit. Neither run produced a valid paired population. Split the flat report into two smaller JSON objects and merge with duplicate-key rejection. No report field, experimental behavior identity, solver, RNG, golden fixture or acceptance threshold changes. Do not infer an Exp7 gameplay result from these failed runs. Re-run both workflows on the corrected commit.
+
+### Exp7r2 — test fixture scope repair
+
+Runs 45817366257 and 45817366154 passed macro expansion but failed test compilation (E0425): the keeper-facing regression called a private fixture in a sibling test module. Construct the same existing test input and MatchStateV4 directly inside the regression, keeping every assertion. No behavior change. Both prior failed runs have no paired evidence. Do not mark Exp7 accepted until the corrected preflight, population, and legacy gates pass.
