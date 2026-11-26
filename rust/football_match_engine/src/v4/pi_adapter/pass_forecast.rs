@@ -22,7 +22,7 @@ impl PassForecast {
                 // to physical execution, not the passer's perception.
                 PassReachCandidate{player_id:p.player_id.clone(),side:p.side,pos:p.pos,velocity:p.vel,
                     speed_mps:6.5f32.max(observed_speed).min(9.0),acceleration_mps2:4.0,
-                    agility:0.65,reaction_ms:220,reach_m:1.0,playable_height_m:1.2}
+                    agility:0.65,reaction_ms:220,reach_m:1.0,playable_height_m:1.2,locomotion:None}
             }).collect();
         Self{opponents,awareness:awareness.clamp(0.0,1.0)}
     }
@@ -80,7 +80,7 @@ mod tests {
     use super::*;
     fn runner(id:&str,side:TeamSideV4,pos:Vec2,vel:Vec2)->PassReachCandidate {
         PassReachCandidate{player_id:id.into(),side,pos,velocity:vel,speed_mps:6.5,
-            acceleration_mps2:4.0,agility:0.65,reaction_ms:220,reach_m:1.0,playable_height_m:1.2}
+            acceleration_mps2:4.0,agility:0.65,reaction_ms:220,reach_m:1.0,playable_height_m:1.2,locomotion:None}
     }
     #[test]
     fn pi_pass_forecast_closing_velocity_changes_risk() {

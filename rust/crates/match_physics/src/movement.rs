@@ -12,7 +12,8 @@ pub enum MotionError {
 }
 
 /// Physical limits in SI units. Initial coefficients are hypotheses, not calibration results.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MovementCapability {
     pub max_speed_mps: f32,
     pub acceleration_mps2: f32,
@@ -126,7 +127,7 @@ use match_contracts::units::is_finite_vec2;
 /// Local trajectory resolution, not a global simulation tick.
 const LOCAL_STEP_MS: i64 = 50;
 /// Technical bound per plan query. Longer world intervals need explicit replanning.
-pub const MAX_MOTION_HORIZON_MS: i64 = 60_000;
+pub const MAX_MOTION_HORIZON_MS: i64 = 120_000;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MotionState {

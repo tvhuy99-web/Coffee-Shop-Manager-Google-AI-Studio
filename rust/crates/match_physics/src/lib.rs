@@ -471,9 +471,50 @@ pub struct PassReachCandidate {
     pub reaction_ms: i64,
     pub reach_m: f32,
     pub playable_height_m: f32,
+    /// Present only for the explicit B1.2 runtime experiment. Legacy
+    /// serialized candidates and perception-only priors retain their shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locomotion: Option<ReachLocomotion>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReachLocomotion {
+    pub capability: movement::MovementCapability,
+    pub facing_rad: f32,
 }
 
 impl PassReachCandidate {
+    pub fn motion_plan(&self, target: Vec2) -> Result<Option<movement::MotionPlan>, movement::MotionError> {
+        let Some(model) = self.locomotion else { return Ok(None); };
+        if !self.speed_mps.is_finite() || self.speed_mps < 0.0 {
+            return Err(movement::MotionError::InvalidIntent);
+        }
+        model.capability.validate()?;
+        let intent = movement::MovementIntent {
+            target, intensity: (self.speed_mps / model.capability.max_speed_mps).min(1.0),
+            desired_facing_rad: None, reaction_ms: self.reaction_ms,
+        };
+        movement::MotionPlan::new(movement::MotionState {
+            position: self.pos, velocity: self.velocity, facing_rad: model.facing_rad,
+        }, intent, model.capability).map(Some)
+    }
+
+    /// The conservative upper speed bound includes existing momentum; the
+    /// requested speed may be lower (e.g. a controlled carry or braking).
+    pub fn motion_speed_bound_mps(&self) -> f32 {
+        self.locomotion.map_or(self.speed_mps, |m| {
+            self.velocity.x.hypot(self.velocity.y).max(m.capability.max_speed_mps)
+        })
+    }
+
+    fn contact_position_toward(&self, target: Vec2, elapsed_ms: i64) -> Option<Vec2> {
+        match self.motion_plan(target).ok()? {
+            Some(plan) => Some(plan.sample_at(elapsed_ms).ok()?.state.position),
+            None => Some(self.position_toward(target, elapsed_ms)),
+        }
+    }
+
     /// Approximate a player's movement towards a fixed contact point. Coast
     /// during reaction, then turn and accelerate with a bounded running speed.
     /// This same absolute-time path is used to move the selected participant
@@ -509,7 +550,11 @@ impl PassReachCandidate {
 
     fn contact_distance(&self, ball: Vec3, elapsed_ms: i64) -> Option<f32> {
         if ball.z > self.playable_height_m { return None; }
-        let residual = self.position_toward(ball.xy(), elapsed_ms).distance(ball.xy());
+        if self.locomotion.is_some() && self.pos.distance(ball.xy()) >
+            self.motion_speed_bound_mps() * match_contracts::units::ms_to_seconds_f32(elapsed_ms) + self.reach_m + 0.01 {
+            return None;
+        }
+        let residual = self.contact_position_toward(ball.xy(), elapsed_ms)?.distance(ball.xy());
         if residual <= self.reach_m { Some(residual) } else { None }
     }
 }
@@ -523,6 +568,14 @@ pub struct PassContactMotion {
 }
 
 impl PassContactMotion {
+    pub fn experimental_plan(&self) -> Result<Option<movement::MotionPlan>, movement::MotionError> {
+        self.candidate.motion_plan(self.target)
+    }
+
+    fn contact_position_at(&self, now_ms: i64) -> Option<Vec2> {
+        self.candidate.contact_position_toward(self.target, now_ms.saturating_sub(self.started_at_ms))
+    }
+
     pub fn position_at(&self, now_ms: i64) -> Vec2 {
         self.candidate.position_toward(self.target, now_ms.saturating_sub(self.started_at_ms))
     }
@@ -556,7 +609,7 @@ pub fn find_pass_contact(
     // segment at full speed, even if acceleration later rules them out.
     let nearby: Vec<_> = defenders.iter().filter(|p| {
         match_contracts::spatial::point_to_segment_distance_m(p.pos, start, destination)
-            <= p.speed_mps * horizon_s + p.reach_m + 0.01
+            <= p.motion_speed_bound_mps() * horizon_s + p.reach_m + 0.01
     }).collect();
     let contact_at = |time: i64| -> Option<PassContact> {
         // Boundary has precedence if the ball is already out.
@@ -735,7 +788,7 @@ mod pass_reach_tests {
         PassReachCandidate {
             player_id: id.into(), side, pos: Vec2::new(x, y), velocity: Vec2::default(),
             speed_mps: 8.0, acceleration_mps2: 4.0, agility: 0.65,
-            reaction_ms: 200, reach_m: 1.0, playable_height_m: 1.2,
+            reaction_ms: 200, reach_m: 1.0, playable_height_m: 1.2, locomotion: None,
         }
     }
     fn trajectory() -> BallTrajectory {
@@ -844,7 +897,8 @@ pub fn find_grounded_ball_recovery(
     for ms in (250_i64..=120_000).step_by(50) {
         let mut best: Option<(usize, f32)> = None;
         for (idx, p) in candidates.iter().enumerate() {
-            let residual = p.position_toward(spot, ms).distance(spot);
+            let Some(pos) = p.contact_position_toward(spot, ms) else { continue; };
+            let residual = pos.distance(spot);
             if residual > p.reach_m { continue; }
             if best.map_or(true, |(old_idx, d)| residual < d - 1e-4
                 || ((residual - d).abs() <= 1e-4 && p.player_id < candidates[old_idx].player_id)) {
@@ -872,7 +926,7 @@ mod contact_control_tests {
         let candidate = |id: &str, side, x| PassReachCandidate {
             player_id: id.into(), side, pos: Vec2::new(x, 34.0),
             velocity: Vec2::default(), speed_mps: 7.0, acceleration_mps2: 4.0,
-            agility: 0.65, reaction_ms: 200, reach_m: 1.0, playable_height_m: 1.2,
+            agility: 0.65, reaction_ms: 200, reach_m: 1.0, playable_height_m: 1.2, locomotion: None,
         };
         let spot = Vec2::new(50.0, 34.0);
         let mut players = vec![candidate("H", TeamSideV4::Home, 51.8),
@@ -964,7 +1018,7 @@ mod moving_ball_tests {
             initial_vel:Vec3::new(12.0,0.0,0.0),gravity_z:9.81,drag:1.6,is_shot:false,is_carrier_dribble:false };
         let p=|id:&str,side,x| PassReachCandidate {player_id:id.into(),side,pos:Vec2::new(x,34.0),
             velocity:Vec2::default(),speed_mps:7.0,acceleration_mps2:4.0,agility:0.65,
-            reaction_ms:200,reach_m:1.0,playable_height_m:1.2};
+            reaction_ms:200,reach_m:1.0,playable_height_m:1.2,locomotion:None};
         let ps=[p("D",TeamSideV4::Away,50.0),p("R",TeamSideV4::Home,54.0)];
         match find_moving_ball_recovery(&traj,&ps).unwrap() {
             LooseBallResolution::Player{candidate_idx,time_ms,ball_pos} => {
@@ -995,18 +1049,26 @@ pub fn find_carry_contact(
 )->Option<(usize,i64,PassContactMotion)> {
     let start=carrier.started_at_ms;
     let horizon=match_contracts::units::ms_to_seconds_f32((end_ms-start).max(0));
-    let end=carrier.position_at(end_ms);
-    let eligible:Vec<_>=defenders.iter().enumerate().filter(|(_,p)|
-        match_contracts::spatial::point_to_segment_distance_m(p.pos,carrier.candidate.pos,end)
-            <=p.speed_mps*horizon+p.reach_m+0.01).collect();
+    let end=carrier.contact_position_at(end_ms)?;
+    let eligible:Vec<_>=defenders.iter().enumerate().filter(|(_,p)| {
+        if carrier.candidate.locomotion.is_some() {
+            // A curved carrier path is not contained in its endpoint chord.
+            p.pos.distance(carrier.candidate.pos) <=
+                (p.motion_speed_bound_mps()+carrier.candidate.motion_speed_bound_mps())*horizon+p.reach_m+0.01
+        } else {
+            match_contracts::spatial::point_to_segment_distance_m(p.pos,carrier.candidate.pos,end)
+                <=p.motion_speed_bound_mps()*horizon+p.reach_m+0.01
+        }
+    }).collect();
     let mut now=start.saturating_add(150).min(end_ms);
     while now<=end_ms && now>start {
-        let pos=carrier.position_at(now);
+        let pos=carrier.contact_position_at(now)?;
         let elapsed=now-start;
         let mut best:Option<(usize,f32)>=None;
         for &(idx,p) in &eligible {
             if elapsed<p.reaction_ms {continue;}
-            let distance=p.position_toward(pos,elapsed).distance(pos);
+            let Some(reached)=p.contact_position_toward(pos,elapsed) else {continue;};
+            let distance=reached.distance(pos);
             if distance<=p.reach_m && best.map_or(true,|(old,d)|
                 distance<d-1e-4 || ((distance-d).abs()<=1e-4 && p.player_id<defenders[old].player_id)) {
                 best=Some((idx,distance));
@@ -1027,7 +1089,7 @@ mod carry_contact_tests {
     fn runner(id:&str,side:TeamSideV4,x:f32,y:f32)->PassReachCandidate {
         PassReachCandidate{player_id:id.into(),side,pos:Vec2::new(x,y),velocity:Vec2::default(),
             speed_mps:6.0,acceleration_mps2:4.0,agility:0.7,reaction_ms:200,
-            reach_m:1.0,playable_height_m:1.2}
+            reach_m:1.0,playable_height_m:1.2,locomotion:None}
     }
     #[test]
     fn pi_carry_contact_requires_reach_and_precedes_endpoint() {
@@ -1040,5 +1102,63 @@ mod carry_contact_tests {
         assert_eq!(idx,1);
         assert!(time>=1200 && time<2600);
         assert!(def.position_at(time).distance(motion.position_at(time))<=1.001);
+    }
+}
+
+
+#[cfg(test)]
+mod b12_contact_locomotion_tests {
+    use super::*;
+    use movement::MovementCapability;
+
+    fn candidate(x: f32, vx: f32) -> PassReachCandidate {
+        let capability = MovementCapability {
+            max_speed_mps: 8.0, acceleration_mps2: 4.0, braking_mps2: 5.0,
+            lateral_mps2: 3.0, body_turn_radps: 3.0,
+        };
+        PassReachCandidate {
+            player_id: "P".into(), side: TeamSideV4::Home,
+            pos: Vec2::new(x,34.0), velocity: Vec2::new(vx,0.0),
+            speed_mps: 8.0, acceleration_mps2: 4.0, agility: 0.5,
+            reaction_ms: 200, reach_m: 1.0, playable_height_m: 1.2,
+            locomotion: Some(ReachLocomotion { capability, facing_rad: 0.0 }),
+        }
+    }
+
+    #[test]
+    fn b12_contact_path_starts_outside_without_teleport() {
+        let p = candidate(-0.5, 2.0);
+        let target = Vec2::new(8.0,34.0);
+        // Legacy clamps the starting position; the new path must preserve it.
+        assert!(p.position_toward(target,0).distance(p.pos)>0.49);
+        let plan = p.motion_plan(target).unwrap().unwrap();
+        assert_eq!(plan.sample_at(0).unwrap().state.position,p.pos);
+        let at = p.contact_position_toward(target,1).unwrap();
+        assert!(at.distance(p.pos)<0.0021);
+        assert_eq!(at,plan.sample_at(1).unwrap().state.position);
+        assert!(at.x<0.0);
+    }
+
+    #[test]
+    fn b12_contact_race_commits_the_same_path_and_momentum() {
+        let mut p = candidate(40.0, -4.0);
+        p.reaction_ms = 0;
+        let ball = BallTrajectory {
+            start_time_ms: 100, start_pos: Vec3::ground(48.0,34.0),
+            initial_vel: Vec3::new(-2.0,0.0,0.0), gravity_z: 9.81, drag: 0.0,
+            is_shot: false, is_carrier_dribble: false,
+        };
+        match find_pass_contact(&ball, &[p.clone()], None, 100, 4100).unwrap() {
+            PassContact::Other(hit) => {
+                assert_eq!(hit.kind,InteractionKind::PassInterception);
+                let path=PassContactMotion {candidate:p,target:hit.ball_pos.xy(),started_at_ms:100};
+                let motion=path.experimental_plan().unwrap().unwrap();
+                let sample=motion.sample_at(hit.time_ms-100).unwrap();
+                assert!(sample.state.position.distance(hit.ball_pos.xy())<=1.00001);
+                assert_eq!(sample.state.position,path.contact_position_at(hit.time_ms).unwrap());
+                assert!(motion.sample_at(1).unwrap().state.position.x<40.0);
+            }
+            _=>panic!("expected a reachable interception"),
+        }
     }
 }

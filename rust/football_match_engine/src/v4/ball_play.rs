@@ -138,6 +138,7 @@ pub(crate) fn pass_reach_candidate(
         agility,
         reaction_ms: (310.0 - ant * 120.0 - concentration * 55.0).round() as i64,
         reach_m: 0.85 + agility * 0.25,
+        locomotion: None,
         playable_height_m: if is_aerial {
             1.65 + normalize_attr(attrs.physical.jumping_reach) * 0.75
         } else { 1.20 },
