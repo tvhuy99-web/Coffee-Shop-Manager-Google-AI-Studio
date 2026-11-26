@@ -600,6 +600,16 @@ pub fn find_pass_contact(
     t_now_ms: i64,
     t_arrival_ms: i64,
 ) -> Option<PassContact> {
+    find_pass_contact_with_motion(traj,defenders,receiver,t_now_ms,t_arrival_ms).map(|(contact,_)|contact)
+}
+
+/// The winning sample owns its immutable candidate snapshot. Returning the
+/// snapshot avoids reconstructing a path from another state after resolution.
+/// Legacy contacts keep their original outcome and do not allocate a path.
+fn find_pass_contact_with_motion(
+    traj:&BallTrajectory, defenders:&[PassReachCandidate], receiver:Option<&PassReachCandidate>,
+    t_now_ms:i64,t_arrival_ms:i64,
+)->Option<(PassContact,Option<PassContactMotion>)> {
     if t_arrival_ms <= t_now_ms { return None; }
     let boundary = find_earliest_ball_interaction(traj, &[], t_now_ms, t_arrival_ms);
     let end = boundary.as_ref().map_or(t_arrival_ms, |h| h.time_ms);
@@ -612,7 +622,7 @@ pub fn find_pass_contact(
         match_contracts::spatial::point_to_segment_distance_m(p.pos, start, destination)
             <= p.motion_speed_bound_mps() * horizon_s + p.reach_m + 0.01
     }).collect();
-    let contact_at = |time: i64| -> Option<PassContact> {
+    let contact_at = |time: i64| -> Option<(PassContact,Option<PassContactMotion>)> {
         // Boundary has precedence if the ball is already out.
         if boundary.as_ref().map_or(false, |h| time >= h.time_ms) { return None; }
         let ball = traj.position_at_ms(time);
@@ -630,14 +640,22 @@ pub fn find_pass_contact(
         }
         if let Some(d) = receiving {
             if best.map_or(true, |(_, def_d)| d <= def_d) {
-                return Some(PassContact::Receiver { time_ms: time, ball_pos: ball });
+                let motion=receiver.filter(|p|p.locomotion.is_some()).map(|p|PassContactMotion {
+                    candidate:p.clone(),target:ball.xy(),started_at_ms:t_now_ms,
+                });
+                return Some((PassContact::Receiver { time_ms: time, ball_pos: ball },motion));
             }
         }
-        best.map(|(p, residual)| PassContact::Other(EarlyInteractionHit {
-            time_ms: time, kind: InteractionKind::PassInterception, ball_pos: ball,
-            defender_id: Some(p.player_id.clone()), defender_side: Some(p.side),
-            boundary: None, distance_m: residual, used_adaptive_substep: true,
-        }))
+        best.map(|(p,residual)| {
+            let motion=p.locomotion.is_some().then(||PassContactMotion {
+                candidate:p.clone(),target:ball.xy(),started_at_ms:t_now_ms,
+            });
+            (PassContact::Other(EarlyInteractionHit {
+                time_ms:time,kind:InteractionKind::PassInterception,ball_pos:ball,
+                defender_id:Some(p.player_id.clone()),defender_side:Some(p.side),
+                boundary:None,distance_m:residual,used_adaptive_substep:true,
+            }),motion)
+        })
     };
     // Bounded even with a custom timing model. Refine a detected contact in
     // the preceding bracket; do not truncate the end of long trajectories.
@@ -655,20 +673,28 @@ pub fn find_pass_contact(
         }
         prev = sample;
     }
-    boundary.map(PassContact::Other)
+    boundary.map(|hit|(PassContact::Other(hit),None))
 }
 
 /// Experimental shot-block reach uses the same moving-contact race as a
 /// pass. This returns a physical opportunity, not a block success roll.
 /// Existing ball-boundary geometry and sample resolution remain unchanged.
+#[derive(Debug,Clone)]
+pub struct ShotBlockOpportunity {
+    pub hit:EarlyInteractionHit,
+    pub motion:PassContactMotion,
+}
+
 pub fn find_locomotion_shot_block(
     traj:&BallTrajectory, defenders:&[PassReachCandidate], now_ms:i64, goal_ms:i64,
-) -> Option<EarlyInteractionHit> {
+) -> Option<ShotBlockOpportunity> {
     if !traj.is_shot {return None;}
-    match find_pass_contact(traj,defenders,None,now_ms,goal_ms) {
-        Some(PassContact::Other(mut hit)) if hit.kind==InteractionKind::PassInterception=>{
+    // This entrypoint never accepts an opportunity from the legacy path.
+    let candidates:Vec<_>=defenders.iter().filter(|p|p.locomotion.is_some()).cloned().collect();
+    match find_pass_contact_with_motion(traj,&candidates,None,now_ms,goal_ms) {
+        Some((PassContact::Other(mut hit),Some(motion))) if hit.kind==InteractionKind::PassInterception=>{
             hit.kind=InteractionKind::ShotBlocked;
-            Some(hit)
+            Some(ShotBlockOpportunity{hit,motion})
         }
         _=>None,
     }
@@ -1165,9 +1191,12 @@ mod b12_contact_locomotion_tests {
             initial_vel:Vec3::new(25.0,0.0,0.0),gravity_z:9.81,drag:0.0,
             is_shot:true,is_carrier_dribble:false,
         };
-        let hit=find_locomotion_shot_block(&shot,&[p.clone()],100,2700).unwrap();
+        let opportunity=find_locomotion_shot_block(&shot,&[p.clone()],100,2700).unwrap();
+        let hit=opportunity.hit;
         assert_eq!(hit.kind,InteractionKind::ShotBlocked);
-        let plan=p.motion_plan(hit.ball_pos.xy()).unwrap().unwrap();
+        assert_eq!(opportunity.motion.candidate,p);
+        assert_eq!(opportunity.motion.target,hit.ball_pos.xy());
+        let plan=opportunity.motion.experimental_plan().unwrap().unwrap();
         let sample=plan.sample_at(hit.time_ms-100).unwrap();
         assert!(sample.state.position.distance(hit.ball_pos.xy())<=p.reach_m+1e-5);
         assert!(hit.time_ms<2700);

@@ -35,6 +35,7 @@ pub struct DesShotOutcome {
     pub dead_ball_kind: Option<DeadBallKind>,
     pub restart_spot: Option<Vec3>,
     pub early_interaction: Option<EarlyInteractionHit>,
+    pub(crate) block_motion: Option<match_physics::PassContactMotion>,
 }
 
 /// DES-native shot resolver:
@@ -274,12 +275,16 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
 
     // 1. Live-ball block check BEFORE reaching the goal line via continuous interaction detector.
     if experimental || (!one_vs_one && !is_header) {
+        let mut selected_motion=None;
         let early_hit = if experimental {
             let defenders:Vec<_>=state.players.iter().enumerate()
                 .filter(|(_,p)|p.on_pitch && !p.sent_off && p.side==def_side && !p.is_goalkeeper)
                 .map(|(idx,_)|crate::v4::ball_play::pass_reach_candidate_for_motion(state,idx,true,true))
                 .collect();
-            match_physics::find_locomotion_shot_block(&shot_traj,&defenders,t_now_ms,t_goal_ms)
+            match_physics::find_locomotion_shot_block(&shot_traj,&defenders,t_now_ms,t_goal_ms).map(|opportunity| {
+                selected_motion=Some(opportunity.motion);
+                opportunity.hit
+            })
         } else {
             let defenders=build_defender_candidates(state,def_side,false);
             find_earliest_ball_interaction(&shot_traj,&defenders,t_now_ms,t_goal_ms)
@@ -393,6 +398,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                     dead_ball_kind: Some(DeadBallKind::GoalCelebration),
                     restart_spot: Some(Vec3::center_spot()),
                     early_interaction: hit_opt,
+                    block_motion: selected_motion,
                 };
             }
             state.ball.pos = blk_pos;
@@ -416,6 +422,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 dead_ball_kind: None,
                 restart_spot: None,
                 early_interaction: hit_opt,
+                block_motion: selected_motion,
             };
         }
     }
@@ -477,6 +484,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
             dead_ball_kind: Some(DeadBallKind::GoalKick),
             restart_spot: Some(gk_pos),
             early_interaction: None,
+            block_motion: None,
         };
     }
 
@@ -550,6 +558,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 dead_ball_kind: Some(DeadBallKind::GoalCelebration),
                 restart_spot: Some(Vec3::center_spot()),
                 early_interaction: None,
+                block_motion: None,
             }
         }
         GkShotOutcome::SavedHeld => {
@@ -624,6 +633,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 dead_ball_kind: None,
                 restart_spot: None,
                 early_interaction: None,
+                block_motion: None,
             }
         }
         GkShotOutcome::SavedParriedRebound => {
@@ -780,6 +790,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 dead_ball_kind: None,
                 restart_spot: None,
                 early_interaction: None,
+                block_motion: None,
             }
         }
         GkShotOutcome::SavedTippedCorner => {
@@ -838,6 +849,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 dead_ball_kind: Some(DeadBallKind::Corner),
                 restart_spot: Some(corner_spot),
                 early_interaction: None,
+                block_motion: None,
             }
         }
     }
