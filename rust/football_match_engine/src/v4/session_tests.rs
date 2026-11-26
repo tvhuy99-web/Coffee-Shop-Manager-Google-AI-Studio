@@ -1137,7 +1137,17 @@ mod locomotion_full_match_experiment {
                 continue;
             }
             if let Err(err) = session.step_one_des_event(true) {
-                return json!({"ok":false,"time_ms":session.sim_time_ms(),"error":format!("{err:?}")});
+                let outside: Vec<_> = session.state.players.iter().filter(|p| p.on_pitch && !p.sent_off &&
+                    (p.pos.x<0.0 || p.pos.x>PITCH_LENGTH_M || p.pos.y<0.0 ||
+                        p.pos.y>match_contracts::spatial::PITCH_WIDTH_M))
+                    .map(|p|json!({"id":p.player_id,"pos":p.pos,"vel":p.vel})).collect();
+                return json!({"ok":false,"time_ms":session.sim_time_ms(),"error":format!("{err:?}"),
+                    "next_event_ms":session.scheduler.peek_next_valid_time_ms(),
+                    "ball_control":session.state.ball.control,"ball_position":session.state.ball.pos,
+                    "pending_flight":session.pending_flight.as_ref().map(|f| &f.pass_contact_motion),
+                    "pending_carry":session.pending_carry.as_ref().map(|c| &c.motion),
+                    "pending_preparation":session.pending_decision.as_ref().map(|d| &d.preparation_motion),
+                    "outside_players":outside});
             }
             session.completed_beats += 1;
             if session.completed_beats > 250_000 {
@@ -1178,6 +1188,23 @@ mod locomotion_full_match_experiment {
         for key in ["fingerprint","events","time_ms","home_goals","away_goals","players"] {
             assert_eq!(a[key],b[key],"mismatch {key}");
         }
+    }
+
+    #[test]
+    #[ignore = "full matches reproducing exp1 failures"]
+    fn b12_exp2_previous_failure_regressions() {
+        // One recorded exp1 failure from each cohort, identical fixture and seed.
+        let mut failures = Vec::new();
+        for seed in [167985_i64,397288,183799,191706] {
+            let index=((seed-104729)/7907) as usize;
+            let (input,cohort)=fixture(index,SimulationMode::FastBatch);
+            assert_eq!(input.seed,seed);
+            let report=run(input,true);
+            if report["ok"] != true {
+                failures.push(json!({"seed":seed,"cohort":cohort,"failure":report}));
+            }
+        }
+        assert!(failures.is_empty(),"exp2 regression failures: {failures:?}");
     }
 
     #[test]

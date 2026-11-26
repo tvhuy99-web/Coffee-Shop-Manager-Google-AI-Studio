@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
 
-BEHAVIOR = "b1.2-hybrid-tactical-locomotion-exp1"
+BEHAVIOR = "b1.2-contact-locomotion-exp2"
 COHORTS = ["reference", "balanced", "strong_away", "high_press"]
 FIELDS = ["home_goals", "away_goals", "shots", "passes", "completed_passes",
           "fouls", "live_ms", "dead_ms", "events", "wall_ms"]
@@ -94,8 +94,8 @@ def main(directory):
         "failure_rows": failures,
         "cohort_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in cohorts.items()},
         "role_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in roles.items()},
-        "production_acceptance": "BLOCKED: committed contact paths and full calibration remain legacy/incomplete",
-        "notes": ["Hybrid experiment uses real DES runtime, not a shadow interval.",
+        "production_acceptance": "BLOCKED: remaining execution paths, rule boundaries, sprint accounting and tracking calibration incomplete",
+        "notes": ["Exp2 uses shared locomotion for reserved pass/carry/recovery/preparation paths; remaining execution paths and perception are legacy.",
                   "Distributions are conditional on successful pairs; failures are retained.",
                   "Sprint counters remain legacy interval counters, not sprint episodes.",
                   "No outcome target or threshold is used to tune gameplay."],

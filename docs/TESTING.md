@@ -75,3 +75,6 @@ L1 chạy hai lệnh tương đương và lưu artifact raw/summary. 1.000 full 
 ### B1.2 hybrid full-match experiment
 
 Workflow riêng `B1.2 experimental locomotion evidence` chạy 1.000 cặp full matches, shard 0..3 mỗi shard 250. Test-only exp1 có identity riêng, release không chọn được và không restore checkpoint exp1. `tools/verify_b12_experiment_report.py evidence` tổng hợp đủ shard, lưu lỗi và paired distributions; không thay L0–L4 hoặc gate production. Cặp thất bại vẫn xuất raw artifact. Cross-mode exp1 chạy riêng trên shard 0; checkpoint resume trong L1. Phạm vi hybrid và giới hạn xem PLAYER_LOCOMOTION.
+
+
+Exp2 supersedes exp1 for the full-match experiment; same seed population and separate behavior ID. The workflow additionally replays four known exp1 failure seeds. All failure rows remain mandatory evidence. No change to required golden reference or acceptance thresholds.

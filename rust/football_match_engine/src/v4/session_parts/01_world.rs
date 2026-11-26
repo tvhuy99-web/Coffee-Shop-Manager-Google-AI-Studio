@@ -34,7 +34,7 @@ impl MatchSessionV4 {
                     crate::v4::movement::player_max_speed_mps(crate::v4::movement::player_attrs(&self.state,p),p)*dt_sec
                 } else {0.0}
             }).collect();
-            // The experiment reserves every legacy committed path before
+            // The experiment reserves every committed path before
             // integrating other actors. No preliminary displacement for those actors.
             let reserved: Vec<bool> = if experimental {
                 self.state.players.iter().map(|p| {

@@ -37,6 +37,12 @@ jobs:
             cd rust/football_match_engine
             B12_EXPERIMENT_SHARD=${{ matrix.shard }} B12_EXPERIMENT_COUNT=250 B12_EXPERIMENT_REPORT_PATH="$GITHUB_WORKSPACE/evidence/b12-exp-${{ matrix.shard }}.json" cargo test --release --locked --lib b12_experiment_paired_report -- --ignored --nocapture
           ) 2>&1 | tee evidence/b12-exp-${{ matrix.shard }}.log
+      - name: Replay recorded exp1 failure seeds
+        if: always() && matrix.shard == 0
+        run: |
+          set -euo pipefail
+          cd rust/football_match_engine
+          cargo test --release --locked --lib b12_exp2_previous_failure_regressions -- --ignored --nocapture
       - name: Experimental cross-mode consistency
         if: always() && matrix.shard == 0
         run: |
