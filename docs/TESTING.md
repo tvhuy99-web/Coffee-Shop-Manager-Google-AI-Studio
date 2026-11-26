@@ -81,3 +81,6 @@ Exp2 supersedes exp1 for the full-match experiment; same seed population and sep
 
 
 Exp3 changes the test-only behavior ID to `b1.2-measured-workload-exp3`, retaining all paired seeds and strict failure gates. Reports distinguish legacy interval counters from threshold-entry counters; no paired delta between non-equivalent counters. Measured workload and tactical speed requests have independent Rust tests; paired exp3 combines both hypotheses.
+
+
+Exp4 changes test-only behavior ID to `b1.2-observed-pass-forecast-exp4`, retains Exp3 physical workload and pace policy, adds isolated observed-motion pass forecast tests and reports existing pass diagnostics per pair. Same 1000 paired seeds and unchanged production L0–L4; report still explicitly blocks production. Legacy and experimental forecasts do not share hidden capabilities.

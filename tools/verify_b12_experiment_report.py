@@ -7,10 +7,13 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
 
-BEHAVIOR = "b1.2-measured-workload-exp3"
+BEHAVIOR = "b1.2-observed-pass-forecast-exp4"
 COHORTS = ["reference", "balanced", "strong_away", "high_press"]
 FIELDS = ["home_goals", "away_goals", "shots", "passes", "completed_passes",
-          "fouls", "live_ms", "dead_ms", "events", "wall_ms"]
+          "fouls", "live_ms", "dead_ms", "events", "wall_ms",
+          "pass_receiver_unreached", "pass_execution_errors", "pass_intercepted",
+          "pass_out_of_play", "first_touch_errors", "pass_contacts_loose",
+          "pass_risk_pairs", "pass_risk_initial_sum", "pass_risk_release_sum", "reaim_choices"]
 
 
 def require(condition, detail):
@@ -98,10 +101,11 @@ def main(directory):
         "failure_rows": failures,
         "cohort_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in cohorts.items()},
         "role_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in roles.items()},
-        "production_acceptance": "BLOCKED: remaining execution paths, rule boundaries, perception, sprint episode definition and tracking calibration incomplete",
-        "notes": ["Exp3 adds role/distance speed requests and measured motion workload to Exp2 paths; remaining execution paths and perception are legacy.",
+        "production_acceptance": "BLOCKED: remaining execution paths, rule boundaries, non-pass perception, sprint episode definition, performance and tracking calibration incomplete",
+        "notes": ["Exp4 changes pass perception only relative to Exp3: observed-motion priors and receiver feasibility, without revealing authoritative capabilities or sampled kick error.",
                   "Distributions are conditional on successful pairs; failures are retained.",
                   "Legacy interval counters and experiment threshold crossing counts are reported separately; neither is a validated sprint episode metric.",
+                  "Pass diagnostic counters retain their existing definitions; not disjoint causes and not forced to sum to pass attempts.",
                   "No outcome target or threshold is used to tune gameplay."],
     }
     (directory / "b12-experiment-summary.json").write_text(

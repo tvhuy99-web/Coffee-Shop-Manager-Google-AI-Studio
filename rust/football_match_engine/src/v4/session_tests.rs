@@ -1162,8 +1162,19 @@ mod locomotion_full_match_experiment {
             "anaerobic":p.fatigue.anaerobic,"sprint_counter":p.fatigue.sprint_count,
             "high_intensity_counter":p.fatigue.high_intensity_actions,
         })).collect();
+        let diag=result.diagnostics.as_ref().expect("paired result must have diagnostics");
         json!({
             "ok":true,"behavior_id":result.engine_version,"wall_ms":start.elapsed().as_secs_f64()*1000.0,
+            "pass_receiver_unreached":diag.home.pass_receiver_unreached+diag.away.pass_receiver_unreached,
+            "pass_execution_errors":diag.home.pass_execution_errors+diag.away.pass_execution_errors,
+            "pass_intercepted":diag.home.turnovers.pass_intercepted+diag.away.turnovers.pass_intercepted,
+            "pass_out_of_play":diag.home.turnovers.pass_out_of_play+diag.away.turnovers.pass_out_of_play,
+            "first_touch_errors":diag.home.turnovers.first_touch_error+diag.away.turnovers.first_touch_error,
+            "pass_contacts_loose":diag.home.pass_contacts_loose+diag.away.pass_contacts_loose,
+            "pass_risk_pairs":diag.des.pass_risk_pairs,
+            "pass_risk_initial_sum":diag.des.pass_risk_initial_sum,
+            "pass_risk_release_sum":diag.des.pass_risk_release_sum,
+            "reaim_choices":diag.des.reaim_choices,
             "counter_semantics":if experiment {"upward_speed_crossings_4_2_and_7_mps"} else {"legacy_interval_counts"},
             "fingerprint":result.event_timeline_fingerprint,"events":result.event_count,
             "time_ms":session.sim_time_ms(),"live_ms":session.state.des_clock.ball_in_play_ms,
