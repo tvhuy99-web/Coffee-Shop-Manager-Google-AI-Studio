@@ -57,3 +57,7 @@ L5: model/OS/ABI/RAM, APK hash, voice, mode/rate; 1.0x–3.0x, render/thread sta
 ## Quyết định nghiệm thu
 
 PASS khi đúng commit, mọi job bắt buộc thành công và bằng chứng phù hợp. QUEUED/RUNNING, CANCELLED, SKIPPED hoặc thiếu log không phải PASS. Nếu CI thất bại, giữ nguyên gate, xác định lỗi nguồn hay môi trường rồi sửa nhỏ và chạy lại. Không công bố production release chỉ vì có Debug APK.
+
+### B1.1 gate
+
+`(cd rust && cargo test --workspace --locked --all-targets b11_ -- --nocapture)` chạy riêng các test không gian, số học, clock, scheduler và invariant mới. Cổng đầy đủ vẫn là workflow L0–L4, không thay bằng lệnh lọc. Xem [WORLD_CONTRACTS](WORLD_CONTRACTS.md#b116--nghiệm-thu) cho scope, giới hạn và rollback; chỉ nghiệm thu trên run đúng candidate.

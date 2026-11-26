@@ -676,7 +676,8 @@ mod a4_atomic_api_tests {
         assert!(result.is_err());
         assert_eq!(snapshot(&s), before);
         let result = s.transact(|candidate| {
-            candidate.scheduler.advance_cursor_to(candidate.sim_time_ms() + 1)
+            let invalid_cursor = candidate.sim_time_ms() + 1;
+            candidate.scheduler.advance_cursor_to(invalid_cursor)
                 .map_err(|e| V4Error::InvalidClock(e.into()))?;
             Ok(())
         });
