@@ -721,12 +721,14 @@ fn find_pass_contact_with_motion(
 /// The current trajectory's horizontal projection is straight. Both
 /// displacement bounds are monotonic for a valid candidate; using the end
 /// of the window cannot exclude a reachable earlier integer sample.
-fn locomotion_window_may_reach(p: &PassReachCandidate, start: Vec2, end: Vec2, elapsed_ms: i64) -> bool {
+fn locomotion_displacement_bound_m(p: &PassReachCandidate, elapsed_ms: i64) -> f64 {
     let speed_bound = p.motion_speed_bound_mps() as f64 * elapsed_ms as f64 / 1000.0;
-    let bound = p.acceleration_displacement_bound_m(elapsed_ms)
-        .map_or(speed_bound, |accel| accel.min(speed_bound));
+    p.acceleration_displacement_bound_m(elapsed_ms).map_or(speed_bound, |accel| accel.min(speed_bound))
+}
+
+fn locomotion_window_may_reach(p: &PassReachCandidate, start: Vec2, end: Vec2, elapsed_ms: i64) -> bool {
     match_contracts::spatial::point_to_segment_distance_m(p.pos, start, end) as f64
-        <= bound + p.reach_m as f64 + 0.01
+        <= locomotion_displacement_bound_m(p,elapsed_ms) + p.reach_m as f64 + 0.01
 }
 
 /// Shared integer-time race for straight horizontal ball trajectories.
@@ -1288,6 +1290,9 @@ mod moving_ball_tests {
 pub fn find_carry_contact(
     carrier:&PassContactMotion, defenders:&[PassReachCandidate], end_ms:i64,
 )->Option<(usize,i64,PassContactMotion)> {
+    if carrier.candidate.locomotion.is_some() && defenders.iter().all(|p|p.locomotion.is_some()) {
+        return find_experimental_carry_contact(carrier,defenders,end_ms);
+    }
     let start=carrier.started_at_ms;
     let horizon=match_contracts::units::ms_to_seconds_f32((end_ms-start).max(0));
     let end=carrier.contact_position_at(end_ms)?;
@@ -1320,6 +1325,67 @@ pub fn find_carry_contact(
         }
         if now==end_ms {break;}
         now=now.saturating_add(50).min(end_ms);
+    }
+    None
+}
+
+/// Search the same immutable carrier path used by the world. A window's
+/// carrier can travel at most max_path_speed * window_duration from its
+/// first position, even if turning. Do not use an endpoint chord as if
+/// the path were a straight ball trajectory.
+fn find_experimental_carry_contact(
+    carrier:&PassContactMotion, defenders:&[PassReachCandidate], end_ms:i64,
+)->Option<(usize,i64,PassContactMotion)> {
+    let start=carrier.started_at_ms;
+    let horizon=end_ms.checked_sub(start)?;
+    if !(1..=movement::MAX_MOTION_HORIZON_MS).contains(&horizon) {return None;}
+    let plan=carrier.experimental_plan().ok()??;
+    let speed=plan.maximum_path_speed_mps() as f64;
+    let mut first=start.checked_add(horizon.min(150))?;
+    let nearby:Vec<_>=defenders.iter().enumerate().filter(|(_,p)|
+        p.reaction_ms>=0 && p.reach_m.is_finite() && p.reach_m>=0.0
+        && p.reaction_ms<=horizon
+        && (p.pos.distance(carrier.candidate.pos) as f64
+            <=locomotion_displacement_bound_m(p,horizon)+speed*horizon as f64/1000.0+p.reach_m as f64+0.01))
+        .map(|(idx,_)|idx).collect();
+    if nearby.is_empty() {return None;}
+    let mut possible=Vec::with_capacity(nearby.len());
+    while first<=end_ms {
+        let last=first.saturating_add(24).min(end_ms);
+        let center=plan.sample_at(first-start).ok()?.state.position;
+        let carrier_radius=speed*(last-first) as f64/1000.0;
+        possible.clear();
+        possible.extend(nearby.iter().copied().filter(|&idx| {
+            let p=&defenders[idx];
+            p.reaction_ms<=last-start && p.pos.distance(center) as f64
+                <=locomotion_displacement_bound_m(p,last-start)+carrier_radius+p.reach_m as f64+0.01
+        }));
+        if !possible.is_empty() {
+            for time in first..=last {
+                let pos=if time==first {center} else {plan.sample_at(time-start).ok()?.state.position};
+                let elapsed=time-start;
+                let mut best:Option<(usize,f32)>=None;
+                for &idx in &possible {
+                    let p=&defenders[idx];
+                    if elapsed<p.reaction_ms {continue;}
+                    // Same direct solver residual as legacy carry, without
+                    // inventing a ball-height restriction on player contact.
+                    if p.pos.distance(pos) as f64>locomotion_displacement_bound_m(p,elapsed)+p.reach_m as f64+0.01 {continue;}
+                    let Some(reached)=p.contact_position_toward(pos,elapsed) else {continue;};
+                    let d=reached.distance(pos);
+                    if d<=p.reach_m && best.is_none_or(|(old,old_d)|
+                        d<old_d-1e-4 || ((d-old_d).abs()<=1e-4 && p.player_id<defenders[old].player_id)) {
+                        best=Some((idx,d));
+                    }
+                }
+                if let Some((idx,_))=best {
+                    return Some((idx,time,PassContactMotion{
+                        candidate:defenders[idx].clone(),target:pos,started_at_ms:start}));
+                }
+            }
+        }
+        if last==end_ms {break;}
+        first=last.checked_add(1)?;
     }
     None
 }
@@ -1609,6 +1675,48 @@ mod b12_contact_locomotion_tests {
         p.playable_height_m=0.5;
         let high=BallTrajectory{start_pos:Vec3::new(40.0,34.0,5.0),gravity_z:0.0,..shot};
         assert!(find_locomotion_shot_block(&high,&[p],100,2700).is_none());
+    }
+
+    #[test]
+    fn b12_batch1_carry_window_matches_curved_path_oracle() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            let sign=if side==TeamSideV4::Home{1.0}else{-1.0};
+            let x=if side==TeamSideV4::Home{40.0}else{65.0};
+            let mut runner=candidate(x,6.0*sign);
+            runner.side=side;
+            runner.reaction_ms=0;
+            let carrier=PassContactMotion{candidate:runner.clone(),target:Vec2::new(x+20.0*sign,40.0),started_at_ms:100};
+            let near=carrier.contact_position_at(267).unwrap();
+            let mut blocker=candidate(near.x,0.0);
+            blocker.side=side.opposite();
+            blocker.pos.y=near.y;
+            blocker.speed_mps=0.0;
+            blocker.reaction_ms=0;
+            blocker.reach_m=0.01;
+            let (idx,at,witness)=find_carry_contact(&carrier,&[blocker.clone()],500).unwrap();
+            assert_eq!(idx,0);
+            assert!(at>250 && at<300);
+            assert_eq!(witness.target,carrier.contact_position_at(at).unwrap());
+            assert!(witness.contact_position_at(at).unwrap().distance(witness.target)<=blocker.reach_m);
+            for velocity in [-4.0*sign,0.0,6.0*sign] {
+                let mut c=carrier.clone();
+                c.candidate.velocity.x=velocity;
+                for y in [33.0,34.0,36.0] {
+                    let mut p=candidate(x+2.0*sign,0.0);
+                    p.pos.y=y;
+                    p.side=side.opposite();
+                    for delay in [0,180,400] {
+                        p.reaction_ms=delay;
+                        let expected=(250..=900).find(|&t| {
+                            let pos=c.contact_position_at(t).unwrap();
+                            t-100>=p.reaction_ms && p.contact_position_toward(pos,t-100)
+                                .is_some_and(|r|r.distance(pos)<=p.reach_m)
+                        });
+                        assert_eq!(find_carry_contact(&c,&[p.clone()],900).map(|(_,t,_)|t),expected);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
