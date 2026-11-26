@@ -1363,6 +1363,9 @@ mod locomotion_full_match_experiment {
         let mut session = if experiment {
             MatchSessionV4::new_locomotion_experiment(input).unwrap()
         } else { MatchSessionV4::new(input).unwrap() };
+        let mut last_probe_launch = None;
+        let (mut probe_on_target, mut probe_no_reach, mut probe_reachable_goal) = (0_u32,0_u32,0_u32);
+        let (mut probe_segment, mut probe_depth, mut probe_speed, mut probe_ms) = (0.0_f64,0.0_f64,0.0_f64,0.0_f64);
         // Advance individual atomic events for a useful first-failure clock.
         // Full time still uses the same result builder and session lifecycle.
         while !session.is_full_time() {
@@ -1385,6 +1388,38 @@ mod locomotion_full_match_experiment {
                     "pending_preparation":session.pending_decision.as_ref().map(|d| &d.preparation_motion),
                     "outside_players":outside});
             }
+            // Read-only diagnostics at the actual scheduled shot launch.
+            // Recompute reach only for goals; a committed save already owns its witness.
+            if experiment {
+                if let Some(flight) = session.pending_flight.as_ref() {
+                    if let FlightActionV4::Shot { shooter_idx } = &flight.action {
+                        let launch = flight.trajectory.start_time_ms;
+                        if last_probe_launch != Some(launch) {
+                            last_probe_launch = Some(launch);
+                            let side = session.state.players[*shooter_idx].side;
+                            let attacking = if side == TeamSideV4::Home { &flight.counter_delta.home } else { &flight.counter_delta.away };
+                            if attacking.shots_on_target > 0 {
+                                let timer = Instant::now();
+                                probe_on_target += 1;
+                                let keeper = session.state.players.iter().position(|p|p.side==side.opposite() && p.is_goalkeeper && p.on_pitch && !p.sent_off);
+                                if let Some(idx) = keeper {
+                                    let p = &session.state.players[idx];
+                                    let goal = crate::v4::spatial::attacking_goal_center(side);
+                                    probe_segment += crate::v4::spatial::point_to_segment_distance_m(p.pos,flight.trajectory.start_pos.xy(),goal) as f64;
+                                    probe_depth += (p.pos.x-goal.x).abs() as f64;
+                                    probe_speed += p.vel.x.hypot(p.vel.y) as f64;
+                                }
+                                if attacking.goals > 0 {
+                                    let reach = keeper.and_then(|idx|crate::v4::goalkeeper::shot_contact_candidate(&session.state,idx))
+                                        .and_then(|candidate|match_physics::find_locomotion_goalkeeper_contact(&flight.trajectory,&candidate,launch,flight.planned_arrival_ms));
+                                    if reach.is_some() { probe_reachable_goal += 1; } else { probe_no_reach += 1; }
+                                }
+                                probe_ms += timer.elapsed().as_secs_f64()*1000.0;
+                            }
+                        }
+                    }
+                }
+            }
             session.completed_beats += 1;
             if session.completed_beats > 250_000 {
                 return json!({"ok":false,"time_ms":session.sim_time_ms(),"error":"experiment watchdog"});
@@ -1400,7 +1435,10 @@ mod locomotion_full_match_experiment {
         })).collect();
         let diag=result.diagnostics.as_ref().expect("paired result must have diagnostics");
         json!({
-            "ok":true,"behavior_id":result.engine_version,"wall_ms":start.elapsed().as_secs_f64()*1000.0,
+            "ok":true,"behavior_id":result.engine_version,"wall_ms":(start.elapsed().as_secs_f64()*1000.0-probe_ms).max(0.0),
+            "shot_probe_on_target":probe_on_target,"shot_probe_no_reach":probe_no_reach,
+            "shot_probe_reachable_goal":probe_reachable_goal,"shot_probe_keeper_segment_m":probe_segment,
+            "shot_probe_keeper_depth_m":probe_depth,"shot_probe_keeper_speed_mps":probe_speed,"shot_probe_ms":probe_ms,
             "pass_receiver_unreached":diag.home.pass_receiver_unreached+diag.away.pass_receiver_unreached,
             "pass_execution_errors":diag.home.pass_execution_errors+diag.away.pass_execution_errors,
             "pass_intercepted":diag.home.turnovers.pass_intercepted+diag.away.turnovers.pass_intercepted,

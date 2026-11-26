@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
 
-BEHAVIOR = "b1.2-goalkeeper-contact-exp6"
+BEHAVIOR = "b1.2-keeper-guard-exp7"
 COHORTS = ["reference", "balanced", "strong_away", "high_press"]
 FIELDS = ["home_goals", "away_goals", "shots", "passes", "completed_passes",
           "fouls", "live_ms", "dead_ms", "events", "wall_ms",
@@ -17,7 +17,8 @@ FIELDS = ["home_goals", "away_goals", "shots", "passes", "completed_passes",
           "possessions", "final_third_possessions", "penalty_area_possessions",
           "possessions_with_shot", "shots_from_box", "shots_blocked", "shots_on_target",
           "shots_off_target", "shot_xg", "saves", "carry_starts", "carry_contacts",
-          "carry_turnovers", "tackle_opportunities", "tackle_commit_choices"]
+          "carry_turnovers", "tackle_opportunities", "tackle_commit_choices",
+          "shot_probe_on_target", "shot_probe_no_reach", "shot_probe_reachable_goal", "shot_probe_keeper_segment_m", "shot_probe_keeper_depth_m", "shot_probe_keeper_speed_mps", "shot_probe_ms"]
 
 
 def require(condition, detail):
@@ -74,6 +75,9 @@ def main(directory):
                 require(number(run["time_ms"], "time") > 0, "empty match")
                 require(run["live_ms"] + run["dead_ms"] == run["time_ms"], "clock mismatch")
                 require(run["completed_passes"] <= run["passes"], "pass count mismatch")
+            require(b["shot_probe_no_reach"] + b["shot_probe_reachable_goal"] <= b["shot_probe_on_target"],
+                    "keeper probe counts exceed observed on-target launches")
+            require(b["shot_probe_on_target"] <= b["shots_on_target"], "keeper probes exceed shot count")
             for field in FIELDS:
                 old, new = number(a[field], field), number(b[field], field)
                 for group in ("all", cohort):
@@ -106,7 +110,8 @@ def main(directory):
         "cohort_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in cohorts.items()},
         "role_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in roles.items()},
         "production_acceptance": "BLOCKED: remaining execution paths, rule boundaries, non-pass perception, sprint episode definition, performance and tracking calibration incomplete",
-        "notes": ["Exp6 requires a reachable keeper hand-contact witness for a save and separates held-ball distribution; other shot probability formulas remain unchanged.",
+        "notes": ["Exp7 changes defensive keeper positioning and facing, not shot or save probabilities. Probe counts are experimental open-play scheduled shot launches only; legacy probe fields are zero/not measured.",
+                  "Keeper segment/depth/speed fields are sums over probe launches, divide by total probe count; diagnostic probe time is excluded from wall_ms.",
                   "Distributions are conditional on successful pairs; failures are retained.",
                   "Legacy interval counters and experiment threshold crossing counts are reported separately; neither is a validated sprint episode metric.",
                   "Pass diagnostic counters retain their existing definitions; not disjoint causes and not forced to sum to pass attempts.",

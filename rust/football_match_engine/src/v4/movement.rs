@@ -289,6 +289,20 @@ fn experimental_tactical_speed(distance_m:f32, phase:crate::v4::state::TacticalP
     distance_m/horizon_s
 }
 
+/// Position on the line from the current ball to the own goal center.
+/// The legacy keeper's depth request remains an upper bound, but the keeper
+/// must not advance beyond the ball while defending a close-range attack.
+/// This is a positioning intent only; the solver still limits actual motion.
+fn experimental_keeper_guard_target(side: TeamSideV4, ball: Vec2, shape: Vec2) -> Vec2 {
+    let ball_depth = if side == TeamSideV4::Home { ball.x } else { PITCH_LENGTH_M - ball.x };
+    let shape_depth = if side == TeamSideV4::Home { shape.x } else { PITCH_LENGTH_M - shape.x };
+    let depth = shape_depth.max(0.0).min(ball_depth.max(0.0) * 0.45);
+    let fraction = if ball_depth > 0.0 { depth / ball_depth } else { 0.0 };
+    let center_y = PITCH_WIDTH_M * 0.5;
+    let y = center_y + (ball.y - center_y) * fraction;
+    Vec2::new(if side == TeamSideV4::Home { depth } else { PITCH_LENGTH_M - depth }, y).clamp_to_pitch()
+}
+
 /// Experimental runtime integration for actors without a reserved contact path.
 /// Called by the DES test experiment, never by the shipping session.
 pub(crate) fn advance_experimental_tactical_motion(
@@ -311,9 +325,18 @@ pub(crate) fn advance_experimental_tactical_motion(
             let attrs = *player_attrs(state,p);
             let role=defense.iter().find(|a|a.idx==idx).map(|a|a.role);
             let phase=state.team_state(p.side).phase;
-            let requested=experimental_tactical_speed(p.pos.distance(target),phase,role,p.is_goalkeeper);
-            let (bound,load) = integrate_experimental_actor(&mut state.players[idx], &attrs, target,
-                Some(requested), duration_ms)?;
+            let guarding = p.is_goalkeeper && p.side != possession_side;
+            let ball = state.ball.pos.xy();
+            let target = if guarding { experimental_keeper_guard_target(p.side, ball, target) } else { target };
+            let facing = if guarding && p.pos.distance(ball) > 0.001 {
+                Some((ball.y-p.pos.y).atan2(ball.x-p.pos.x))
+            } else { None };
+            // A keeper guarding against the ball uses the existing Cover
+            // arrival horizon, not the slower general shape horizon.
+            let movement_role = if guarding { Some(match_contracts::event_types::DefensiveRole::Cover) } else { role };
+            let requested=experimental_tactical_speed(p.pos.distance(target),phase,movement_role,p.is_goalkeeper);
+            let (bound,load) = integrate_experimental_actor_with_facing(&mut state.players[idx], &attrs, target,
+                Some(requested), facing, duration_ms)?;
             budgets[idx]=bound;
             record_experimental_motion(&mut loads[idx],load)?;
         } else {
@@ -333,10 +356,21 @@ pub(crate) fn integrate_experimental_actor(
     requested_speed: Option<f32>,
     duration_ms: i64,
 ) -> Result<(f32,ExperimentalMotionLoad), V4Error> {
+    integrate_experimental_actor_with_facing(player, attrs, target, requested_speed, None, duration_ms)
+}
+
+fn integrate_experimental_actor_with_facing(
+    player: &mut PlayerRuntimeStateV4,
+    attrs: &PlayerAttributes54,
+    target: Vec2,
+    requested_speed: Option<f32>,
+    desired_facing_rad: Option<f32>,
+    duration_ms: i64,
+) -> Result<(f32,ExperimentalMotionLoad), V4Error> {
     let cap = MovementCapability::from_attributes(&attrs.physical, player.fatigue.aerobic,
         player.fatigue.anaerobic).map_err(candidate_motion_error)?;
     let intent = MovementIntent { target, intensity: requested_speed.map_or(1.0, |v|
-        (v / cap.max_speed_mps).clamp(0.0, 1.0)), desired_facing_rad: None, reaction_ms: 0 };
+        (v / cap.max_speed_mps).clamp(0.0, 1.0)), desired_facing_rad, reaction_ms: 0 };
     let mut current = MotionState { position: player.pos, velocity: player.vel, facing_rad: player.facing_rad };
     let mut remaining = duration_ms;
     let mut distance = 0.0_f32;
@@ -903,6 +937,24 @@ mod b12_experimental_workload_tests {
         assert_eq!(experimental_tactical_speed(6.0,OutOfPossession,Some(Press),false),6.0);
         assert_eq!(experimental_tactical_speed(6.0,OutOfPossession,Some(Cover),false),3.0);
         assert_eq!(experimental_tactical_speed(6.0,DefensiveTransition,None,true),2.0);
+    }
+
+    #[test]
+    fn b12_exp7_keeper_guard_geometry_is_mirrored_and_goal_side() {
+        let shape = Vec2::new(8.0, 31.0);
+        for ball in [Vec2::new(30.0, 20.0), Vec2::new(3.0, 50.0), Vec2::new(0.0, 34.0)] {
+            let p = experimental_keeper_guard_target(TeamSideV4::Home, ball, shape);
+            let mirror = |v: Vec2| Vec2::new(PITCH_LENGTH_M-v.x,PITCH_WIDTH_M-v.y);
+            let q = experimental_keeper_guard_target(TeamSideV4::Away, mirror(ball), mirror(shape));
+            assert!(p.x >= 0.0 && p.x <= ball.x);
+            assert!(p.x <= shape.x);
+            assert!(mirror(p).distance(q) < 0.0001);
+            if ball.x > 0.0 {
+                assert!((p.y - (34.0+(ball.y-34.0)*p.x/ball.x)).abs() < 0.0001);
+            }
+        }
+        let central=experimental_keeper_guard_target(TeamSideV4::Home,Vec2::new(20.0,34.0),shape);
+        assert_eq!(central.y,34.0);
     }
 
     #[test]
