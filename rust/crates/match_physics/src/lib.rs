@@ -570,11 +570,11 @@ impl PassReachCandidate {
         Some(speed * t + 0.5 * accel * active * active)
     }
 
-    fn contact_distance(&self, ball: Vec3, elapsed_ms: i64) -> Option<f32> {
-        if ball.z > self.playable_height_m { return None; }
+    fn contact_bounds_allow(&self, ball:Vec3,elapsed_ms:i64)->bool{
+        if ball.z > self.playable_height_m { return false; }
         if self.locomotion.is_some() && self.pos.distance(ball.xy()) >
             self.motion_speed_bound_mps() * match_contracts::units::ms_to_seconds_f32(elapsed_ms) + self.reach_m + 0.01 {
-            return None;
+            return false;
         }
         if let Some(bound) = self.acceleration_displacement_bound_m(elapsed_ms) {
             let dx = ball.x as f64 - self.pos.x as f64;
@@ -582,9 +582,14 @@ impl PassReachCandidate {
             // Same 1 cm broad-phase allowance as the existing speed filter.
             // This does not relax the final contact-distance test.
             if dx.hypot(dy) > bound + self.reach_m as f64 + 0.01 {
-                return None;
+                return false;
             }
         }
+        true
+    }
+
+    fn contact_distance(&self,ball:Vec3,elapsed_ms:i64)->Option<f32>{
+        if !self.contact_bounds_allow(ball,elapsed_ms){return None;}
         let residual = self.contact_position_toward(ball.xy(), elapsed_ms)?.distance(ball.xy());
         if residual <= self.reach_m { Some(residual) } else { None }
     }
@@ -1104,15 +1109,42 @@ pub fn contact_control_probability(
 /// When a blocked ball drops at the contact point, find the first active
 /// player able to reach the grounded loose ball; no team gets priority.
 /// A later stage will extend this to rolling/airborne deflections.
+/// A stationary destination does not change the actor's motion plan at
+/// each millisecond. Walk it once, preserving the old search bounds,
+/// residual comparison, first timestamp and input-order tie policy.
+fn find_fixed_recovery_forward(candidates:&[PassReachCandidate],spot:Vec2)->Option<(usize,i64)>{
+    let horizon=movement::MAX_MOTION_HORIZON_MS;
+    let ball=Vec3::ground(spot.x,spot.y);
+    let mut best:Option<(usize,i64,f32)>=None;
+    for (idx,p) in candidates.iter().enumerate(){
+        if p.reaction_ms<0 || !p.reach_m.is_finite() || p.reach_m<0.0
+            || !locomotion_window_may_reach(p,spot,spot,horizon){continue;}
+        let Some(plan)=p.motion_plan(spot).ok().flatten() else{continue;};
+        let end=best.map_or(horizon,|(_,t,_)|t);
+        let hit=plan.first_matching_position(250,end,|time,pos|{
+            // Match the existing 25-ms window boundary and per-sample
+            // conservative filters exactly, not a new reach threshold.
+            pos.distance(spot)<=p.reach_m
+                && locomotion_window_may_reach(p,spot,spot,
+                    (250+((time-250)/25)*25+24).min(horizon))
+                && p.contact_bounds_allow(ball,time)
+        }).ok().flatten();
+        if let Some((time,pos))=hit{
+            let d=pos.distance(spot);
+            if best.is_none_or(|(old,t,old_d)|time<t || (time==t &&
+                (d<old_d-1e-4 || ((d-old_d).abs()<=1e-4 && p.player_id<candidates[old].player_id)))){
+                best=Some((idx,time,d));
+            }
+        }
+    }
+    best.map(|(idx,time,_)|(idx,time))
+}
+
 pub fn find_grounded_ball_recovery(
     candidates: &[PassReachCandidate], spot: Vec2,
 ) -> Option<(usize, i64)> {
     if !candidates.is_empty() && candidates.iter().all(|p|p.locomotion.is_some()) {
-        let ball=BallTrajectory {start_time_ms:0,start_pos:Vec3::ground(spot.x,spot.y),
-            initial_vel:Vec3::default(),gravity_z:0.0,drag:0.0,is_shot:false,is_carrier_dribble:false};
-        let refs:Vec<_>=candidates.iter().collect();
-        return scan_locomotion_contacts(&ball,&refs,0,250,movement::MAX_MOTION_HORIZON_MS,None,
-            |_,_,_,_|true).map(|(idx,time,_,_)|(idx,time));
+        return find_fixed_recovery_forward(candidates,spot);
     }
     // Allow the ball to drop and players to react before awarding possession.
     // A bounded local search, not an engine-wide simulation tick.
@@ -1735,6 +1767,32 @@ mod b12_contact_locomotion_tests {
                                 .is_some_and(|r|r.distance(pos)<=p.reach_m)
                         });
                         assert_eq!(find_carry_contact(&c,&[p.clone()],900).map(|(_,t,_)|t),expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn b12_batch3_grounded_recovery_matches_previous_window_search() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            let mirror=|x:f32|if side==TeamSideV4::Home{x}else{105.0-x};
+            let sign=if side==TeamSideV4::Home{1.0}else{-1.0};
+            let spot=Vec2::new(mirror(45.0),34.0);
+            let traj=BallTrajectory{start_time_ms:0,start_pos:Vec3::ground(spot.x,spot.y),
+                initial_vel:Vec3::default(),gravity_z:0.0,drag:0.0,is_shot:false,is_carrier_dribble:false};
+            for vx in [-4.0,0.0,6.0]{
+                for delay in [0,137,350]{
+                    for reach in [0.1,1.0,2.0]{
+                        let mut a=candidate(mirror(40.0),vx*sign);
+                        a.side=side;a.player_id="B".into();a.reaction_ms=delay;a.reach_m=reach;
+                        let mut b=a.clone();b.player_id="A".into();
+                        let mut c=a.clone();c.player_id="C".into();c.pos.y+=1.0;
+                        let players=[a,b,c];
+                        let refs:Vec<_>=players.iter().collect();
+                        let expected=scan_locomotion_contacts(&traj,&refs,0,250,movement::MAX_MOTION_HORIZON_MS,None,
+                            |_,_,_,_|true).map(|(i,t,_,_)|(i,t));
+                        assert_eq!(find_grounded_ball_recovery(&players,spot),expected);
                     }
                 }
             }

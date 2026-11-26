@@ -8,6 +8,7 @@ on:
       - 'rust/**'
       - 'tools/verify_b12_experiment_report.py'
       - 'tools/test_verify_b12_experiment_report.py'
+      - 'tools/compare_b12_performance.py'
       - '.github/workflows/b12-locomotion-experiment.yml'
   workflow_dispatch:
     inputs:
@@ -52,6 +53,7 @@ jobs:
           cargo test --release --locked --lib b12_batch1_ -- --nocapture
           cargo test --release --locked --lib b12_batch2_ -- --nocapture
           cargo test --release --locked -p match_physics --lib b12_batch2_ -- --nocapture
+          cargo test --release --locked -p match_physics --lib b12_batch3_ -- --nocapture
           cargo test --release --locked --lib b12_candidate_live_uses_same_target_policy_rng_and_terminal_velocity -- --nocapture
           cargo test --release --locked -p match_physics --lib b12_acceleration_filter_preserves_direct_contact_results -- --nocapture
           cargo test --release --locked --lib b12_exp7_keeper_guard_geometry_is_mirrored_and_goal_side -- --nocapture
@@ -85,6 +87,25 @@ jobs:
             cd rust/football_match_engine
             B12_EXPERIMENT_SHARD=${{ matrix.shard }} B12_EXPERIMENT_COUNT="$B12_PAIRS_PER_SHARD" B12_EXPERIMENT_REPORT_PATH="$GITHUB_WORKSPACE/evidence/b12-exp-${{ matrix.shard }}.json" cargo test --release --locked --lib b12_experiment_paired_report -- --ignored --nocapture
           ) 2>&1 | tee evidence/b12-exp-${{ matrix.shard }}.log
+      - name: Same-runner exact parity and timing against frozen Mốc 2
+        if: env.B12_PAIRS_PER_SHARD == '12'
+        run: |
+          set -euo pipefail
+          # Frozen source, detached worktree only (no new branch).
+          # Only compare this behavior identity; future behavior changes
+          # must establish a fresh reference instead of weakening parity.
+          if ! grep -Fq 'BEHAVIOR = "b1.2-batch2-specialist-shots"' tools/verify_b12_experiment_report.py; then
+            echo "Different behavior; frozen Mốc 2 parity not applicable"
+            exit 0
+          fi
+          ref=411f580c04f4b840a70bdd026c5d91f1c7f9fa69
+          git fetch --no-tags --depth=1 origin "$ref"
+          git worktree add --detach "$RUNNER_TEMP/b12-reference" "$ref"
+          (
+            cd "$RUNNER_TEMP/b12-reference/rust/football_match_engine"
+            B12_EXPERIMENT_SHARD=${{ matrix.shard }} B12_EXPERIMENT_COUNT=12 B12_EXPERIMENT_REPORT_PATH="$GITHUB_WORKSPACE/evidence/reference-${{ matrix.shard }}.json" cargo test --release --locked --lib b12_experiment_paired_report -- --ignored --nocapture
+          ) 2>&1 | tee evidence/reference-${{ matrix.shard }}.log
+          python3 tools/compare_b12_performance.py "evidence/reference-${{ matrix.shard }}.json" "evidence/b12-exp-${{ matrix.shard }}.json" "evidence/performance-${{ matrix.shard }}.json"
       - name: Replay recorded exp1 failure seeds
         if: always() && matrix.shard == 0
         run: |

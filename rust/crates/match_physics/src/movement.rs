@@ -329,7 +329,7 @@ impl MotionPlan {
     /// same segment rather than changing the integration step or target.
     /// Position is not clamped to pitch or target: contact and rules own boundaries.
     pub fn sample_at(&self, elapsed_ms: i64) -> Result<MotionResult, MotionError> {
-        self.walk(elapsed_ms, true, |_, _, _, _, _| false)
+        self.walk(elapsed_ms, true, |_, _, _, _, _, _, _| false)
     }
 
     /// Read a position from exactly the same controller segments without
@@ -337,7 +337,30 @@ impl MotionPlan {
     /// may sample hundreds of rejected targets; workload is charged only
     /// from the committed full motion sample.
     pub fn sample_position_at(&self, elapsed_ms: i64) -> Result<Vec2, MotionError> {
-        Ok(self.walk(elapsed_ms, false, |_, _, _, _, _| false)?.state.position)
+        Ok(self.walk(elapsed_ms, false, |_, _, _, _, _, _, _| false)?.state.position)
+    }
+
+    /// Visit integer positions of a fixed plan in one forward walk.
+    /// The partial segment arithmetic is identical to sample_position_at:
+    /// use the original unscaled delta and the same dt/full_dt fraction.
+    /// No rounded f32 state is fed back into the controller.
+    pub(crate) fn first_matching_position(&self, first_ms:i64, end_ms:i64,
+        mut matches:impl FnMut(i64,Vec2)->bool)->Result<Option<(i64,Vec2)>,MotionError>{
+        if first_ms<0 || first_ms>end_ms || end_ms>MAX_MOTION_HORIZON_MS {
+            return Err(MotionError::InvalidHorizon);
+        }
+        if first_ms==0 && matches(0,self.initial.position){return Ok(Some((0,self.initial.position)));}
+        let mut hit=None;
+        self.walk(end_ms,false,|at,span,p,v,_,full_dv,full_dt|{
+            for ms in (first_ms-at).max(1)..=span{
+                let dt=ms as f64/1000.0;
+                let dv=full_dv.scale(dt/full_dt);
+                let pos=p.add(v.add(dv.scale(0.5)).scale(dt)).to_vec();
+                if matches(at+ms,pos){hit=Some((at+ms,pos));return true;}
+            }
+            false
+        })?;
+        Ok(hit)
     }
 
     /// Search an already committed path, not a second movement model.
@@ -357,7 +380,7 @@ impl MotionPlan {
         let within = |p: D2| D2::from_vec(p.to_vec()).sub(target64).norm() <= radius;
         let mut hit = if within(D2::from_vec(self.initial.position)) { Some(0) } else { None };
         if hit.is_none() {
-            self.walk(horizon_ms, true, |at, span, p, v, dv| {
+            self.walk(horizon_ms, true, |at, span, p, v, dv, _, _| {
                 let dt = span as f64 / 1000.0;
                 let max_speed = v.norm().max(v.add(dv).norm());
                 // Broad-phase bound plus f32 position rounding allowance.
@@ -419,7 +442,7 @@ impl MotionPlan {
             false
         };
         if !inspect(0, D2::from_vec(self.initial.position)) {
-            self.walk(end, true, |at, span, p, v, dv| {
+            self.walk(end, true, |at, span, p, v, dv, _, _| {
                 for ms in 1..=span {
                     let f = ms as f64 / span as f64;
                     let pos = p.add(v.add(dv.scale(0.5 * f)).scale(ms as f64 / 1000.0));
@@ -457,7 +480,7 @@ impl MotionPlan {
         }
         let mut high = ExposureAccumulator::default();
         let mut sprint = ExposureAccumulator::default();
-        let motion = self.walk(elapsed_ms, true, |_, span, _, v, dv| {
+        let motion = self.walk(elapsed_ms, true, |_, span, _, v, dv, _, _| {
             high.add(span, v, dv, high_mps);
             sprint.add(span, v, dv, sprint_mps);
             false
@@ -465,7 +488,7 @@ impl MotionPlan {
         Ok((motion, high.finish(), sprint.finish()))
     }
 
-    fn walk(&self, elapsed_ms: i64, account_workload: bool, mut visit: impl FnMut(i64, i64, D2, D2, D2) -> bool)
+    fn walk(&self, elapsed_ms: i64, account_workload: bool, mut visit: impl FnMut(i64, i64, D2, D2, D2, D2, f64) -> bool)
         -> Result<MotionResult, MotionError>
     {
         if !(0..=MAX_MOTION_HORIZON_MS).contains(&elapsed_ms) {
@@ -483,11 +506,11 @@ impl MotionPlan {
             let segment_ms = if reacting { self.intent.reaction_ms - at } else { LOCAL_STEP_MS };
             let used_ms = (elapsed_ms - at).min(segment_ms);
             let dt = used_ms as f64 / 1000.0;
-            let (dv, turn) = if reacting {
+            let full_dt = segment_ms as f64 / 1000.0;
+            let (full_dv, turn) = if reacting {
                 // Reaction preserves momentum and body orientation.
                 (D2(0.0, 0.0), 0.0)
             } else {
-                let full_dt = segment_ms as f64 / 1000.0;
                 let to = target.sub(p);
                 let dist = to.norm();
                 let brake = self.capability.braking_mps2 as f64;
@@ -499,16 +522,20 @@ impl MotionPlan {
                 let desired = if dist > 1e-9 {
                     to.scale(stop_speed.min(requested) / dist)
                 } else { D2(0.0, 0.0) };
-                let desired_facing = self.intent.desired_facing_rad.map(|a| a as f64)
-                    .or_else(|| if dist > 1e-9 && requested > 0.0 {
-                        Some(to.1.atan2(to.0))
-                    } else { None });
-                let max_turn = self.capability.body_turn_radps as f64 * full_dt;
-                let turn = desired_facing.map_or(0.0, |a| angle_delta(facing, a).clamp(-max_turn, max_turn));
-                let fraction = dt / full_dt;
-                (velocity_delta(v, desired, self.capability, full_dt).scale(fraction), turn * fraction)
+                // Facing is independent of the translational controller.
+                // Position-only queries need neither atan2 nor angle wrapping.
+                let turn=if account_workload {
+                    let desired_facing = self.intent.desired_facing_rad.map(|a| a as f64)
+                        .or_else(|| if dist > 1e-9 && requested > 0.0 {
+                            Some(to.1.atan2(to.0))
+                        } else { None });
+                    let max_turn = self.capability.body_turn_radps as f64 * full_dt;
+                    desired_facing.map_or(0.0, |a| angle_delta(facing, a).clamp(-max_turn, max_turn))
+                }else{0.0};
+                (velocity_delta(v, desired, self.capability, full_dt), turn * (dt/full_dt))
             };
-            if visit(at, used_ms, p, v, dv) { break; }
+            let dv=full_dv.scale(dt/full_dt);
+            if visit(at, used_ms, p, v, dv, full_dv, full_dt) { break; }
             let next_v = v.add(dv);
             // Constant acceleration within a segment: integrate the vector
             // exactly and the speed norm with Simpson quadrature.
@@ -637,6 +664,29 @@ mod solver_tests {
         let fast = plan(initial(10.0, 0.0), intent(100.0, 34.0, 1.0));
         near(fast.sample_at(100).unwrap().state.velocity.x, 9.5, 1e-4);
         near(fast.sample_at(1000).unwrap().state.velocity.x, 8.0, 1e-4);
+    }
+
+    #[test]
+    fn b12_batch3_forward_position_walk_matches_absolute_samples() {
+        for (vx,vy) in [(0.0,0.0),(6.0,0.0),(-6.0,0.0),(4.0,3.0)] {
+            for target in [Vec2::new(40.0,34.0),Vec2::new(43.0,42.0),Vec2::new(5.0,20.0)] {
+                for delay in [0,137,250]{
+                    let plan=plan(initial(vx,vy),MovementIntent{target,intensity:0.85,
+                        desired_facing_rad:None,reaction_ms:delay});
+                    let mut count=0;
+                    let hit=plan.first_matching_position(123,1077,|t,pos|{
+                        assert_eq!(pos,plan.sample_at(t).unwrap().state.position,"t={t}");
+                        count+=1;
+                        false
+                    }).unwrap();
+                    assert!(hit.is_none());
+                    assert_eq!(count,955);
+                    let (t,pos)=plan.first_matching_position(123,1077,|t,_|t==681).unwrap().unwrap();
+                    assert_eq!(t,681);
+                    assert_eq!(pos,plan.sample_position_at(681).unwrap());
+                }
+            }
+        }
     }
 
     #[test]
