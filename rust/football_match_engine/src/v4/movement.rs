@@ -355,6 +355,19 @@ pub struct PlayerMotionInterval {
     pub target: Vec2,
 }
 
+impl PlayerMotionInterval {
+    pub fn distance_m(&self) -> f32 { self.end.distance_m - self.start.distance_m }
+    pub fn acceleration_load_mps(&self) -> f32 {
+        self.end.acceleration_load_mps - self.start.acceleration_load_mps
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MotionIntervalContext {
+    pub possession_side: TeamSideV4,
+    pub is_dead_ball: bool,
+}
+
 fn candidate_motion_error(detail: impl std::fmt::Debug) -> V4Error {
     V4Error::InvalidInput(format!("B1.2 candidate locomotion: {detail:?}"))
 }
@@ -374,18 +387,21 @@ pub fn advance_candidate_live_motion(
     if duration_ms <= 0 || duration_ms > match_physics::movement::MAX_MOTION_HORIZON_MS {
         return Err(candidate_motion_error("invalid live duration"));
     }
+    crate::v4::transition::verify_commit_structure(state)?;
     let mut next_rng = rng.clone();
     let dt = match_contracts::units::ms_to_seconds_f32(duration_ms);
     let (targets, defense) = select_movement_targets(state, input, possession_side, carrier_idx, dt, &mut next_rng);
     let intents: Vec<_> = targets.into_iter().map(|target| target.map(|target|
         MovementIntent { target, intensity: 1.0, desired_facing_rad: None, reaction_ms: 0 }
     )).collect();
-    let rows = advance_candidate_motion(state, &intents, committed, duration_ms)?;
+    let rows = advance_candidate_motion(state, &intents, committed, duration_ms,
+        MotionIntervalContext { possession_side, is_dead_ball: false })?;
     *rng = next_rng;
     Ok((rows, defense))
 }
 
-/// Stage one result per active player, verify every interval, then publish.
+/// Stage one motion and condition result per active player, verify all rows,
+/// then publish both atomically. Do not charge interval fatigue again.
 /// For a dead-ball interval the caller supplies low-intensity intents; the
 /// same physical solver is used. Administrative kickoff resets are separate.
 pub fn advance_candidate_motion(
@@ -393,12 +409,14 @@ pub fn advance_candidate_motion(
     intents: &[Option<MovementIntent>],
     committed: &[CommittedMotion],
     duration_ms: i64,
+    context: MotionIntervalContext,
 ) -> Result<Vec<PlayerMotionInterval>, V4Error> {
     if duration_ms <= 0 || duration_ms > match_physics::movement::MAX_MOTION_HORIZON_MS
         || intents.len() != state.players.len()
     {
         return Err(candidate_motion_error("invalid interval or intent count"));
     }
+    crate::v4::transition::verify_commit_structure(state)?;
     let mut paths = vec![None; state.players.len()];
     for row in committed {
         let p = state.players.get(row.player_idx).ok_or_else(|| candidate_motion_error("unknown committed actor"))?;
@@ -409,6 +427,8 @@ pub fn advance_candidate_motion(
         }
     }
     let mut rows = Vec::new();
+    let mut next_fatigue = Vec::new();
+    let dt = match_contracts::units::ms_to_seconds_f32(duration_ms);
     for (idx, p) in state.players.iter().enumerate() {
         if !p.on_pitch || p.sent_off {
             if intents[idx].is_some() { return Err(candidate_motion_error("ineligible actor intent")); }
@@ -432,22 +452,44 @@ pub fn advance_candidate_motion(
             return Err(candidate_motion_error("committed path does not start at authoritative state"));
         }
         let distance = end.distance_m - start.distance_m;
+        let load = end.acceleration_load_mps - start.acceleration_load_mps;
         let roundoff = 32.0 * f32::EPSILON * PITCH_LENGTH_M.max(PITCH_WIDTH_M)
             + 4.0 * f32::EPSILON * end.distance_m;
-        if !distance.is_finite() || distance < 0.0
+        if !distance.is_finite() || distance < 0.0 || !load.is_finite() || load < 0.0
+            || distance > plan.maximum_path_speed_mps() * dt + roundoff
             || start.state.position.distance(end.state.position) > distance + roundoff
         {
             return Err(candidate_motion_error("invalid realized path length"));
         }
+        // Preserve the existing two-pool model and intensity classification,
+        // but use the actual path, including during stoppages. No second
+        // interval charge may be applied by the caller to these rows.
+        let profile = state.player_profiles.get(p.profile_idx)
+            .ok_or_else(|| candidate_motion_error("missing fatigue profile"))?;
+        let press = state.active_instructions(p.side).pressing_intensity as f32 / 100.0;
+        let speed = distance / dt.max(0.05);
+        let high = !context.is_dead_ball && !p.is_goalkeeper
+            && (speed >= 4.2 || (p.side != context.possession_side && press >= 0.70 && speed >= 3.2));
+        let mut fatigue = p.fatigue;
+        fatigue.apply_interval(dt, distance, high, context.is_dead_ball,
+            profile.attrs.physical.stamina, profile.attrs.physical.natural_fitness);
+        if !fatigue.distance_m.is_finite() || fatigue.distance_m < p.fatigue.distance_m
+            || !(0.0..=100.0).contains(&fatigue.aerobic)
+            || !(0.0..=100.0).contains(&fatigue.anaerobic)
+        {
+            return Err(candidate_motion_error("invalid resulting condition"));
+        }
+        next_fatigue.push(fatigue);
         rows.push(PlayerMotionInterval { player_idx: idx, start, end, duration_ms, target });
     }
-    for row in &rows {
+    for (row, fatigue) in rows.iter().zip(next_fatigue) {
         let p = &mut state.players[row.player_idx];
         p.pos = row.end.state.position;
         p.vel = row.end.state.velocity;
         p.facing_rad = row.end.state.facing_rad;
         p.target_pos = row.target;
-        p.last_moved_m = row.end.distance_m - row.start.distance_m;
+        p.last_moved_m = row.distance_m();
+        p.fatigue = fatigue;
     }
     for p in &mut state.players {
         if !p.on_pitch || p.sent_off { p.last_moved_m = 0.0; }
@@ -516,5 +558,148 @@ fn slot_anchor_m(
         Vec2::from_normalized_slot(player.side, nx, ny)
     } else {
         Vec2::new(PITCH_LENGTH_M * 0.5, PITCH_WIDTH_M * 0.5)
+    }
+}
+
+
+#[cfg(test)]
+mod candidate_locomotion_tests {
+    use super::*;
+    use crate::v4::input::{RulesModeV4, SimulationMode};
+    use crate::v4::tests::make_v4_input;
+
+    fn fixture() -> (MatchInputV4, MatchStateV4) {
+        let input = make_v4_input(12046, SimulationMode::FullEvent, RulesModeV4::Standard);
+        let state = MatchStateV4::from_input(&input);
+        (input, state)
+    }
+
+    fn stationary(state: &MatchStateV4) -> Vec<Option<MovementIntent>> {
+        state.players.iter().map(|p| {
+            (p.on_pitch && !p.sent_off).then_some(MovementIntent {
+                target: p.pos, intensity: 0.0, desired_facing_rad: None, reaction_ms: 0,
+            })
+        }).collect()
+    }
+
+    fn context(dead: bool) -> MotionIntervalContext {
+        MotionIntervalContext { possession_side: TeamSideV4::Home, is_dead_ball: dead }
+    }
+
+    fn snap(state: &MatchStateV4) -> String { serde_json::to_string(state).unwrap() }
+
+    #[test]
+    fn b12_candidate_live_uses_same_target_policy_rng_and_terminal_velocity() {
+        let (input, mut state) = fixture();
+        let mut legacy = state.clone();
+        let mut old_rng = DeterministicRng::new(19);
+        let mut new_rng = old_rng.clone();
+        advance_off_ball_movement_with_report(&mut legacy, &input, TeamSideV4::Home, 10, 0.5, &mut old_rng);
+        let (rows, _) = advance_candidate_live_motion(&mut state, &input, TeamSideV4::Home, 10, 500, &mut new_rng, &[]).unwrap();
+        assert_eq!(old_rng.state(), new_rng.state());
+        assert_eq!(rows.len(), state.players.iter().filter(|p|p.on_pitch&&!p.sent_off).count());
+        for r in rows {
+            assert_eq!(state.players[r.player_idx].target_pos, legacy.players[r.player_idx].target_pos);
+            assert_eq!(state.players[r.player_idx].vel, r.end.state.velocity);
+            assert_eq!(state.players[r.player_idx].last_moved_m, r.distance_m());
+        }
+    }
+
+    #[test]
+    fn b12_candidate_committed_path_wins_and_actual_distance_is_charged_once() {
+        let (_, mut state) = fixture();
+        let idx = 1;
+        let p = &mut state.players[idx];
+        p.pos = Vec2::new(50.0, 34.0);
+        p.vel = Vec2::new(6.0, 0.0);
+        p.facing_rad = 0.0;
+        let original = p.fatigue;
+        let cap = MovementCapability { max_speed_mps: 8.0, acceleration_mps2: 4.0,
+            braking_mps2: 5.0, lateral_mps2: 3.0, body_turn_radps: 3.0 };
+        let plan = MotionPlan::new(MotionState { position: p.pos, velocity: p.vel, facing_rad: p.facing_rad },
+            MovementIntent { target: Vec2::new(20.0, 34.0), intensity: 1.0, desired_facing_rad: None, reaction_ms: 0 },cap).unwrap();
+        let intents = stationary(&state);
+        let rows = advance_candidate_motion(&mut state, &intents,
+            &[CommittedMotion { player_idx: idx, plan, elapsed_before_ms: 0 }], 2400, context(false)).unwrap();
+        let row = rows.iter().find(|r|r.player_idx == idx).unwrap();
+        assert_eq!(row.end, plan.sample_at(2400).unwrap());
+        assert!(row.distance_m() > row.start.state.position.distance(row.end.state.position) + 2.0);
+        assert_eq!(state.players[idx].last_moved_m, row.distance_m());
+        assert!((state.players[idx].fatigue.distance_m-original.distance_m-row.distance_m()).abs()<1e-4);
+        assert!(row.acceleration_load_mps()>6.0);
+        let before = snap(&state);
+        assert!(advance_candidate_motion(&mut state, &intents,
+            &[CommittedMotion { player_idx: idx, plan, elapsed_before_ms: 0 }], 100, context(false)).is_err());
+        assert_eq!(snap(&state), before);
+    }
+
+    #[test]
+    fn b12_candidate_split_committed_path_preserves_motion_and_distance() {
+        let (_, mut whole) = fixture();
+        let idx = 1;
+        let p = &mut whole.players[idx];
+        p.pos = Vec2::new(50.0,34.0);
+        p.vel = Vec2::new(4.0,0.0);
+        p.facing_rad = 0.0;
+        let distance_before = p.fatigue.distance_m;
+        let cap = MovementCapability { max_speed_mps: 8.0, acceleration_mps2: 4.0,
+            braking_mps2: 5.0, lateral_mps2: 3.0, body_turn_radps: 3.0 };
+        let plan = MotionPlan::new(MotionState { position: p.pos, velocity: p.vel, facing_rad: p.facing_rad },
+            MovementIntent { target: Vec2::new(20.0,34.0), intensity: 1.0, desired_facing_rad: None, reaction_ms: 0 },cap).unwrap();
+        let mut split = whole.clone();
+        let row = CommittedMotion { player_idx: idx, plan, elapsed_before_ms: 0 };
+        let intents = stationary(&whole);
+        advance_candidate_motion(&mut whole,&intents,&[row],1777,context(false)).unwrap();
+        let intents = stationary(&split);
+        advance_candidate_motion(&mut split,&intents,&[row],623,context(false)).unwrap();
+        let intents = stationary(&split);
+        advance_candidate_motion(&mut split,&intents,&[CommittedMotion { elapsed_before_ms:623,..row }],1154,context(false)).unwrap();
+        let a=&whole.players[idx]; let b=&split.players[idx];
+        assert_eq!((a.pos,a.vel,a.facing_rad),(b.pos,b.vel,b.facing_rad));
+        assert!((a.fatigue.distance_m-b.fatigue.distance_m).abs()<1e-4);
+        assert!((b.fatigue.distance_m-distance_before-plan.sample_at(1777).unwrap().distance_m).abs()<1e-4);
+        // Energy and sprint counters intentionally retain the legacy interval
+        // classification; this is not a proof of condition split invariance.
+    }
+
+    #[test]
+    fn b12_candidate_dead_ball_uses_real_distance_and_skips_inactive() {
+        let (_, mut state) = fixture();
+        state.players[1].on_pitch = false;
+        let inactive = state.players[1].fatigue;
+        let initial = state.clone();
+        let mut intents = stationary(&state);
+        let p = &state.players[2];
+        intents[2] = Some(MovementIntent { target: Vec2::new(p.pos.x+10.0, p.pos.y),
+            intensity: 0.2, desired_facing_rad: None, reaction_ms: 0 });
+        let rows = advance_candidate_motion(&mut state, &intents, &[], 1000, context(true)).unwrap();
+        assert_eq!(state.players[1].fatigue, inactive);
+        assert!(!rows.iter().any(|r|r.player_idx==1));
+        for row in rows {
+            let delta=state.players[row.player_idx].fatigue.distance_m-initial.players[row.player_idx].fatigue.distance_m;
+            assert!((delta-row.distance_m()).abs()<1e-4);
+        }
+        assert!(state.players[2].last_moved_m>0.0);
+        assert_eq!(state.players[3].last_moved_m,0.0);
+    }
+
+    #[test]
+    fn b12_candidate_invalid_duplicate_or_late_row_rolls_back_world_and_rng() {
+        let (input, mut state) = fixture();
+        let mut intents = stationary(&state);
+        let before = snap(&state);
+        intents[20] = Some(MovementIntent { intensity: f32::NAN, ..intents[20].unwrap() });
+        assert!(advance_candidate_motion(&mut state,&intents,&[],500,context(false)).is_err());
+        assert_eq!(snap(&state),before);
+        let p=&state.players[1];
+        let cap=MovementCapability::from_attributes(&player_attrs(&state,p).physical,p.fatigue.aerobic,p.fatigue.anaerobic).unwrap();
+        let plan=MotionPlan::new(MotionState{position:p.pos,velocity:p.vel,facing_rad:p.facing_rad},
+            stationary(&state)[1].unwrap(),cap).unwrap();
+        let row=CommittedMotion{player_idx:1,plan,elapsed_before_ms:0};
+        let mut rng=DeterministicRng::new(19);
+        let rng_before=rng.state();
+        assert!(advance_candidate_live_motion(&mut state,&input,TeamSideV4::Home,10,500,&mut rng,&[row,row]).is_err());
+        assert_eq!(snap(&state),before);
+        assert_eq!(rng.state(),rng_before);
     }
 }

@@ -243,6 +243,13 @@ impl MotionPlan {
 
     pub fn target(&self) -> Vec2 { self.intent.target }
 
+    /// Convex interpolation of bounded velocity segments cannot exceed the
+    /// larger of initial speed and requested capability. Overspeed can
+    /// legitimately persist during braking or reaction.
+    pub fn maximum_path_speed_mps(&self) -> f32 {
+        self.initial.velocity.x.hypot(self.initial.velocity.y).max(self.capability.max_speed_mps)
+    }
+
     /// Sample the same plan at elapsed milliseconds. Controller segments are
     /// anchored at the origin/reaction boundary; a partial query evaluates the
     /// same segment rather than changing the integration step or target.
