@@ -320,6 +320,7 @@ impl MatchSessionV4 {
             self.completed_beats,candidate.completed_beats,
         )?;
         crate::v4::transition::verify_commit_structure(&candidate.state)?;
+        crate::v4::transition::verify_roster_profiles(&candidate.state,&candidate.input)?;
         crate::v4::transition::verify_uncontrolled_ball(&candidate.state)?;
         crate::v4::transition::verify_clock_accounting(&candidate.state,candidate.home_possession_ms,candidate.away_possession_ms)?;
         crate::v4::transition::verify_command_journal(&candidate.command_timeline,candidate.next_command_id,candidate.sim_time_ms())?;
@@ -1983,6 +1984,7 @@ impl MatchSessionV4 {
             || self.state.dead_ball.is_some() { return Ok(()); }
         self.ensure_valid_carrier();
         let idx = self.carrier_idx;
+        crate::v4::transition::verify_action_actor(&self.state,idx)?;
         let p = &self.state.players[idx];
         let side = p.side;
         let id = p.player_id.clone();
@@ -2096,6 +2098,7 @@ impl MatchSessionV4 {
             return Err(V4Error::InvalidClock("PI action execution does not match pending intention".into()));
         }
         self.ensure_valid_carrier();
+        crate::v4::transition::verify_action_actor(&self.state,self.carrier_idx)?;
         if self.state.players[self.carrier_idx].player_id!=player_id || self.possession_side!=side {
             return self.begin_player_decision(false);
         }

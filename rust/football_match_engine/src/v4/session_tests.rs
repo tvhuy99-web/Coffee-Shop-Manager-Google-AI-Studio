@@ -689,7 +689,7 @@ mod a4_atomic_api_tests {
         let side=s.state.players[0].side;
         for control in [BallControlState::Loose,BallControlState::InFlight]{
             assert!(s.transact(|c|{
-                c.state.ball.control=control;
+                c.state.ball.control=control.clone();
                 c.state.ball.owner_side=Some(side);
                 c.state.ball.owner_player_id=Some(owner.clone());
                 Ok(())
@@ -702,6 +702,38 @@ mod a4_atomic_api_tests {
             ck.checksum_hex=compute_checkpoint_checksum(&serde_json::to_string(&ck.payload).unwrap());
             assert!(MatchSessionV4::from_checkpoint(ck).is_err());
         }
+    }
+
+    #[test]
+    fn a4_base_profile_and_roster_identity_are_immutable(){
+        let mut s=new_session();
+        let before=snapshot(&s);
+        let idx=s.state.players[0].profile_idx;
+        assert!(s.transact(|c|{
+            c.state.player_profiles[idx].weak_foot=0;
+            Ok(())
+        }).is_err());
+        assert_eq!(snapshot(&s),before);
+        for mode in 0..2{
+            let mut ck=s.export_checkpoint().unwrap();
+            if mode==0 {ck.payload.state.player_profiles[idx].weak_foot=0;}
+            else {ck.payload.state.players[0].player_id="unknown-player".into();}
+            ck.checksum_hex=compute_checkpoint_checksum(&serde_json::to_string(&ck.payload).unwrap());
+            assert!(MatchSessionV4::from_checkpoint(ck).is_err());
+        }
+    }
+
+    #[test]
+    fn a4_action_actor_guard_rejects_sent_off_and_substituted_players(){
+        let mut s=new_session();
+        use crate::v4::transition::verify_action_actor;
+        assert!(verify_action_actor(&s.state,0).is_ok());
+        s.state.players[0].sent_off=true;
+        assert!(verify_action_actor(&s.state,0).is_err());
+        s.state.players[0].sent_off=false;
+        s.state.players[0].on_pitch=false;
+        assert!(verify_action_actor(&s.state,0).is_err());
+        assert!(verify_action_actor(&s.state,usize::MAX).is_err());
     }
 
 }

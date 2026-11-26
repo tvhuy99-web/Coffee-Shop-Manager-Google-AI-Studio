@@ -237,3 +237,36 @@ pub(crate) fn verify_uncontrolled_ball(state:&MatchStateV4)->Result<(),V4Error>{
     }
     Ok(())
 }
+
+/// Roster and cached base-profile identity (INV-04/07/08). The normalized input
+/// is immutable; substitutes may append profiles but may not rewrite attributes.
+/// Sent-off players are excluded from active counts even if the legacy roster
+/// retains their on_pitch flag for historical reporting.
+pub(crate) fn verify_roster_profiles(state:&MatchStateV4,input:&crate::v4::input::MatchInputV4)->Result<(),V4Error>{
+    use crate::v4::spatial::TeamSideV4;
+    for side in [TeamSideV4::Home,TeamSideV4::Away] {
+        let team=match side{TeamSideV4::Home=>&input.home_team,TeamSideV4::Away=>&input.away_team};
+        let active=state.players.iter().filter(|p|p.side==side && p.on_pitch && !p.sent_off).count();
+        if active>team.lineup.len() {
+            return Err(V4Error::InvalidInput(format!("INV-04: too many active players for {side:?}: {active}")));
+        }
+        for p in state.players.iter().filter(|p|p.side==side) {
+            let source=team.lineup.iter().chain(team.bench.iter()).find(|q|q.player_id==p.player_id)
+                .ok_or_else(||V4Error::InvalidInput(format!("INV-08: unknown roster member {}",p.player_id)))?;
+            let profile=state.player_profiles.get(p.profile_idx)
+                .ok_or_else(||V4Error::InvalidInput(format!("INV-08: missing profile for {}",p.player_id)))?;
+            if profile.attrs!=source.attributes || profile.preferred_foot!=source.preferred_foot || profile.weak_foot!=source.weak_foot {
+                return Err(V4Error::InvalidInput(format!("INV-07: base profile differs from input for {}",p.player_id)));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// An action cannot be initiated or executed by an ineligible roster member.
+pub(crate) fn verify_action_actor(state:&MatchStateV4,idx:usize)->Result<(),V4Error>{
+    if !state.players.get(idx).is_some_and(|p|p.on_pitch&&!p.sent_off) {
+        return Err(V4Error::InvalidInput(format!("INV-04: ineligible action actor at roster index {idx}")));
+    }
+    Ok(())
+}

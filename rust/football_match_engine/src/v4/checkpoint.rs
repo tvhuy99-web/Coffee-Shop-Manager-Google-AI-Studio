@@ -349,6 +349,7 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
     }
     if p.rng.root_seed!=p.input.seed {return Err(bad("RNG root seed differs from input"));}
     crate::v4::transition::verify_commit_structure(&p.state)?;
+    crate::v4::transition::verify_roster_profiles(&p.state,&p.input)?;
     crate::v4::transition::verify_uncontrolled_ball(&p.state)?;
     p.scheduler.validate_snapshot().map_err(bad)?;
     if p.next_event_sequence!=p.stats.event_count {return Err(bad("event sequence mismatch"));}
