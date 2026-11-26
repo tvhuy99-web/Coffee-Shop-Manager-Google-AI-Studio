@@ -77,7 +77,6 @@ def main(directory):
                 require(run["completed_passes"] <= run["passes"], "pass count mismatch")
             require(b["shot_probe_no_reach"] + b["shot_probe_reachable_goal"] <= b["shot_probe_on_target"],
                     "keeper probe counts exceed observed on-target launches")
-            require(b["shot_probe_on_target"] <= b["shots_on_target"], "keeper probes exceed shot count")
             for field in FIELDS:
                 old, new = number(a[field], field), number(b[field], field)
                 for group in ("all", cohort):
@@ -111,12 +110,34 @@ def main(directory):
         "role_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in roles.items()},
         "production_acceptance": "BLOCKED: remaining execution paths, rule boundaries, non-pass perception, sprint episode definition, performance and tracking calibration incomplete",
         "notes": ["Exp7 changes defensive keeper positioning and facing, not shot or save probabilities. Probe counts are experimental open-play scheduled shot launches only; legacy probe fields are zero/not measured.",
-                  "Keeper segment/depth/speed fields are sums over probe launches, divide by total probe count; diagnostic probe time is excluded from wall_ms.",
+                  "Keeper segment/depth/speed fields are sums over probe launches, divide by total probe count; diagnostic probe time is excluded from wall_ms. Scheduled shots may be cancelled before commit, so probe counts are not a subset of committed shot totals.",
+                  "Pooled rates are descriptive. Goals and saves may include restarts/own goals; ratios are not a disjoint shot-outcome partition.",
                   "Distributions are conditional on successful pairs; failures are retained.",
                   "Legacy interval counters and experiment threshold crossing counts are reported separately; neither is a validated sprint episode metric.",
                   "Pass diagnostic counters retain their existing definitions; not disjoint causes and not forced to sum to pass attempts.",
                   "No outcome target or threshold is used to tune gameplay."],
     }
+    # Derive rates from pooled exposure, not the mean of match-level ratios.
+    # None means unmeasured/no denominator, never a fabricated zero rate.
+    def ratio(numerator, denominator):
+        return numerator / denominator if denominator else None
+    rates = {}
+    for group, values in cohorts.items():
+        row = {}
+        for prefix in ("legacy_", "experiment_"):
+            def total(field):
+                return sum(values[prefix + field])
+            row[prefix + "pass_completion"] = ratio(total("completed_passes"), total("passes"))
+            row[prefix + "shots_per_possession"] = ratio(total("shots"), total("possessions"))
+            row[prefix + "shots_on_target_per_shot"] = ratio(total("shots_on_target"), total("shots"))
+            row[prefix + "goals_per_on_target"] = ratio(total("home_goals") + total("away_goals"), total("shots_on_target"))
+            row[prefix + "saves_per_on_target"] = ratio(total("saves"), total("shots_on_target"))
+            row[prefix + "keeper_probe_no_reach_share"] = ratio(total("shot_probe_no_reach"), total("shot_probe_on_target"))
+            row[prefix + "keeper_probe_reachable_goal_share"] = ratio(total("shot_probe_reachable_goal"), total("shot_probe_on_target"))
+            row[prefix + "keeper_probe_mean_segment_m"] = ratio(total("shot_probe_keeper_segment_m"), total("shot_probe_on_target"))
+            row[prefix + "keeper_probe_mean_depth_m"] = ratio(total("shot_probe_keeper_depth_m"), total("shot_probe_on_target"))
+        rates[group] = row
+    summary["pooled_rates"] = rates
     (directory / "b12-experiment-summary.json").write_text(
         json.dumps(summary, indent=2, allow_nan=False) + "\n")
     print(f"B1.2 hybrid full-match experiment: {successful}/1000 successful pairs; "

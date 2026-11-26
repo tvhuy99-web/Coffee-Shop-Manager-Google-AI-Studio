@@ -34,6 +34,8 @@ jobs:
           cargo test --release --locked --lib b12_exp5_parry_ends_one_flight_then_schedules_recovery -- --nocapture
           cargo test --release --locked --lib b12_exp6_keeper_reach_and_held_save_are_separate_actions -- --nocapture
           cargo test --release --locked -p match_physics --lib b12_goalkeeper_contact_respects_box_reaction_and_momentum -- --nocapture
+          cargo test --release --locked -p match_physics --lib b12_acceleration_filter_preserves_direct_contact_results -- --nocapture
+          cargo test --release --locked --lib b12_exp7_keeper_guard_geometry_is_mirrored_and_goal_side -- --nocapture
       - name: Replay eight previous exp5 and exp5r1 failures
         run: |
           set -euo pipefail

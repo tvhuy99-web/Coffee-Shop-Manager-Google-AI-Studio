@@ -549,11 +549,41 @@ impl PassReachCandidate {
         Vec2::new(origin.x + ux * cover, origin.y + uy * cover).clamp_to_pitch()
     }
 
+    /// Additional conservative displacement bound for experimental paths.
+    /// During reaction the player coasts; after reaction the norm of the
+    /// acceleration vector cannot exceed the largest axis limit of the
+    /// solver's effort ellipse. Integrating that bound cannot exclude a
+    /// genuinely reachable sample. Legacy paths do not use this filter.
+    fn acceleration_displacement_bound_m(&self, elapsed_ms: i64) -> Option<f64> {
+        let model = self.locomotion?;
+        model.capability.validate().ok()?;
+        if elapsed_ms < 0 || self.reaction_ms < 0
+            || !self.velocity.x.is_finite() || !self.velocity.y.is_finite() {
+            return None;
+        }
+        let t = elapsed_ms as f64 / 1000.0;
+        let active = (elapsed_ms - elapsed_ms.min(self.reaction_ms)) as f64 / 1000.0;
+        let speed = (self.velocity.x as f64).hypot(self.velocity.y as f64);
+        let accel = model.capability.acceleration_mps2
+            .max(model.capability.braking_mps2)
+            .max(model.capability.lateral_mps2) as f64;
+        Some(speed * t + 0.5 * accel * active * active)
+    }
+
     fn contact_distance(&self, ball: Vec3, elapsed_ms: i64) -> Option<f32> {
         if ball.z > self.playable_height_m { return None; }
         if self.locomotion.is_some() && self.pos.distance(ball.xy()) >
             self.motion_speed_bound_mps() * match_contracts::units::ms_to_seconds_f32(elapsed_ms) + self.reach_m + 0.01 {
             return None;
+        }
+        if let Some(bound) = self.acceleration_displacement_bound_m(elapsed_ms) {
+            let dx = ball.x as f64 - self.pos.x as f64;
+            let dy = ball.y as f64 - self.pos.y as f64;
+            // Same 1 cm broad-phase allowance as the existing speed filter.
+            // This does not relax the final contact-distance test.
+            if dx.hypot(dy) > bound + self.reach_m as f64 + 0.01 {
+                return None;
+            }
         }
         let residual = self.contact_position_toward(ball.xy(), elapsed_ms)?.distance(ball.xy());
         if residual <= self.reach_m { Some(residual) } else { None }
@@ -1211,6 +1241,33 @@ mod b12_contact_locomotion_tests {
         assert!(at.distance(p.pos)<0.0021);
         assert_eq!(at,plan.sample_at(1).unwrap().state.position);
         assert!(at.x<0.0);
+    }
+
+    #[test]
+    fn b12_acceleration_filter_preserves_direct_contact_results() {
+        use crate::movement::MovementCapability;
+        let cap = MovementCapability { max_speed_mps: 8.0, acceleration_mps2: 4.0,
+            braking_mps2: 5.0, lateral_mps2: 3.5, body_turn_radps: 4.0 };
+        for velocity in [Vec2::default(), Vec2::new(5.0,0.0),
+                         Vec2::new(-5.0,2.0), Vec2::new(9.0,0.0)] {
+            for reaction_ms in [0, 180, 350] {
+                let p = PassReachCandidate { player_id:"test".into(), side:TeamSideV4::Home,
+                    pos:Vec2::new(40.0,34.0), velocity, speed_mps:8.0,
+                    acceleration_mps2:4.0, agility:0.5, reaction_ms, reach_m:1.2,
+                    playable_height_m:2.0, locomotion:Some(ReachLocomotion{capability:cap,facing_rad:0.0}) };
+                for elapsed in [0, 25, 100, 180, 350, 500, 1000, 2000] {
+                    for dx in [-9.0,-3.0,-1.0,0.0,1.0,3.0,9.0] {
+                        for dy in [-4.0,0.0,4.0] {
+                            let ball=Vec3::ground(p.pos.x+dx,p.pos.y+dy);
+                            let direct=p.contact_position_toward(ball.xy(),elapsed).unwrap().distance(ball.xy());
+                            let expected=(direct<=p.reach_m).then_some(direct);
+                            assert_eq!(p.contact_distance(ball,elapsed),expected,
+                                "velocity={velocity:?} reaction={reaction_ms} elapsed={elapsed} ball={ball:?}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
