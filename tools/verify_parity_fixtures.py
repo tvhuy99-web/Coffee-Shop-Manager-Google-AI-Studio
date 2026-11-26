@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Check integrity of stored Java V3 golden data in the *clean* Rust/Kotlin port.
-
-The original Java engine is intentionally not in this project. Checking that
-fixtures are intact is NOT the same thing as executing Java or passing Rust parity.
-The actual parity test is `cargo test` (parity_full_match.rs et al.).
-"""
+"""Validate retained reference fixture integrity; does not execute the former Java engine."""
 
 import csv
 import hashlib
@@ -14,7 +9,7 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-GOLDEN = ROOT / "docs/archive/legacy/tests/parity"
+GOLDEN = ROOT / "tests/fixtures/legacy"
 
 
 def fail(reason):
@@ -71,7 +66,7 @@ def main():
             fail(f"missing or empty fixture: {name}")
 
     print(f"GOLDEN FIXTURES OK: {len(matches)} saved Java matches, {len(traces)} events, SHA-256 verified")
-    print("NOTE: This does NOT run the original Java source. Rust parity requires cargo test.")
+    print("NOTE: Fixture integrity is not a simulation parity test.")
 
 
 if __name__ == "__main__":

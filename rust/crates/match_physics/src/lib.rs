@@ -453,8 +453,8 @@ pub fn find_earliest_ball_interaction(
 }
 
 
-/// Stage 2: symmetric, acceleration-limited pass-contact prediction.
-/// A contact is not yet a successful tackle/control test (stage 3).
+/// Symmetric, acceleration-limited pass-contact prediction.
+/// Contact alone does not establish tackle success or ball control.
 /// Parameters describe movement, not a desired pass-success percentage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -831,7 +831,7 @@ pub fn contact_control_probability(
     (0.38 + 0.58 * quality * fatigue.clamp(0.45, 1.0) - load).clamp(0.04, 0.96)
 }
 
-/// Stage 3a: blocked ball drops at the contact point. Find the first active
+/// When a blocked ball drops at the contact point, find the first active
 /// player able to reach the grounded loose ball; no team gets priority.
 /// A later stage will extend this to rolling/airborne deflections.
 pub fn find_grounded_ball_recovery(
