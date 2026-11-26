@@ -248,7 +248,7 @@ pub struct MatchSessionSnapshotV4 {
     pub locomotion_experiment_id: Option<String>,
 }
 
-pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-shot-block-locomotion-exp5";
+pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-shot-block-handoff-exp5r1";
 
 /// Self-verifying versioned DES v1.4 match checkpoint envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,7 +409,9 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
                     && path.started_at_ms==f.trajectory.start_time_ms => {
                     let predicted=path.candidate.contact_position_toward(path.target,hit.time_ms-path.started_at_ms)
                         .ok_or_else(||bad("invalid shot block path"))?;
-                    if predicted.distance(path.target)>path.candidate.reach_m+1e-5 {
+                    if hit.defender_side!=Some(path.candidate.side)
+                        || hit.ball_pos.z>path.candidate.playable_height_m
+                        || predicted.distance(path.target)>path.candidate.reach_m+1e-5 {
                         return Err(bad("unreachable shot block"));
                     }
                 }

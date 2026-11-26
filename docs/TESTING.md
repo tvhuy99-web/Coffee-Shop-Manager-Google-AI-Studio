@@ -87,3 +87,6 @@ Exp4 changes test-only behavior ID to `b1.2-observed-pass-forecast-exp4`, retain
 
 
 Exp5 changes test-only ID to `b1.2-shot-block-locomotion-exp5` and adds actual reserved shot-block path checkpoint/restore regression and paired possession/shot/carry/tackle diagnostics. No change to golden references. The new test verifies path execution, not full shot aftermath physics.
+
+
+Exp5r1 retries the same 1000 pairs after the failed Exp5 handoff (821/1000). Four recorded Exp5 failure seeds run in shard 0 independently of the paired test result. Experimental identity is `b1.2-shot-block-handoff-exp5r1`; no change to production manifest or golden fixtures. Failure diagnostics remain mandatory.

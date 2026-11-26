@@ -43,6 +43,12 @@ jobs:
           set -euo pipefail
           cd rust/football_match_engine
           cargo test --release --locked --lib b12_exp2_previous_failure_regressions -- --ignored --nocapture
+      - name: Replay recorded exp5 shot-block handoff failures
+        if: always() && matrix.shard == 0
+        run: |
+          set -euo pipefail
+          cd rust/football_match_engine
+          cargo test --release --locked --lib b12_exp5_previous_failure_regressions -- --ignored --nocapture
       - name: Experimental cross-mode consistency
         if: always() && matrix.shard == 0
         run: |

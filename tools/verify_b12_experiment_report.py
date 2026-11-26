@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
 
-BEHAVIOR = "b1.2-shot-block-locomotion-exp5"
+BEHAVIOR = "b1.2-shot-block-handoff-exp5r1"
 COHORTS = ["reference", "balanced", "strong_away", "high_press"]
 FIELDS = ["home_goals", "away_goals", "shots", "passes", "completed_passes",
           "fouls", "live_ms", "dead_ms", "events", "wall_ms",
@@ -106,7 +106,7 @@ def main(directory):
         "cohort_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in cohorts.items()},
         "role_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in roles.items()},
         "production_acceptance": "BLOCKED: remaining execution paths, rule boundaries, non-pass perception, sprint episode definition, performance and tracking calibration incomplete",
-        "notes": ["Exp5 changes outfield shot-block reach and commits the selected motion path; pass forecast, shot quality and conditional block skill coefficients are unchanged.",
+        "notes": ["Exp5r1 transports the exact selected shot-block candidate snapshot through the resolver; shot quality, block skill and reach limits remain unchanged.",
                   "Distributions are conditional on successful pairs; failures are retained.",
                   "Legacy interval counters and experiment threshold crossing counts are reported separately; neither is a validated sprint episode metric.",
                   "Pass diagnostic counters retain their existing definitions; not disjoint causes and not forced to sum to pass attempts.",

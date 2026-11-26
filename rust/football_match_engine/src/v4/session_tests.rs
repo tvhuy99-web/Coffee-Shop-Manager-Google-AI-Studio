@@ -1279,6 +1279,20 @@ mod locomotion_full_match_experiment {
     }
 
     #[test]
+    #[ignore = "full matches reproducing exp5 shot-block handoff failures"]
+    fn b12_exp5_previous_failure_regressions() {
+        let mut failures=Vec::new();
+        for seed in [326125_i64,270776,152171,128450] {
+            let index=((seed-104729)/7907) as usize;
+            let (input,cohort)=fixture(index,SimulationMode::FastBatch);
+            assert_eq!(input.seed,seed);
+            let result=run(input,true);
+            if result["ok"]!=true {failures.push(json!({"seed":seed,"cohort":cohort,"failure":result}));}
+        }
+        assert!(failures.is_empty(),"exp5 handoff regression failures: {failures:?}");
+    }
+
+    #[test]
     #[ignore = "paired full-match experiment, run in separate evidence workflow"]
     fn b12_experiment_paired_report() {
         let shard = std::env::var("B12_EXPERIMENT_SHARD").ok().map(|s|s.parse::<usize>().unwrap()).unwrap_or(0);
