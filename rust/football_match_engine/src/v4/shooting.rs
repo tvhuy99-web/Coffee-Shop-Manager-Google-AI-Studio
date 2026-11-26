@@ -678,7 +678,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 tier: HighlightTier::Extended,
                 seq_id: Some(seq_id),
                 side: Some(def_side),
-                actor: Some(gk_id),
+                actor: Some(gk_id.clone()),
                 target: None,
                 ball_pos: reb_pos,
                 metadata: EventMetadataV4 {
