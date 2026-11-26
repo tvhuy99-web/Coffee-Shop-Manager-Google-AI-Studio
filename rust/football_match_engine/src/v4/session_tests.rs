@@ -1434,11 +1434,8 @@ mod locomotion_full_match_experiment {
             "high_intensity_counter":p.fatigue.high_intensity_actions,
         })).collect();
         let diag=result.diagnostics.as_ref().expect("paired result must have diagnostics");
-        json!({
+        let mut report = json!({
             "ok":true,"behavior_id":result.engine_version,"wall_ms":(start.elapsed().as_secs_f64()*1000.0-probe_ms).max(0.0),
-            "shot_probe_on_target":probe_on_target,"shot_probe_no_reach":probe_no_reach,
-            "shot_probe_reachable_goal":probe_reachable_goal,"shot_probe_keeper_segment_m":probe_segment,
-            "shot_probe_keeper_depth_m":probe_depth,"shot_probe_keeper_speed_mps":probe_speed,"shot_probe_ms":probe_ms,
             "pass_receiver_unreached":diag.home.pass_receiver_unreached+diag.away.pass_receiver_unreached,
             "pass_execution_errors":diag.home.pass_execution_errors+diag.away.pass_execution_errors,
             "pass_intercepted":diag.home.turnovers.pass_intercepted+diag.away.turnovers.pass_intercepted,
@@ -1474,7 +1471,20 @@ mod locomotion_full_match_experiment {
             "completed_passes":u32::from(result.summary.home.passes_completed)+u32::from(result.summary.away.passes_completed),
             "fouls":u32::from(result.summary.home.fouls)+u32::from(result.summary.away.fouls),
             "players":players,
-        })
+        });
+        // Keep the flat report schema, but split macro expansion into
+        // small objects rather than raising the crate's recursion limit.
+        let probes = json!({
+            "shot_probe_on_target":probe_on_target,"shot_probe_no_reach":probe_no_reach,
+            "shot_probe_reachable_goal":probe_reachable_goal,"shot_probe_keeper_segment_m":probe_segment,
+            "shot_probe_keeper_depth_m":probe_depth,"shot_probe_keeper_speed_mps":probe_speed,
+            "shot_probe_ms":probe_ms,
+        });
+        let fields = report.as_object_mut().expect("match report object");
+        for (key, value) in probes.as_object().expect("probe report object") {
+            assert!(fields.insert(key.clone(), value.clone()).is_none(), "duplicate report field {key}");
+        }
+        report
     }
 
     #[test]
