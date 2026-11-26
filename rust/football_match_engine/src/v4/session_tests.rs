@@ -1106,6 +1106,52 @@ mod locomotion_full_match_experiment {
     }
 
     #[test]
+    fn b12_batch2_specialist_delivery_has_no_player_teleport() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            for kind in [DeadBallKind::Corner,DeadBallKind::IndirectFreeKick] {
+                let input=make_v4_input(12054,SimulationMode::FastBatch,RulesModeV4::Standard);
+                let mut s=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+                s.step_one_des_event(true).unwrap();
+                let spot=if kind==DeadBallKind::Corner{
+                    Vec3::ground(if side==TeamSideV4::Home{105.0}else{0.0},0.5)
+                }else{Vec3::ground(if side==TeamSideV4::Home{70.0}else{35.0},24.0)};
+                s.open_dead_ball(kind,side,spot,false,false).unwrap();
+                for _ in 0..40 {
+                    s.step_one_des_event(true).unwrap();
+                    if s.state.dead_ball.is_none(){break;}
+                }
+                assert!(s.state.dead_ball.is_none());
+                let f=s.pending_flight.as_ref().expect("timed specialist delivery");
+                let launch=f.trajectory.start_time_ms;
+                assert_eq!(launch,s.sim_time_ms());
+                assert_eq!(f.trajectory.start_pos.xy(),spot.xy());
+                assert!(f.resolves_at_ms>launch);
+                assert_eq!(s.state.ball.control,BallControlState::Loose);
+                assert!(s.state.ball.owner_player_id.is_none());
+                let taker=s.carrier_idx;
+                assert!(s.state.players[taker].pos.distance(spot.xy())<=0.75);
+                if kind==DeadBallKind::Corner {assert!(f.offside_at_launch.is_empty());}
+                if let Some(path)=&f.pass_contact_motion {
+                    assert_ne!(path.candidate.player_id,s.state.players[taker].player_id);
+                    let sample=path.experimental_plan().unwrap().unwrap().sample_at(f.resolves_at_ms-launch).unwrap();
+                    assert!(sample.state.position.distance(path.target)<=path.candidate.reach_m+1e-5);
+                }
+                let at=f.resolves_at_ms;
+                let ck=s.export_checkpoint().unwrap();
+                let mut restored=MatchSessionV4::from_checkpoint(ck).unwrap();
+                for current in [&mut s,&mut restored] {
+                    for _ in 0..100 {
+                        if current.sim_time_ms()>=at{break;}
+                        current.step_one_des_event(true).unwrap();
+                    }
+                    assert_eq!(current.sim_time_ms(),at);
+                }
+                assert_eq!(s.export_checkpoint().unwrap().checksum_hex,restored.export_checkpoint().unwrap().checksum_hex);
+            }
+        }
+    }
+
+    #[test]
     fn b12_batch2_clearance_is_timed_then_contested_and_restorable() {
         for side in [TeamSideV4::Home,TeamSideV4::Away] {
             let input=make_v4_input(12053,SimulationMode::FastBatch,RulesModeV4::Standard);

@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
 
-BEHAVIOR = "b1.2-batch2-restart-motion"
+BEHAVIOR = "b1.2-batch2-set-piece-delivery"
 COHORTS = ["reference", "balanced", "strong_away", "high_press"]
 FIELDS = ["home_goals", "away_goals", "shots", "passes", "completed_passes",
           "fouls", "live_ms", "dead_ms", "events", "wall_ms",

@@ -253,6 +253,10 @@ impl MatchSessionV4 {
             &mut self.rng,
         );
 
+        let restart_spot=if self.uses_locomotion_experiment() && kind==DeadBallKind::PenaltyKick {
+            let p=crate::v4::spatial::penalty_spot(restart_side);
+            Vec3::ground(p.x,p.y)
+        }else{restart_spot};
         let db = DeadBallState::new(
             kind,
             initial_phase,
@@ -301,7 +305,25 @@ impl MatchSessionV4 {
                     .min_by(|(_,a),(_,b)|a.pos.distance(db.restart_spot.xy())
                         .total_cmp(&b.pos.distance(db.restart_spot.xy()))
                         .then_with(||a.player_id.cmp(&b.player_id))).map(|(idx,_)|idx),
-            _=>None,
+            DeadBallKind::Corner | DeadBallKind::DirectFreeKick | DeadBallKind::IndirectFreeKick
+                | DeadBallKind::QuickFreeKick | DeadBallKind::PenaltyKick => {
+                let side=db.restart_side;
+                let plan=match side {
+                    TeamSideV4::Home=>&self.input.home_team.set_piece_plan,
+                    TeamSideV4::Away=>&self.input.away_team.set_piece_plan,
+                };
+                let (slots,metric):(&[String],fn(&crate::v4::attributes::PlayerAttributes54)->u8)=match db.kind {
+                    DeadBallKind::Corner=>(&plan.corner_taker_slot_ids,|a|a.technical.corners),
+                    DeadBallKind::PenaltyKick=>(&plan.penalty_taker_slot_ids,|a|a.technical.penalties),
+                    _=>(
+                        if distance_to_attacking_goal(side,db.restart_spot.xy())<=28.0 {
+                            &plan.close_free_kick_taker_slot_ids
+                        }else{&plan.far_free_kick_taker_slot_ids},
+                        |a|a.technical.free_kicks),
+                };
+                Some(crate::v4::set_pieces::pick_planned_or_best_specialist(
+                    &self.state,&self.input,side,slots,metric))
+            }
         }
     }
 
@@ -469,6 +491,14 @@ impl MatchSessionV4 {
         let restart_side = db.restart_side;
         let def_side = restart_side.opposite();
 
+        if self.uses_locomotion_experiment() &&
+            (db.kind==DeadBallKind::Corner ||
+                (matches!(db.kind,DeadBallKind::DirectFreeKick|DeadBallKind::IndirectFreeKick|DeadBallKind::QuickFreeKick)
+                && (db.kind==DeadBallKind::IndirectFreeKick || distance_to_attacking_goal(restart_side,db.restart_spot.xy())>28.0))) {
+            let taker=self.experimental_restart_actor(&db)
+                .ok_or_else(||V4Error::InvalidInput("missing delivery taker".into()))?;
+            return self.schedule_experimental_set_piece_delivery(&db,taker);
+        }
         match db.kind {
             DeadBallKind::GoalCelebration | DeadBallKind::Kickoff => {
                 let kicker_idx = self.restart_after_goal_kickoff(restart_side);

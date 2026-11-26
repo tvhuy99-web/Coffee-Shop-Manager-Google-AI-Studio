@@ -1189,6 +1189,28 @@ pub enum LooseBallResolution {
     Boundary(EarlyInteractionHit),
 }
 
+/// First contact during a deliberate aerial delivery, before the
+/// exclusive boundary. The optional keeper-hand index has its own legal
+/// area and reaction restriction. Outfield contact uses the same motion
+/// and height envelope as a pass; no routine-recovery speed restriction.
+pub fn find_locomotion_delivery_contact(
+    traj:&BallTrajectory,candidates:&[PassReachCandidate],keeper_hand_idx:Option<usize>,
+    arrival_ms:i64,
+)->Option<LooseBallResolution>{
+    let now=traj.start_time_ms;
+    if arrival_ms<=now || keeper_hand_idx.is_some_and(|i|i>=candidates.len()){return None;}
+    let boundary=find_earliest_ball_interaction(traj,&[],now,arrival_ms);
+    let end=boundary.as_ref().map_or(arrival_ms,|h|h.time_ms.saturating_sub(1));
+    let refs:Vec<_>=candidates.iter().collect();
+    if let Some((candidate_idx,time_ms,ball_pos,_))=scan_locomotion_contacts(
+        traj,&refs,now,now.checked_add(1)?,end,None,
+        |idx,p,ball,elapsed|elapsed>=p.reaction_ms &&
+            (keeper_hand_idx!=Some(idx)||goalkeeper_hand_contact_allowed(p.side,ball))){
+        return Some(LooseBallResolution::Player{candidate_idx,time_ms,ball_pos});
+    }
+    boundary.map(LooseBallResolution::Boundary)
+}
+
 /// Local bounded search for a moving loose ball. A routine recovery requires
 /// playable height and reduced horizontal speed; rapid repeated contacts
 /// remain a subsequent model refinement, not automatic possession.

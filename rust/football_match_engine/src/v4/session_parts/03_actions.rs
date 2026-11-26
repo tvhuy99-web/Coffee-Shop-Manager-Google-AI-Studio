@@ -375,6 +375,13 @@ impl MatchSessionV4 {
             if let Some(hit) = flight.early_interaction.as_ref() {
                 return self.finish_loose_ball_boundary(origin_side, &cause, hit);
             }
+            if matches!(cause.as_str(),"CORNER_DELIVERY"|"FREE_KICK_DELIVERY") {
+                if flight.pass_contact_motion.is_none() {
+                    return self.start_pass_recovery(origin_side,flight.offside_at_launch,"SET_PIECE_RECOVERY");
+                }
+                return self.finish_experimental_delivery_contact(origin_side,flight.outcome.next_carrier_idx,
+                    &flight.offside_at_launch,&cause);
+            }
             if cause=="CLEARANCE_AIRBORNE" {
                 // A flight with no selected receiver is not a completed
                 // pass. Start recovery from the actually integrated landing.
@@ -450,6 +457,147 @@ impl MatchSessionV4 {
     }
 
 
+    /// Schedule a real corner or non-direct delivery from the awarded
+    /// restart spot. The specialist was physically prepared by the dead
+    /// ball integrator. No player placement and no completed pass at launch.
+    fn schedule_experimental_set_piece_delivery(&mut self,db:&DeadBallState,taker:usize)->Result<(),V4Error>{
+        let side=db.restart_side;
+        let now=self.state.des_clock.sim_time_ms;
+        let spot=db.restart_spot.xy();
+        let corner=db.kind==DeadBallKind::Corner;
+        let target=if corner {
+            Vec2::new(if side==TeamSideV4::Home{PITCH_LENGTH_M-8.0}else{8.0},
+                (34.0+(self.rng.next_double() as f32-0.5)*10.0).clamp(24.0,44.0))
+        }else{
+            // A delivery seeks an existing teammate rather than assigning
+            // possession to a distant specialist. Stable ID breaks ties.
+            self.state.players.iter().enumerate().filter(|(i,p)|*i!=taker
+                && p.side==side && p.on_pitch && !p.sent_off && !p.is_goalkeeper)
+                .min_by(|(_,a),(_,b)|{
+                    let cost=|p:&crate::v4::state::PlayerRuntimeStateV4|
+                        distance_to_attacking_goal(side,p.pos)+0.35*p.pos.distance(spot);
+                    cost(a).total_cmp(&cost(b)).then_with(||a.player_id.cmp(&b.player_id))
+                }).map(|(_,p)|p.pos).ok_or_else(||V4Error::InvalidInput("missing free kick delivery teammate".into()))?
+        };
+        let duration=estimate_ball_flight_ms(&self.input.timing_model,spot.distance(target),
+            BallFlightKind::SetPieceDelivery,self.input.match_environment.weather,
+            self.input.match_environment.pitch_quality,&mut self.rng).max(1);
+        let arrival=now.saturating_add(duration);
+        let trajectory=crate::v4::ball_play::build_pass_trajectory(PassKindV4::Cross,spot,target,now,duration);
+        let mut indices=Vec::new();
+        let mut candidates=Vec::new();
+        let mut keeper_hand_idx=None;
+        for (idx,p) in self.state.players.iter().enumerate(){
+            if idx==taker || !p.on_pitch || p.sent_off{continue;}
+            let candidate=if p.is_goalkeeper && p.side!=side {
+                let c=crate::v4::goalkeeper::shot_contact_candidate(&self.state,idx)
+                    .ok_or_else(||V4Error::InvalidInput("missing delivery keeper profile".into()))?;
+                keeper_hand_idx=Some(candidates.len());
+                c
+            }else{self.contact_candidate(idx,true)};
+            indices.push(idx);
+            candidates.push(candidate);
+        }
+        let (idx,at,motion,boundary)=match match_physics::find_locomotion_delivery_contact(
+            &trajectory,&candidates,keeper_hand_idx,arrival){
+            Some(LooseBallResolution::Player{candidate_idx,time_ms,ball_pos})=>(
+                indices[candidate_idx],time_ms,Some(PassContactMotion{
+                    candidate:candidates[candidate_idx].clone(),target:ball_pos.xy(),started_at_ms:now}),None),
+            Some(LooseBallResolution::Boundary(h))=>(taker,h.time_ms.max(now+1),None,Some(h)),
+            None=>(taker,arrival,None,None),
+        };
+        let offside_at_launch=if corner{Vec::new()}else{
+            self.state.players.iter().enumerate().filter(|(i,p)|*i!=taker
+                && p.on_pitch && !p.sent_off && p.side==side && is_receiver_offside(&self.state,side,spot,p.pos))
+                .map(|(_,p)|p.player_id.clone()).collect()
+        };
+        let id=self.state.players[taker].player_id.clone();
+        self.possession_side=side;
+        self.carrier_idx=taker;
+        self.last_passer_idx=None;
+        self.state.ball.pos=trajectory.start_pos;
+        self.state.ball.vel=trajectory.initial_vel;
+        self.state.ball.control=BallControlState::Loose;
+        self.state.ball.owner_side=None;
+        self.state.ball.owner_player_id=None;
+        self.state.ball.last_touch_side=Some(side);
+        self.state.ball.last_touch_player_id=Some(id.clone());
+        let cause=if corner{"CORNER_DELIVERY"}else{"FREE_KICK_DELIVERY"};
+        self.pending_flight=Some(PendingFlightSnapshotV4{
+            trajectory,planned_arrival_ms:arrival,resolves_at_ms:at,
+            action:FlightActionV4::LooseRecovery{origin_side:side,cause:cause.into()},
+            outcome:crate::v4::ball_play::BallPlayOutcome{next_side:self.state.players[idx].side,
+                next_carrier_idx:idx,stoppage_seconds:0,events:Vec::new()},
+            ball_after:self.state.ball.clone(),counter_delta:FlightCounterDeltaV4::between(&self.state,&self.state),
+            won_corner:false,early_interaction:boundary,pass_contact_motion:motion,offside_at_launch,
+        });
+        self.scheduler.schedule(at,EventPriority::PhysicsAndBoundary,CancellationScope::LivePlayOnly,
+            DesEventPayload::EarlyInteractionResolved{interaction_tag:cause.into(),actor_id:None})
+            .map_err(|e|V4Error::InvalidClock(e.into()))?;
+        self.emit(if corner{EventTypeV4::Corner}else{EventTypeV4::FreeKick},
+            HighlightTier::Extended,None,Some(side),Some(id),None,
+            EventMetadataV4{free_kick_executed:(!corner).then_some(true),cause:Some(cause.into()),
+                ..EventMetadataV4::default()});
+        Ok(())
+    }
+
+    /// Technical resolution happens only at the witnessed contact. Reuse
+    /// the existing first-touch/claim models; a rejected contact cannot
+    /// grant ownership or place a player at the ball.
+    fn finish_experimental_delivery_contact(&mut self,origin:TeamSideV4,idx:usize,
+        offside:&[String],cause:&str)->Result<(),V4Error>{
+        let p=&self.state.players[idx];
+        if !p.on_pitch || p.sent_off{return self.start_pass_recovery(origin,offside.to_vec(),"SET_PIECE_RECOVERY");}
+        let side=p.side;
+        let id=p.player_id.clone();
+        let pos=p.pos;
+        let spot=self.state.ball.pos;
+        let incoming=self.state.ball.vel;
+        if side==origin && offside.contains(&id){
+            return self.finish_pass_recovery(origin,idx,offside,cause);
+        }
+        let attrs=*lookup_attrs(&self.input,p);
+        let hand=p.is_goalkeeper && side!=origin && match_physics::goalkeeper_hand_contact_allowed(side,spot);
+        let controlled=if hand {
+            let team=if side==TeamSideV4::Home{&self.input.home_team}else{&self.input.away_team};
+            let height=team.lineup.iter().chain(team.bench.iter()).find(|a|a.player_id==id)
+                .map(|a|a.height_cm).ok_or_else(||V4Error::InvalidInput("missing delivery keeper height".into()))?;
+            match crate::v4::goalkeeper::resolve_gk_aerial_claim(&attrs,height,true,spot.z,&self.input,&mut self.rng){
+                crate::v4::goalkeeper::GkAerialOutcome::Claimed=>{
+                    self.emit(EventTypeV4::GoalkeeperClaim,HighlightTier::Extended,None,Some(side),Some(id.clone()),None,
+                        EventMetadataV4{cause:Some(cause.into()),..EventMetadataV4::default()});
+                    true
+                }
+                crate::v4::goalkeeper::GkAerialOutcome::PunchedClear=>{
+                    self.emit(EventTypeV4::GoalkeeperPunch,HighlightTier::Extended,None,Some(side),Some(id.clone()),None,
+                        EventMetadataV4{cause:Some(cause.into()),..EventMetadataV4::default()});
+                    false
+                }
+                crate::v4::goalkeeper::GkAerialOutcome::StayedOnLine=>{
+                    // No touch: preserve the launch last-touch identity.
+                    return self.start_pass_recovery(origin,offside.to_vec(),"SET_PIECE_RECOVERY");
+                }
+            }
+        }else{
+            let skill=normalize_attr(attrs.technical.first_touch)*0.45+
+                normalize_attr(attrs.technical.technique)*0.30+normalize_attr(attrs.mental.composure)*0.25;
+            let energy=(p.fatigue.aerobic*0.6+p.fatigue.anaerobic*0.4)/100.0;
+            let speed=(incoming.x*incoming.x+incoming.y*incoming.y+incoming.z*incoming.z).sqrt();
+            let profile=self.contact_candidate(idx,true);
+            let pressure=evaluate_local_context(&self.state,&self.input,side,spot.xy()).pressure/100.0;
+            let chance=contact_control_probability(skill,normalize_attr(attrs.physical.balance),energy,
+                speed,spot.z,pos.distance(spot.xy())/profile.reach_m.max(0.1),pressure);
+            (self.rng.next_double() as f32)<chance
+        };
+        if controlled{return self.finish_pass_recovery(origin,idx,offside,cause);}
+        self.state.ball.vel=blocked_ball_velocity(incoming,pos,spot);
+        self.state.ball.last_touch_side=Some(side);
+        self.state.ball.last_touch_player_id=Some(id.clone());
+        self.emit(EventTypeV4::LooseBall,HighlightTier::None,None,Some(side),Some(id),None,
+            EventMetadataV4{cause:Some(cause.into()),..EventMetadataV4::default()});
+        self.start_pass_recovery(origin,offside.to_vec(),"SET_PIECE_RECOVERY")
+    }
+
     /// Both teams pursue the actual rolling/descending ball.
     fn start_pass_recovery(&mut self, origin_side: TeamSideV4, offside_at_launch: Vec<String>, cause: &str) -> Result<(), V4Error> {
         let now = self.state.des_clock.sim_time_ms;
@@ -518,7 +666,7 @@ impl MatchSessionV4 {
         if cause=="TACKLE_CONTACT_LOOSE" {
             self.diagnostics.record_tackle_loose_recovery(side==origin_side);
         }
-        if matches!(cause,"TACKLE_CONTACT_LOOSE"|"SHOT_REBOUND_LOOSE"|"CLEARANCE_RECOVERY"|"PENALTY_REBOUND_LOOSE") && side!=origin_side {
+        if matches!(cause,"TACKLE_CONTACT_LOOSE"|"SHOT_REBOUND_LOOSE"|"CLEARANCE_RECOVERY"|"PENALTY_REBOUND_LOOSE"|"CORNER_DELIVERY"|"FREE_KICK_DELIVERY"|"SET_PIECE_RECOVERY") && side!=origin_side {
             let avg_wr=self.team_avg_work_rate(side);
             let ball=self.state.ball.pos;
             let phase_events=update_tactical_phases(&mut self.state,origin_side,side,ball,0,avg_wr);
