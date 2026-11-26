@@ -26,6 +26,7 @@ impl MatchSessionV4 {
         let experimental = self.uses_locomotion_experiment();
         let now_ms = self.state.des_clock.sim_time_ms;
         let before_ms = now_ms - dt_ms;
+        let mut motion_loads=if experimental {vec![None;self.state.players.len()]} else {Vec::new()};
 
         if is_ball_in_play {
             let prev_positions: Vec<Vec2> = self.state.players.iter().map(|p| p.pos).collect();
@@ -51,7 +52,7 @@ impl MatchSessionV4 {
             let defense = if experimental {
                 crate::v4::movement::advance_experimental_tactical_motion(&mut self.state,
                     &self.input, self.possession_side, self.carrier_idx, dt_ms,
-                    &mut self.rng, &reserved, &mut budgets)?
+                    &mut self.rng, &reserved, &mut budgets, &mut motion_loads)?
             } else {
                 advance_off_ball_movement_with_report(&mut self.state, &self.input,
                     self.possession_side, self.carrier_idx, dt_sec, &mut self.rng)
@@ -63,7 +64,9 @@ impl MatchSessionV4 {
                 if let Some((idx, p)) = self.state.players.iter_mut().enumerate()
                     .find(|(_, p)| p.player_id == motion.candidate.player_id && p.on_pitch && !p.sent_off) {
                     if experimental {
-                        budgets[idx]=crate::v4::movement::commit_experimental_contact(p,motion,before_ms,now)?;
+                        let (bound,load)=crate::v4::movement::commit_experimental_contact(p,motion,before_ms,now)?;
+                        budgets[idx]=bound;
+                        crate::v4::movement::record_experimental_motion(&mut motion_loads[idx],load)?;
                     } else {
                         let old = prev_positions[idx];
                         let next = motion.position_at(now);
@@ -85,7 +88,9 @@ impl MatchSessionV4 {
                 let p = &mut self.state.players[idx];
                 if p.on_pitch && !p.sent_off && p.player_id == carry.motion.candidate.player_id {
                     if experimental {
-                        budgets[idx]=crate::v4::movement::commit_experimental_contact(p,&carry.motion,before_ms,now_ms.min(carry.resolves_at_ms))?;
+                        let (bound,load)=crate::v4::movement::commit_experimental_contact(p,&carry.motion,before_ms,now_ms.min(carry.resolves_at_ms))?;
+                        budgets[idx]=bound;
+                        crate::v4::movement::record_experimental_motion(&mut motion_loads[idx],load)?;
                     } else {
                         let old = prev_positions[idx];
                         let next = carry.motion.position_at(self.state.des_clock.sim_time_ms.min(carry.resolves_at_ms));
@@ -102,7 +107,9 @@ impl MatchSessionV4 {
                     if let Some((di,def))=self.state.players.iter_mut().enumerate().find(|(_,p)|
                         p.player_id==chase.candidate.player_id && p.on_pitch && !p.sent_off) {
                         if experimental {
-                            budgets[di]=crate::v4::movement::commit_experimental_contact(def,chase,before_ms,now_ms.min(carry.resolves_at_ms))?;
+                            let (bound,load)=crate::v4::movement::commit_experimental_contact(def,chase,before_ms,now_ms.min(carry.resolves_at_ms))?;
+                            budgets[di]=bound;
+                            crate::v4::movement::record_experimental_motion(&mut motion_loads[di],load)?;
                         } else {
                             let old=prev_positions[di];
                             let next=chase.position_at(self.state.des_clock.sim_time_ms.min(carry.resolves_at_ms));
@@ -131,7 +138,9 @@ impl MatchSessionV4 {
                 if let Some(path)=self.pending_decision.as_ref().and_then(|d|d.preparation_motion.as_ref()) {
                     if let Some((idx,p))=self.state.players.iter_mut().enumerate().find(|(_,p)|
                         p.player_id==path.candidate.player_id && p.on_pitch && !p.sent_off) {
-                        budgets[idx]=crate::v4::movement::commit_experimental_contact(p,path,before_ms,now_ms)?;
+                        let (bound,load)=crate::v4::movement::commit_experimental_contact(p,path,before_ms,now_ms)?;
+                        budgets[idx]=bound;
+                        crate::v4::movement::record_experimental_motion(&mut motion_loads[idx],load)?;
                         self.state.ball.pos=Vec3::ground(p.pos.x,p.pos.y);
                         self.state.ball.vel=Vec3::new(p.vel.x,p.vel.y,0.0);
                     }
@@ -143,7 +152,9 @@ impl MatchSessionV4 {
                 if let Some((di,def))=self.state.players.iter_mut().enumerate()
                     .find(|(_,p)|p.player_id==chase.candidate.player_id && p.on_pitch && !p.sent_off) {
                     if experimental {
-                        budgets[di]=crate::v4::movement::commit_experimental_contact(def,chase,before_ms,now_ms)?;
+                        let (bound,load)=crate::v4::movement::commit_experimental_contact(def,chase,before_ms,now_ms)?;
+                        budgets[di]=bound;
+                        crate::v4::movement::record_experimental_motion(&mut motion_loads[di],load)?;
                     } else {
                         let old=prev_positions[di];
                         let next=chase.position_at(self.state.des_clock.sim_time_ms);
@@ -186,7 +197,7 @@ impl MatchSessionV4 {
             // returning to own half for kickoff, entering box for corner/FK, forming wall).
             let db_ctx = self.state.dead_ball.as_ref().map(|db| (db.kind, db.phase, db.restart_side, db.restart_spot));
             let profiles = &self.state.player_profiles;
-            for p in &mut self.state.players {
+            for (idx,p) in self.state.players.iter_mut().enumerate() {
                 if !p.on_pitch || p.sent_off {
                     p.last_moved_m = 0.0;
                     continue;
@@ -224,8 +235,9 @@ impl MatchSessionV4 {
                 if experimental {
                     let attrs = &profiles.get(p.profile_idx).ok_or_else(||
                         V4Error::InvalidInput("missing experiment actor profile".into()))?.attrs;
-                    crate::v4::movement::integrate_experimental_actor(p, attrs, target,
+                    let (_,load)=crate::v4::movement::integrate_experimental_actor(p, attrs, target,
                         Some(walk_speed_mps), dt_ms)?;
+                    crate::v4::movement::record_experimental_motion(&mut motion_loads[idx],load)?;
                     continue;
                 }
                 let max_step = walk_speed_mps * dt_sec;
@@ -250,7 +262,7 @@ impl MatchSessionV4 {
                 self.state.ball.vel.z=0.0;
             }
         }
-        self.update_interval_fatigue(dt_sec, self.possession_side, !is_ball_in_play);
+        self.update_interval_fatigue(dt_sec, self.possession_side, !is_ball_in_play, &motion_loads)?;
 
         if is_ball_in_play {
             let avg_wr = self.team_avg_work_rate(self.possession_side);

@@ -5,9 +5,14 @@ impl MatchSessionV4 {
         dt_sec: f32,
         possession_side: TeamSideV4,
         is_dead_ball: bool,
-    ) {
+        motion_loads: &[Option<crate::v4::movement::ExperimentalMotionLoad>],
+    ) -> Result<(),V4Error> {
         if dt_sec <= 0.0 {
-            return;
+            return Ok(());
+        }
+        let experimental=self.uses_locomotion_experiment();
+        if experimental && motion_loads.len()!=self.state.players.len() {
+            return Err(V4Error::InvalidInput("motion workload roster mismatch".into()));
         }
         let home_press = self.state.active_home_ti.pressing_intensity as f32 / 100.0;
         let away_press = self.state.active_away_ti.pressing_intensity as f32 / 100.0;
@@ -23,12 +28,24 @@ impl MatchSessionV4 {
                 TeamSideV4::Away => away_press,
             };
             let attrs = *lookup_attrs(&self.input, &self.state.players[idx]);
-            let moved_m = if is_dead_ball && !self.uses_locomotion_experiment() {
+            let moved_m = if is_dead_ball && !experimental {
                 // Light walking/repositioning during stoppages (~0.35 m/s).
                 dt_sec * if is_gk { 0.15 } else { 0.35 }
             } else {
                 self.state.players[idx].last_moved_m.max(0.0)
             };
+            if experimental {
+                let load=motion_loads[idx].ok_or_else(||V4Error::InvalidInput(
+                    format!("missing motion workload for {}",self.state.players[idx].player_id)))?;
+                if !load.sprint_s.is_finite() || load.sprint_s<0.0 || load.sprint_s>load.high_s+0.0001 {
+                    return Err(V4Error::InvalidInput("invalid sprint workload".into()));
+                }
+                self.state.players[idx].fatigue.apply_measured_motion(
+                    dt_sec,moved_m,load.high_s,load.high_distance_m,load.high_entries,
+                    load.sprint_entries,is_dead_ball,attrs.physical.stamina,attrs.physical.natural_fitness)
+                    .map_err(|e|V4Error::InvalidInput(e.into()))?;
+                continue;
+            }
             let speed_mps = moved_m / dt_sec.max(0.05);
             let high_intensity = !is_dead_ball
                 && !is_gk
@@ -43,6 +60,7 @@ impl MatchSessionV4 {
                 attrs.physical.natural_fitness,
             );
         }
+        Ok(())
     }
 
     fn apply_half_time_recovery(&mut self) {

@@ -222,6 +222,56 @@ pub(crate) fn advance_off_ball_movement_with_report(
     defense
 }
 
+// Provisional speed bands; these are workload definitions, not match quotas.
+const EXP_HIGH_MPS: f32 = 4.2;
+const EXP_SPRINT_MPS: f32 = 7.0;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct ExperimentalMotionLoad {
+    pub high_s: f32,
+    pub high_distance_m: f32,
+    pub high_entries: u32,
+    pub sprint_s: f32,
+    pub sprint_entries: u32,
+}
+
+impl ExperimentalMotionLoad {
+    fn interval(self, start:Self) -> Result<Self,V4Error> {
+        Ok(Self { high_s:self.high_s-start.high_s,
+            high_distance_m:self.high_distance_m-start.high_distance_m,
+            high_entries:self.high_entries.checked_sub(start.high_entries)
+                .ok_or_else(||candidate_motion_error("high-speed entry count decreased"))?,
+            sprint_s:self.sprint_s-start.sprint_s,
+            sprint_entries:self.sprint_entries.checked_sub(start.sprint_entries)
+                .ok_or_else(||candidate_motion_error("sprint entry count decreased"))? })
+    }
+    fn add(&mut self, other:Self) {
+        self.high_s+=other.high_s;
+        self.high_distance_m+=other.high_distance_m;
+        self.high_entries=self.high_entries.saturating_add(other.high_entries);
+        self.sprint_s+=other.sprint_s;
+        self.sprint_entries=self.sprint_entries.saturating_add(other.sprint_entries);
+    }
+}
+
+fn sample_experimental_motion(plan:&MotionPlan, elapsed_ms:i64)
+    -> Result<(MotionResult,ExperimentalMotionLoad), V4Error> {
+    let (motion,high,sprint)=plan.sample_with_exposure(elapsed_ms,EXP_HIGH_MPS,EXP_SPRINT_MPS)
+        .map_err(candidate_motion_error)?;
+    Ok((motion,ExperimentalMotionLoad {
+        high_s:high.above_threshold_s, high_distance_m:high.above_threshold_distance_m,
+        high_entries:high.entries, sprint_s:sprint.above_threshold_s, sprint_entries:sprint.entries }))
+}
+
+/// Exactly one workload row per active actor per DES interval.
+pub(crate) fn record_experimental_motion(
+    row:&mut Option<ExperimentalMotionLoad>, load:ExperimentalMotionLoad,
+) -> Result<(),V4Error> {
+    if row.is_some() { return Err(candidate_motion_error("duplicate motion workload")); }
+    *row=Some(load);
+    Ok(())
+}
+
 /// Experimental runtime integration for actors without a reserved contact path.
 /// Called by the DES test experiment, never by the shipping session.
 pub(crate) fn advance_experimental_tactical_motion(
@@ -233,6 +283,7 @@ pub(crate) fn advance_experimental_tactical_motion(
     rng: &mut DeterministicRng,
     reserved: &[bool],
     budgets: &mut [f32],
+    loads: &mut [Option<ExperimentalMotionLoad>],
 ) -> Result<Vec<DefensiveIntent>, V4Error> {
     let dt = match_contracts::units::ms_to_seconds_f32(duration_ms);
     let (targets, defense) = select_movement_targets(state, input, possession_side, carrier_idx, dt, rng);
@@ -240,8 +291,10 @@ pub(crate) fn advance_experimental_tactical_motion(
         if reserved[idx] { continue; }
         if let Some(target) = target {
             let attrs = *player_attrs(state, &state.players[idx]);
-            budgets[idx] = integrate_experimental_actor(&mut state.players[idx], &attrs, target,
+            let (bound,load) = integrate_experimental_actor(&mut state.players[idx], &attrs, target,
                 None, duration_ms)?;
+            budgets[idx]=bound;
+            record_experimental_motion(&mut loads[idx],load)?;
         } else {
             state.players[idx].last_moved_m = 0.0;
             state.players[idx].vel = Vec2::default();
@@ -258,7 +311,7 @@ pub(crate) fn integrate_experimental_actor(
     target: Vec2,
     requested_speed: Option<f32>,
     duration_ms: i64,
-) -> Result<f32, V4Error> {
+) -> Result<(f32,ExperimentalMotionLoad), V4Error> {
     let cap = MovementCapability::from_attributes(&attrs.physical, player.fatigue.aerobic,
         player.fatigue.anaerobic).map_err(candidate_motion_error)?;
     let intent = MovementIntent { target, intensity: requested_speed.map_or(1.0, |v|
@@ -267,11 +320,13 @@ pub(crate) fn integrate_experimental_actor(
     let mut remaining = duration_ms;
     let mut distance = 0.0_f32;
     let mut budget = 0.0_f32;
+    let mut workload=ExperimentalMotionLoad::default();
     while remaining > 0 {
         // Explicit technical plan horizon; no extra RNG or condition update.
         let span = remaining.min(match_physics::movement::MAX_MOTION_HORIZON_MS);
         let plan = MotionPlan::new(current, intent, cap).map_err(candidate_motion_error)?;
-        let result = plan.sample_at(span).map_err(candidate_motion_error)?;
+        let (result,load)=sample_experimental_motion(&plan,span)?;
+        workload.add(load);
         let bound = plan.maximum_path_speed_mps() * match_contracts::units::ms_to_seconds_f32(span);
         let eps = 32.0 * f32::EPSILON * PITCH_LENGTH_M.max(PITCH_WIDTH_M) + 4.0 * f32::EPSILON * bound;
         if result.distance_m > bound + eps || current.position.distance(result.state.position) > result.distance_m + eps {
@@ -287,7 +342,7 @@ pub(crate) fn integrate_experimental_actor(
     player.facing_rad = current.facing_rad;
     player.target_pos = target;
     player.last_moved_m = distance;
-    Ok(budget)
+    Ok((budget,workload))
 }
 
 /// Commit the exact solver path selected by the authoritative contact race.
@@ -297,7 +352,7 @@ pub(crate) fn commit_experimental_contact(
     path: &match_physics::PassContactMotion,
     before_ms: i64,
     now_ms: i64,
-) -> Result<f32, V4Error> {
+) -> Result<(f32,ExperimentalMotionLoad), V4Error> {
     if player.player_id != path.candidate.player_id || player.side != path.candidate.side
         || before_ms < path.started_at_ms || now_ms < before_ms
     {
@@ -305,8 +360,9 @@ pub(crate) fn commit_experimental_contact(
     }
     let plan = path.experimental_plan().map_err(candidate_motion_error)?
         .ok_or_else(|| candidate_motion_error("missing contact locomotion"))?;
-    let start = plan.sample_at(before_ms-path.started_at_ms).map_err(candidate_motion_error)?;
-    let end = plan.sample_at(now_ms-path.started_at_ms).map_err(candidate_motion_error)?;
+    let (start,start_load)=sample_experimental_motion(&plan,before_ms-path.started_at_ms)?;
+    let (end,end_load)=sample_experimental_motion(&plan,now_ms-path.started_at_ms)?;
+    let workload=end_load.interval(start_load)?;
     let current = MotionState { position: player.pos, velocity: player.vel, facing_rad: player.facing_rad };
     if current != start.state {
         return Err(V4Error::InvalidInput(format!(
@@ -326,7 +382,7 @@ pub(crate) fn commit_experimental_contact(
     player.facing_rad=end.state.facing_rad;
     player.target_pos=path.target;
     player.last_moved_m=distance;
-    Ok(bound)
+    Ok((bound,workload))
 }
 
 /// Select intentions from one immutable world snapshot; shared with the isolated
