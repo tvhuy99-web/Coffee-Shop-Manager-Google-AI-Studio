@@ -7,13 +7,17 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
 
-BEHAVIOR = "b1.2-observed-pass-forecast-exp4"
+BEHAVIOR = "b1.2-shot-block-locomotion-exp5"
 COHORTS = ["reference", "balanced", "strong_away", "high_press"]
 FIELDS = ["home_goals", "away_goals", "shots", "passes", "completed_passes",
           "fouls", "live_ms", "dead_ms", "events", "wall_ms",
           "pass_receiver_unreached", "pass_execution_errors", "pass_intercepted",
           "pass_out_of_play", "first_touch_errors", "pass_contacts_loose",
-          "pass_risk_pairs", "pass_risk_initial_sum", "pass_risk_release_sum", "reaim_choices"]
+          "pass_risk_pairs", "pass_risk_initial_sum", "pass_risk_release_sum", "reaim_choices",
+          "possessions", "final_third_possessions", "penalty_area_possessions",
+          "possessions_with_shot", "shots_from_box", "shots_blocked", "shots_on_target",
+          "shots_off_target", "shot_xg", "carry_starts", "carry_contacts",
+          "carry_turnovers", "tackle_opportunities", "tackle_commit_choices"]
 
 
 def require(condition, detail):
@@ -102,7 +106,7 @@ def main(directory):
         "cohort_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in cohorts.items()},
         "role_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in roles.items()},
         "production_acceptance": "BLOCKED: remaining execution paths, rule boundaries, non-pass perception, sprint episode definition, performance and tracking calibration incomplete",
-        "notes": ["Exp4 changes pass perception only relative to Exp3: observed-motion priors and receiver feasibility, without revealing authoritative capabilities or sampled kick error.",
+        "notes": ["Exp5 changes outfield shot-block reach and commits the selected motion path; pass forecast, shot quality and conditional block skill coefficients are unchanged.",
                   "Distributions are conditional on successful pairs; failures are retained.",
                   "Legacy interval counters and experiment threshold crossing counts are reported separately; neither is a validated sprint episode metric.",
                   "Pass diagnostic counters retain their existing definitions; not disjoint causes and not forced to sum to pass attempts.",

@@ -84,3 +84,6 @@ Exp3 changes the test-only behavior ID to `b1.2-measured-workload-exp3`, retaini
 
 
 Exp4 changes test-only behavior ID to `b1.2-observed-pass-forecast-exp4`, retains Exp3 physical workload and pace policy, adds isolated observed-motion pass forecast tests and reports existing pass diagnostics per pair. Same 1000 paired seeds and unchanged production L0–L4; report still explicitly blocks production. Legacy and experimental forecasts do not share hidden capabilities.
+
+
+Exp5 changes test-only ID to `b1.2-shot-block-locomotion-exp5` and adds actual reserved shot-block path checkpoint/restore regression and paired possession/shot/carry/tackle diagnostics. No change to golden references. The new test verifies path execution, not full shot aftermath physics.

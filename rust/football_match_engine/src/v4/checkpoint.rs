@@ -65,8 +65,8 @@ pub struct PendingFlightSnapshotV4 {
     pub counter_delta: FlightCounterDeltaV4,
     pub won_corner: bool,
     pub early_interaction: Option<EarlyInteractionHit>,
-    // Optional for existing development snapshots. Final release must version
-    // the changed engine behaviour before promising replay compatibility.
+    // Reserved contact path for pass, recovery, or experimental shot block.
+    // Preserve the existing serialized key for exact legacy compatibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) pass_contact_motion: Option<crate::v4::interaction::PassContactMotion>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -248,7 +248,7 @@ pub struct MatchSessionSnapshotV4 {
     pub locomotion_experiment_id: Option<String>,
 }
 
-pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-observed-pass-forecast-exp4";
+pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-shot-block-locomotion-exp5";
 
 /// Self-verifying versioned DES v1.4 match checkpoint envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -401,6 +401,22 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
     let experimental = p.locomotion_experiment_id.is_some();
     let mut contact_paths = Vec::new();
     if let Some(f)=&p.pending_flight {
+        if experimental && matches!(f.action,FlightActionV4::Shot{..}) {
+            let block=f.early_interaction.as_ref().filter(|h|h.kind==crate::v4::interaction::InteractionKind::ShotBlocked);
+            match (block,f.pass_contact_motion.as_ref()) {
+                (Some(hit),Some(path)) if hit.defender_id.as_deref()==Some(path.candidate.player_id.as_str())
+                    && hit.time_ms==f.resolves_at_ms && path.target==hit.ball_pos.xy()
+                    && path.started_at_ms==f.trajectory.start_time_ms => {
+                    let predicted=path.candidate.contact_position_toward(path.target,hit.time_ms-path.started_at_ms)
+                        .ok_or_else(||bad("invalid shot block path"))?;
+                    if predicted.distance(path.target)>path.candidate.reach_m+1e-5 {
+                        return Err(bad("unreachable shot block"));
+                    }
+                }
+                (None,None)=>{}
+                _=>return Err(bad("shot block contact identity mismatch")),
+            }
+        }
         contact_paths.extend(f.pass_contact_motion.iter());
     }
     if let Some(c)=&p.pending_carry {

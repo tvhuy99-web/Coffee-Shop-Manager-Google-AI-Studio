@@ -1105,6 +1105,50 @@ mod locomotion_full_match_experiment {
         assert_eq!(candidate.export_checkpoint().unwrap().checksum_hex, resumed.export_checkpoint().unwrap().checksum_hex);
     }
 
+    #[test]
+    fn b12_exp5_shot_block_path_survives_checkpoint_and_real_des() {
+        // Find a real committed block in deterministic match fixtures;
+        // no synthetic player displacement, mocked contact, or forced RNG.
+        for index in 0..4 {
+            let (input,_)=fixture(index,SimulationMode::FastBatch);
+            let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+            for _ in 0..3000 {
+                if session.is_full_time() {break;}
+                session.step_one_des_event(true).unwrap();
+                session.completed_beats+=1;
+                let Some(f)=session.pending_flight.as_ref() else {continue;};
+                if !matches!(f.action,FlightActionV4::Shot{..}) {continue;}
+                let Some(hit)=f.early_interaction.as_ref().filter(|h|h.kind==InteractionKind::ShotBlocked) else {continue;};
+                let path=f.pass_contact_motion.clone().expect("reserved shot-block actor");
+                let at=f.resolves_at_ms;
+                assert_eq!(hit.time_ms,at);
+                assert_eq!(hit.defender_id.as_deref(),Some(path.candidate.player_id.as_str()));
+                let target=hit.ball_pos.xy();
+                let plan=path.experimental_plan().unwrap().unwrap();
+                let terminal=plan.sample_at(at-path.started_at_ms).unwrap().state;
+                assert!(terminal.position.distance(target)<=path.candidate.reach_m+1e-5);
+                let ck=session.export_checkpoint().unwrap();
+                let mut resumed=MatchSessionV4::from_checkpoint(
+                    serde_json::from_str(&serde_json::to_string(&ck).unwrap()).unwrap()).unwrap();
+                for current in [&mut session,&mut resumed] {
+                    for _ in 0..100 {
+                        if current.sim_time_ms()>=at {break;}
+                        current.step_one_des_event(true).unwrap();
+                        current.completed_beats+=1;
+                    }
+                    assert_eq!(current.sim_time_ms(),at);
+                    let actor=current.state.players.iter().find(|p|p.player_id==path.candidate.player_id).unwrap();
+                    assert_eq!(actor.pos,terminal.position);
+                    assert_eq!(actor.vel,terminal.velocity);
+                    assert_eq!(actor.facing_rad,terminal.facing_rad);
+                }
+                assert_eq!(session.export_checkpoint().unwrap().checksum_hex,resumed.export_checkpoint().unwrap().checksum_hex);
+                return;
+            }
+        }
+        panic!("no committed shot block in the deterministic regression fixtures");
+    }
+
     fn fixture(index: usize, mode: SimulationMode) -> (MatchInputV4, &'static str) {
         let seed = 104729_i64 + index as i64 * 7907;
         let (name, hl, al, press) = match index % 4 {
@@ -1175,6 +1219,20 @@ mod locomotion_full_match_experiment {
             "pass_risk_initial_sum":diag.des.pass_risk_initial_sum,
             "pass_risk_release_sum":diag.des.pass_risk_release_sum,
             "reaim_choices":diag.des.reaim_choices,
+            "possessions":diag.home.possessions+diag.away.possessions,
+            "final_third_possessions":diag.home.final_third_possessions+diag.away.final_third_possessions,
+            "penalty_area_possessions":diag.home.penalty_area_possessions+diag.away.penalty_area_possessions,
+            "possessions_with_shot":diag.home.possessions_with_shot+diag.away.possessions_with_shot,
+            "shots_from_box":diag.home.shots_from_box+diag.away.shots_from_box,
+            "shots_blocked":diag.home.shots_blocked+diag.away.shots_blocked,
+            "shots_on_target":diag.home.shots_on_target+diag.away.shots_on_target,
+            "shots_off_target":diag.home.shots_off_target+diag.away.shots_off_target,
+            "shot_xg":diag.home.shot_xg+diag.away.shot_xg,
+            "carry_starts":diag.des.carry_starts,
+            "carry_contacts":diag.des.carry_contacts,
+            "carry_turnovers":diag.des.carry_turnovers,
+            "tackle_opportunities":diag.des.tackle_opportunities,
+            "tackle_commit_choices":diag.des.tackle_commit_choices,
             "counter_semantics":if experiment {"upward_speed_crossings_4_2_and_7_mps"} else {"legacy_interval_counts"},
             "fingerprint":result.event_timeline_fingerprint,"events":result.event_count,
             "time_ms":session.sim_time_ms(),"live_ms":session.state.des_clock.ball_in_play_ms,
