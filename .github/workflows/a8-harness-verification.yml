@@ -1,0 +1,14 @@
+name: A8 harness verification
+on:
+  push:
+    branches: ['refactor/a8-device-harness']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fake-adb:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n tools/capture_a8_device_evidence.sh tools/test_a8_device_harness.sh
+      - run: bash tools/test_a8_device_harness.sh

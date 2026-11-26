@@ -8,8 +8,9 @@ command -v adb >/dev/null || { echo "BLOCKED: adb unavailable" >&2; exit 3; }
 [[ -f "$apk" ]] || { echo "BLOCKED: APK missing" >&2; exit 3; }
 [[ ! -e "$out" ]] || { echo "Refusing to overwrite evidence: $out" >&2; exit 2; }
 [[ "$(adb -s "$serial" get-state)" == device ]] || { echo "BLOCKED: real device not available" >&2; exit 3; }
-mkdir -p "$out"
 adb_cmd(){ adb -s "$serial" "$@"; }
+[[ "$(adb_cmd shell getprop ro.kernel.qemu | tr -d '\r')" != 1 ]] || { echo "BLOCKED: emulator is not a real target device" >&2; exit 3; }
+mkdir -p "$out"
 sha256sum "$apk" > "$out/apk.sha256"
 git rev-parse HEAD > "$out/source-commit.txt"
 adb_cmd shell getprop ro.product.model > "$out/model.txt"
@@ -21,6 +22,19 @@ adb_cmd shell dumpsys thermalservice > "$out/thermal-before.txt"
 adb_cmd shell dumpsys meminfo "$pkg" > "$out/memory-before.txt"
 adb_cmd shell dumpsys gfxinfo "$pkg" > "$out/frames-before.txt"
 adb_cmd shell pm path "$pkg" > "$out/installed-apk-path.txt"
+mapfile -t installed < <(tr -d '\r' < "$out/installed-apk-path.txt" | sed -n 's/^package://p')
+[[ ${#installed[@]} -eq 1 ]] || { echo "BLOCKED: expected one monolithic installed APK" >&2; exit 4; }
+[[ "${installed[0]}" == */base.apk ]] || { echo "BLOCKED: installed base APK path not found" >&2; exit 4; }
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+adb_cmd pull "${installed[0]}" "$tmp/installed.apk" > "$out/adb-pull.txt"
+expected="$(sha256sum "$apk" | cut -d' ' -f1)"
+actual="$(sha256sum "$tmp/installed.apk" | cut -d' ' -f1)"
+printf '%s\n' "$actual" > "$out/installed-apk.sha256"
+[[ "$actual" == "$expected" ]] || { echo "BLOCKED: installed APK SHA-256 differs from candidate" >&2; exit 4; }
+printf 'MATCH\n' > "$out/apk-identity-status.txt"
+adb_cmd shell dumpsys audio > "$out/audio-focus-before.txt"
+adb_cmd shell dumpsys activity processes > "$out/processes-before.txt"
 echo "Evidence captured; no device test has been marked PASS. Record scenario outcomes manually."
 cat > "$out/scenarios.csv" <<'CSV'
 scenario,rate,seed,event_fingerprint,cue_fingerprint,drift_p95_ms,backlog_max,elapsed_ms,status,evidence
