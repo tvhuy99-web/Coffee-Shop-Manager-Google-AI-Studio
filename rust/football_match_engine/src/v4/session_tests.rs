@@ -1111,6 +1111,12 @@ mod locomotion_full_match_experiment {
         let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
         session.step_one_des_event(true).unwrap();
         session.scheduler.invalidate_live_play();
+        // Establish the ordinary settled possession phase; the first
+        // phase transition after kickoff would legitimately invalidate.
+        let side=session.possession_side;
+        session.state.team_state_mut(side).phase=crate::v4::state::TacticalPhaseV4::InPossession;
+        session.state.team_state_mut(side.opposite()).phase=crate::v4::state::TacticalPhaseV4::OutOfPossession;
+        session.state.transition_remaining_ms=0;
         session.begin_player_decision(false).unwrap();
         let now=session.sim_time_ms();
         let end=session.pending_decision.as_ref().unwrap().executes_at_ms;
