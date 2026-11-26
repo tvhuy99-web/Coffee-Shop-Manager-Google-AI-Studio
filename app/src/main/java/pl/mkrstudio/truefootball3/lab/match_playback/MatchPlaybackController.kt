@@ -42,7 +42,7 @@ class MatchPlaybackController(
     private val checkpointStore: MatchCheckpointStore? = null,
     private val clockProvider: () -> Long = { SystemClock.elapsedRealtime() },
     private val workerExecutor: ExecutorService = Executors.newSingleThreadExecutor()
-) {
+) : pl.mkrstudio.truefootball3.presentation.MatchPlaybackBoundary {
     interface Listener {
         fun onEventsProduced(
             stepObj: JSONObject,
@@ -216,7 +216,7 @@ class MatchPlaybackController(
      * Re-anchors `(anchorSimTimeMs, anchorWallMs)` BEFORE updating `playbackRate` so there is
      * never any backward jump or accumulated time drift.
      */
-    fun setPlaybackRate(newRate: Float) {
+    override fun setPlaybackRate(newRate: Float) {
         val clamped = normalizeRate(newRate)
         val nowWall = clockProvider()
         val exactSimNow = computeCurrentSimTimeMs(nowWall)
@@ -247,7 +247,7 @@ class MatchPlaybackController(
         mainHandler.post(frameRunnable)
     }
 
-    fun pause() {
+    override fun pause() {
         if (paused) return
         val nowWall = clockProvider()
         anchorSimTimeMs = minOf(computeCurrentSimTimeMs(nowWall), simulatedSimTimeMs,
@@ -260,7 +260,7 @@ class MatchPlaybackController(
         LabLogStore.log("PLAYBACK", "Paused at simTimeMs=$anchorSimTimeMs")
     }
 
-    fun resume() {
+    override fun resume() {
         if (released || finished) return
         if (currentHalfStage == DesHalfStage.HALF_TIME_BREAK ||
             currentHalfStage == DesHalfStage.EXTRA_TIME_BREAK
@@ -400,7 +400,7 @@ class MatchPlaybackController(
      * Submits a live tactical or substitution command JSON to Rust DES and invalidates speculative
      * lookahead cues beyond the committed frontier so future narration reflects the new decision.
      */
-    fun submitCommandJson(commandJson: String, onResult: (ok: Boolean, responseJson: String) -> Unit) {
+    override fun submitCommandJson(commandJson: String, onResult: (ok: Boolean, responseJson: String) -> Unit) {
         if (released || finished || !session.isOpen) {
             onResult(false, "{\"ok\":false,\"error\":\"session_not_active\"}")
             return
@@ -429,7 +429,7 @@ class MatchPlaybackController(
         }
     }
 
-    fun release() {
+    override fun release() {
         released = true
         paused = true
         mainHandler.removeCallbacks(frameRunnable)

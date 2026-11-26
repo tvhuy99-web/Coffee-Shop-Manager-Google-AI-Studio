@@ -35,7 +35,7 @@ class NarrationScheduler(
     private val onCuePresented: (cue: CommentaryCue, event: SimulationEvent) -> Unit = { _, _ -> },
     private val onHighSpeedWarning: (message: String) -> Unit = {},
     private val onHealthChanged: (status: TtsHealthStatus, detail: String) -> Unit = { _, _ -> }
-) {
+) : pl.mkrstudio.truefootball3.presentation.MatchCommentaryBoundary {
     /**
      * Immutable simulation event arriving from the Rust DES session before cue coalescing/locking.
      */
@@ -141,7 +141,7 @@ class NarrationScheduler(
      * Updates playback speed (`1.0x / 1.25x / 1.5x / 2.0x / 3.0x`) WITHOUT altering the locked
      * 1.0x cue list, text, or order, and without ever disabling TTS.
      */
-    fun setPlaybackRate(rate: Float) {
+    override fun setPlaybackRate(rate: Float) {
         val clamped = rate.coerceIn(MIN_PLAYBACK_RATE, MAX_PLAYBACK_RATE)
         val previous = playbackRate
         playbackRate = clamped
@@ -230,7 +230,7 @@ class NarrationScheduler(
      * Presents any due cues immediately (text + audio director) and plays their WAV at current
      * [playbackRate]. TTS synthesis/playback lag NEVER blocks the simulation clock.
      */
-    fun onClockTick(committedSimTimeMs: Long) {
+    override fun onClockTick(committedSimTimeMs: Long) {
         if (released || paused) return
         lastClockSimTimeMs = committedSimTimeMs
 
@@ -301,12 +301,12 @@ class NarrationScheduler(
         }
     }
 
-    fun pause() {
+    override fun pause() {
         paused = true
         ttsManager?.pauseWavPlayback()
     }
 
-    fun resume() {
+    override fun resume() {
         if (released) return
         paused = false
         ttsManager?.resumeWavPlayback()
@@ -321,7 +321,7 @@ class NarrationScheduler(
         ttsManager?.stopWavPlayback()
     }
 
-    fun release() {
+    override fun release() {
         released = true
         paused = true
         synchronized(lock) {

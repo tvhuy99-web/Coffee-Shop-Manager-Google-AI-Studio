@@ -12,7 +12,7 @@ import java.util.EnumMap
 import java.util.Random
 import pl.mkrstudio.truefootball3.audio.MatchAudioManager.Cue.*
 
-class MatchAudioManager(context: Context, enabled: Boolean) {
+class MatchAudioManager(context: Context, enabled: Boolean) : pl.mkrstudio.truefootball3.presentation.MatchAudioBoundary {
     enum class Cue {
         AMBIENCE_SMALL, AMBIENCE_MEDIUM, AMBIENCE_LARGE,
         CROWD_RISE, PASS_KICK, STRONG_SHOT, HEADER, NET_HIT, POST_CROSSBAR,
@@ -141,14 +141,14 @@ class MatchAudioManager(context: Context, enabled: Boolean) {
         }
     }
 
-    fun pauseAll() {
+    override fun pauseAll() {
         if (released) return
         soundPool.autoPause()
         pausePlayer(ambiencePlayer)
         for (player in ArrayList(activePlayers)) pausePlayer(player)
     }
 
-    fun resumeAll() {
+    override fun resumeAll() {
         if (!enabled || released) return
         soundPool.autoResume()
         resumePlayer(ambiencePlayer)
@@ -156,7 +156,7 @@ class MatchAudioManager(context: Context, enabled: Boolean) {
         startAmbienceIfReady()
     }
 
-    fun release() {
+    override fun release() {
         if (released) return
         released = true
         ambienceRequested = false
