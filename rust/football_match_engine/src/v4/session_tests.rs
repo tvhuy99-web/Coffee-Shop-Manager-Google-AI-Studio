@@ -1106,6 +1106,40 @@ mod locomotion_full_match_experiment {
     }
 
     #[test]
+    fn b12_batch1_motion_lifetime_rejects_corrupt_reservations_and_cancels_on_stoppage() {
+        let input=make_v4_input(12051,SimulationMode::FastBatch,RulesModeV4::Standard);
+        let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+        session.step_one_des_event(true).unwrap();
+        session.begin_player_decision(false).unwrap();
+        let valid=session.export_checkpoint().unwrap();
+        assert!(valid.payload.pending_decision.is_some());
+        let corruptions:Vec<Box<dyn Fn(&mut MatchCheckpointV4)>>=vec![
+            Box::new(|c|{let d=c.payload.pending_decision.as_mut().unwrap();
+                d.preparation_motion=None;}),
+            Box::new(|c|{let d=c.payload.pending_decision.as_mut().unwrap();
+                d.challenger=d.preparation_motion.clone();}),
+            Box::new(|c|{let d=c.payload.pending_decision.as_mut().unwrap();
+                d.executes_at_ms=d.release_at_ms+1;}),
+            Box::new(|c|{let d=c.payload.pending_decision.as_mut().unwrap();
+                d.preparation_motion.as_mut().unwrap().started_at_ms+=1;}),
+            Box::new(|c|{let id=c.payload.pending_decision.as_ref().unwrap().player_id.clone();
+                c.payload.state.players.iter_mut().find(|p|p.player_id==id).unwrap().on_pitch=false;}),
+        ];
+        for corrupt in corruptions {
+            let mut c=valid.clone();
+            corrupt(&mut c);
+            c.checksum_hex=compute_checkpoint_checksum(&serde_json::to_string(&c.payload).unwrap());
+            assert!(MatchSessionV4::from_checkpoint(c).is_err());
+        }
+        let side=session.possession_side;
+        let spot=session.state.ball.pos;
+        session.open_dead_ball(DeadBallKind::InjuryStoppage,side,spot,true,false).unwrap();
+        assert!(session.pending_decision.is_none() && session.pending_flight.is_none() && session.pending_carry.is_none());
+        let checkpoint=session.export_checkpoint().unwrap();
+        assert!(MatchSessionV4::from_checkpoint(checkpoint).is_ok());
+    }
+
+    #[test]
     fn b12_exp5_contact_outcome_is_atomic_in_both_directions() {
         use crate::v4::shooting::{resolve_shot_v4_des_with_motion,ShotContactResolution};
         use crate::rng::DeterministicRng;

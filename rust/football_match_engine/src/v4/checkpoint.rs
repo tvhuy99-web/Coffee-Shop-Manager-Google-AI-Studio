@@ -248,7 +248,75 @@ pub struct MatchSessionSnapshotV4 {
     pub locomotion_experiment_id: Option<String>,
 }
 
-pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-batch1-shared-reach";
+pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-batch1-ordered-contact";
+
+/// One live action may reserve actors until its exclusive resolution or
+/// cancellation. Check cheap ownership/time structure both at event commit
+/// and restore. Full path/state equality remains a restore-time check and
+/// is checked during actual world integration, not resampled every event.
+pub(crate) fn verify_experimental_motion_lifetime(
+    state: &MatchStateV4,
+    flight: Option<&PendingFlightSnapshotV4>,
+    decision: Option<&PendingDecisionV4>,
+    carry: Option<&PendingCarryV4>,
+) -> Result<(), V4Error> {
+    let bad=|detail:&str| V4Error::InvalidInput(format!("B1.2 motion lifetime: {detail}"));
+    let now=state.des_clock.sim_time_ms;
+    let count=usize::from(flight.is_some())+usize::from(decision.is_some())+usize::from(carry.is_some());
+    if count>1 || (count>0 && state.dead_ball.is_some()) {
+        return Err(bad("overlapping live actions or dead-ball reservation"));
+    }
+    let mut reserved=Vec::with_capacity(2);
+    let mut path_ok=|path:&crate::v4::interaction::PassContactMotion, start:i64, end:i64| -> Result<(),V4Error> {
+        if start>now || end<now || path.started_at_ms!=start
+            || end.checked_sub(start).is_none_or(|span|span<=0 || span>match_physics::movement::MAX_MOTION_HORIZON_MS)
+            || path.candidate.locomotion.is_none() {
+            return Err(bad("invalid motion interval or model"));
+        }
+        let idx=state.players.iter().position(|p|p.player_id==path.candidate.player_id
+            && p.side==path.candidate.side && p.on_pitch && !p.sent_off)
+            .ok_or_else(||bad("reserved actor not active"))?;
+        if reserved.contains(&idx) {return Err(bad("actor reserved twice"));}
+        reserved.push(idx);
+        Ok(())
+    };
+    if let Some(f)=flight {
+        if f.trajectory.start_time_ms>now || f.resolves_at_ms<now
+            || state.ball.control!=crate::v4::state::BallControlState::InFlight {
+            return Err(bad("invalid flight lifetime"));
+        }
+        if let Some(path)=&f.pass_contact_motion {
+            path_ok(path,f.trajectory.start_time_ms,f.resolves_at_ms)?;
+        }
+    }
+    if let Some(d)=decision {
+        if d.started_at_ms>now || d.executes_at_ms<now || d.executes_at_ms>d.release_at_ms {
+            return Err(bad("invalid decision lifetime"));
+        }
+        let path=d.preparation_motion.as_ref().ok_or_else(||bad("missing preparation reservation"))?;
+        if path.candidate.player_id!=d.player_id || path.candidate.side!=d.side {
+            return Err(bad("preparation actor mismatch"));
+        }
+        path_ok(path,d.started_at_ms,d.executes_at_ms)?;
+        if let Some(chase)=&d.challenger {
+            if chase.candidate.side==d.side {return Err(bad("same-side preparation challenger"));}
+            path_ok(chase,d.started_at_ms,d.executes_at_ms)?;
+        }
+    }
+    if let Some(c)=carry {
+        let actor=state.players.get(c.carrier_idx).ok_or_else(||bad("invalid carry index"))?;
+        if actor.player_id!=c.motion.candidate.player_id || actor.side!=c.motion.candidate.side {
+            return Err(bad("carry actor mismatch"));
+        }
+        let start=c.motion.started_at_ms;
+        path_ok(&c.motion,start,c.resolves_at_ms)?;
+        if let Some(chase)=&c.challenger {
+            if chase.candidate.side==actor.side {return Err(bad("same-side carry challenger"));}
+            path_ok(chase,start,c.resolves_at_ms)?;
+        }
+    }
+    Ok(())
+}
 
 /// Self-verifying versioned DES v1.4 match checkpoint envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -399,6 +467,10 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
         }
     }
     let experimental = p.locomotion_experiment_id.is_some();
+    if experimental {
+        verify_experimental_motion_lifetime(&p.state,p.pending_flight.as_ref(),
+            p.pending_decision.as_ref(),p.pending_carry.as_ref())?;
+    }
     let mut contact_paths = Vec::new();
     if let Some(f)=&p.pending_flight {
         if experimental && matches!(f.action,FlightActionV4::Shot{..}) {

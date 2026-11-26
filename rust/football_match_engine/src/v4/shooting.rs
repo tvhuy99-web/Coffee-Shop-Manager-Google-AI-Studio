@@ -59,6 +59,46 @@ impl<C> DesShotOutcome<C> {
     }
 }
 
+/// Both opportunities use the same launch snapshot. Resolve commitment in
+/// chronological order; a rejected opportunity never reserves a path.
+/// At the same integer timestamp, the stable player ID breaks the tie.
+/// This deliberately does not retry later contacts by a rejected actor.
+fn resolve_experimental_shot_race(
+    block: Option<match_physics::ShotBlockOpportunity>,
+    keeper: Option<match_physics::GoalkeeperContact>,
+    rng: &mut DeterministicRng,
+    mut commit_block: impl FnMut(&match_physics::ShotBlockOpportunity, &mut DeterministicRng) -> bool,
+    mut commit_keeper: impl FnMut(&match_physics::GoalkeeperContact, &mut DeterministicRng) -> GkShotOutcome,
+) -> (ShotContactResolution, Option<GkShotOutcome>) {
+    let keeper_first = match (&block, &keeper) {
+        (Some(b), Some(k)) => (k.time_ms, k.motion.candidate.player_id.as_str())
+            < (b.hit.time_ms, b.motion.candidate.player_id.as_str()),
+        (None, Some(_)) => true,
+        _ => false,
+    };
+    let mut keeper = keeper;
+    if keeper_first {
+        if let Some(k) = keeper.take() {
+            let outcome = commit_keeper(&k, rng);
+            if outcome != GkShotOutcome::GoalConceded {
+                return (ShotContactResolution::CommittedSave(k), Some(outcome));
+            }
+        }
+    }
+    if let Some(b) = block {
+        if commit_block(&b, rng) {
+            return (ShotContactResolution::CommittedBlock(b), None);
+        }
+    }
+    if let Some(k) = keeper {
+        let outcome = commit_keeper(&k, rng);
+        if outcome != GkShotOutcome::GoalConceded {
+            return (ShotContactResolution::CommittedSave(k), Some(outcome));
+        }
+    }
+    (ShotContactResolution::None, None)
+}
+
 fn shot_block_commit_probability(state:&MatchStateV4,idx:usize)->f32 {
     let attrs=player_attrs(state,&state.players[idx]);
     let skill=normalize_attr(attrs.mental.bravery)*0.40
@@ -307,6 +347,16 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
     state.ball.last_touch_side = Some(att_side);
     state.ball.last_touch_player_id = Some(shooter_id.clone());
 
+    // The experiment still uses the nominal center-directed trajectory and
+    // legacy on-target probability. Draw accuracy once before the contact
+    // race so the keeper is eligible only for the nominal on-target shot.
+    // Legacy draw order remains block, accuracy, keeper, unchanged.
+    let on_target_prob =
+        (0.34 + fin_skill * 0.34 * foot_mod - press_pen * 0.55 - wet_pen).clamp(0.18, 0.78);
+    let experimental_on_target = experimental.then(|| (rng.next_double() as f32) <= on_target_prob);
+    let mut experimental_save = None;
+    let mut experimental_save_outcome = None;
+
     // 1. Live-ball block check BEFORE reaching the goal line via continuous interaction detector.
     if experimental || (!one_vs_one && !is_header) {
         let blocked_candidate:Option<(usize,Vec3,i64,ShotContactResolution)>=if experimental {
@@ -314,19 +364,37 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 .filter(|(_,p)|p.on_pitch && !p.sent_off && p.side==def_side && !p.is_goalkeeper)
                 .map(|(idx,_)|crate::v4::ball_play::pass_reach_candidate_for_motion(state,idx,true,true))
                 .collect();
-            match_physics::find_locomotion_shot_block(&shot_traj,&defenders,t_now_ms,t_goal_ms)
-                .and_then(|opportunity| {
+            let block=match_physics::find_locomotion_shot_block(&shot_traj,&defenders,t_now_ms,t_goal_ms);
+            let keeper=if experimental_on_target==Some(true) {
+                crate::v4::goalkeeper::shot_contact_candidate(state,gk_idx)
+                    .and_then(|p|match_physics::find_locomotion_goalkeeper_contact(&shot_traj,&p,t_now_ms,t_goal_ms))
+            } else {None};
+            let (winner, save_outcome)=resolve_experimental_shot_race(block,keeper,rng,
+                |opportunity,rng| {
                     let idx=state.players.iter().position(|p|
                         p.player_id==opportunity.motion.candidate.player_id && p.side==def_side)
                         .expect("shot block candidate belongs to the authoritative roster");
-                    // The only place where a physical opportunity becomes an
-                    // accepted block. A failed commitment drops the whole value.
-                    if (rng.next_double() as f32)<shot_block_commit_probability(state,idx) {
-                        let elapsed=(opportunity.hit.time_ms-t_now_ms).max(1);
-                        let pos=opportunity.hit.ball_pos.clamp_to_pitch();
-                        Some((idx,pos,elapsed,ShotContactResolution::CommittedBlock(opportunity)))
-                    } else {None}
-                })
+                    (rng.next_double() as f32)<shot_block_commit_probability(state,idx)
+                },
+                |_,rng| resolve_gk_shot_reaction(&gk_attrs,gk_fam,gk_aero,xg,dist_m,
+                    one_vs_one,is_finesse,is_header,input,rng));
+            match winner {
+                ShotContactResolution::CommittedBlock(opportunity)=>{
+                    let idx=state.players.iter().position(|p|
+                        p.player_id==opportunity.motion.candidate.player_id && p.side==def_side)
+                        .expect("shot block candidate belongs to the authoritative roster");
+                    let elapsed=(opportunity.hit.time_ms-t_now_ms).max(1);
+                    let pos=opportunity.hit.ball_pos.clamp_to_pitch();
+                    Some((idx,pos,elapsed,ShotContactResolution::CommittedBlock(opportunity)))
+                }
+                ShotContactResolution::CommittedSave(contact)=>{
+                    experimental_save=Some(contact);
+                    experimental_save_outcome=save_outcome;
+                    None
+                }
+                ShotContactResolution::None=>None,
+                ShotContactResolution::LegacyHit(_)=>unreachable!("experimental shot race returned legacy contact"),
+            }
         } else {
             let defenders=build_defender_candidates(state,def_side,false);
             let early_hit=find_earliest_ball_interaction(&shot_traj,&defenders,t_now_ms,t_goal_ms);
@@ -445,10 +513,9 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
         }
     }
 
-    // 2. Check on-target vs off-target
-    let on_target_prob =
-        (0.34 + fin_skill * 0.34 * foot_mod - press_pen * 0.55 - wet_pen).clamp(0.18, 0.78);
-    if (rng.next_double() as f32) > on_target_prob {
+    // 2. Check on-target vs off-target; the experimental draw is already fixed.
+    let on_target=experimental_on_target.unwrap_or_else(|| (rng.next_double() as f32)<=on_target_prob);
+    if !on_target {
         state.team_state_mut(att_side).shots_off_target += 1;
         base_meta.scored = Some(false);
         base_meta.outcome = Some("OFF_TARGET".into());
@@ -507,29 +574,17 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
 
     // 3. Shot is ON TARGET — resolve via 9-attribute Goalkeeper system
     state.team_state_mut(att_side).shots_on_target += 1;
-    let mut gk_outcome = resolve_gk_shot_reaction(
-        &gk_attrs,
-        gk_fam,
-        gk_aero,
-        xg,
-        dist_m,
-        one_vs_one,
-        is_finesse,
-        is_header,
-        input,
-        rng,
-    );
-
-    // Preserve the conditional skill outcome for reachable shots, but
-    // no save can be committed without a physical opportunity. This is
-    // a reach gate, not a fitted multiplier on goals.
-    let save_contact=if experimental && gk_outcome!=GkShotOutcome::GoalConceded {
-        crate::v4::goalkeeper::shot_contact_candidate(state,gk_idx)
-            .and_then(|p|match_physics::find_locomotion_goalkeeper_contact(&shot_traj,&p,t_now_ms,t_goal_ms))
-    } else {None};
-    if experimental && save_contact.is_none() {
-        gk_outcome=GkShotOutcome::GoalConceded;
-    }
+    let gk_outcome = if experimental {
+        experimental_save_outcome.unwrap_or(GkShotOutcome::GoalConceded)
+    } else {
+        resolve_gk_shot_reaction(
+            &gk_attrs, gk_fam, gk_aero, xg, dist_m, one_vs_one,
+            is_finesse, is_header, input, rng,
+        )
+    };
+    // The chronological race owns the only experimental save witness.
+    // No second skill roll or second reach search at resolution.
+    let save_contact=experimental_save;
     let save_elapsed=save_contact.as_ref().map_or(shot_flight_ms,|c|c.time_ms-t_now_ms);
     match gk_outcome {
         GkShotOutcome::GoalConceded => {
@@ -1048,4 +1103,86 @@ fn nearest_box_player(state: &MatchStateV4, side: TeamSideV4, pos: Vec2) -> usiz
         }
     }
     best_idx
+}
+
+
+#[cfg(test)]
+mod batch1_shot_race_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    fn opportunity_pair(side: TeamSideV4, keeper_first: bool)
+        -> (match_physics::ShotBlockOpportunity, match_physics::GoalkeeperContact) {
+        let mirror=|x:f32| if side==TeamSideV4::Away {x} else {105.0-x};
+        let sign=if side==TeamSideV4::Away {1.0}else{-1.0};
+        let traj=BallTrajectory { start_time_ms:100,start_pos:Vec3::new(mirror(85.0),34.0,1.1),
+            initial_vel:Vec3::new(sign*20.0,0.0,0.0),gravity_z:0.0,drag:0.0,
+            is_shot:true,is_carrier_dribble:false };
+        let candidate=|id:&str,x:f32,reach:f32,reaction_ms:i64| match_physics::PassReachCandidate {
+            player_id:id.into(),side,pos:Vec2::new(mirror(x),34.0),velocity:Vec2::default(),
+            speed_mps:0.0,acceleration_mps2:4.0,agility:0.5,reaction_ms,
+            reach_m:reach,playable_height_m:2.6,
+            locomotion:Some(match_physics::ReachLocomotion {
+                capability:match_physics::movement::MovementCapability {
+                    max_speed_mps:8.0,acceleration_mps2:4.0,braking_mps2:5.0,
+                    lateral_mps2:3.5,body_turn_radps:4.0 },facing_rad:0.0 }),
+        };
+        let block=candidate("B",if keeper_first {102.0}else{93.0},1.0,150);
+        let keeper=candidate("K",if keeper_first {94.0}else{102.0},1.5,150);
+        let b=match_physics::find_locomotion_shot_block(&traj,&[block],100,1100).unwrap();
+        let k=match_physics::find_locomotion_goalkeeper_contact(&traj,&keeper,100,1100).unwrap();
+        assert_eq!(k.time_ms<b.hit.time_ms,keeper_first);
+        (b,k)
+    }
+
+    #[test]
+    fn b12_batch1_shot_race_respects_time_commitment_and_single_witness() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            for keeper_first in [false,true] {
+                let (b,k)=opportunity_pair(side,keeper_first);
+                for block_accepts in [false,true] {
+                    for keeper_accepts in [false,true] {
+                        let calls=RefCell::new(Vec::new());
+                        let mut rng=DeterministicRng::new(13);
+                        let (winner,outcome)=resolve_experimental_shot_race(Some(b.clone()),Some(k.clone()),&mut rng,
+                            |_,_| {calls.borrow_mut().push("block");block_accepts},
+                            |_,_| {calls.borrow_mut().push("keeper");if keeper_accepts {GkShotOutcome::SavedHeld}else{GkShotOutcome::GoalConceded}});
+                        let first=if keeper_first {"keeper"}else{"block"};
+                        let second=if keeper_first {"block"}else{"keeper"};
+                        let first_accepts=if keeper_first {keeper_accepts}else{block_accepts};
+                        assert_eq!(*calls.borrow(),if first_accepts {vec![first]}else{vec![first,second]});
+                        match winner {
+                            ShotContactResolution::CommittedBlock(hit)=>{
+                                assert!(block_accepts && (!keeper_first || !keeper_accepts));
+                                assert_eq!(hit.hit,b.hit);
+                                assert_eq!(hit.motion,b.motion);
+                                assert_eq!(outcome,None);
+                            }
+                            ShotContactResolution::CommittedSave(hit)=>{
+                                assert!(keeper_accepts && (keeper_first || !block_accepts));
+                                assert_eq!(hit.time_ms,k.time_ms);
+                                assert_eq!(hit.motion,k.motion);
+                                assert_eq!(outcome,Some(GkShotOutcome::SavedHeld));
+                            }
+                            ShotContactResolution::None=>{
+                                assert!(!block_accepts && !keeper_accepts);
+                                assert_eq!(outcome,None);
+                            }
+                            _=>panic!("legacy contact in experimental race"),
+                        }
+                    }
+                }
+            }
+            // Tie fixture tests arbitration only; ordinary witnesses above
+            // are produced by actual physics, not fabricated outcomes.
+            let (b,mut k)=opportunity_pair(side,false);
+            k.time_ms=b.hit.time_ms;
+            for id in ["A","Z"] {
+                k.motion.candidate.player_id=id.into();
+                let (winner,_)=resolve_experimental_shot_race(Some(b.clone()),Some(k.clone()),
+                    &mut DeterministicRng::new(19),|_,_|true,|_,_|GkShotOutcome::SavedHeld);
+                assert_eq!(matches!(winner,ShotContactResolution::CommittedSave(_)),id=="A");
+            }
+        }
+    }
 }

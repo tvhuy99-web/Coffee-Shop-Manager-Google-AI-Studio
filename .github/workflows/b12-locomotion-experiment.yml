@@ -49,6 +49,7 @@ jobs:
           cargo test --release --locked -p match_physics --lib b12_exp10_keeper_contact_short_window_and_integer_oracle -- --nocapture
           cargo test --release --locked -p match_physics --lib b12_exp11_block_contact -- --nocapture
           cargo test --release --locked -p match_physics --lib b12_batch1_ -- --nocapture
+          cargo test --release --locked --lib b12_batch1_ -- --nocapture
           cargo test --release --locked --lib b12_candidate_live_uses_same_target_policy_rng_and_terminal_velocity -- --nocapture
           cargo test --release --locked -p match_physics --lib b12_acceleration_filter_preserves_direct_contact_results -- --nocapture
           cargo test --release --locked --lib b12_exp7_keeper_guard_geometry_is_mirrored_and_goal_side -- --nocapture

@@ -1141,6 +1141,10 @@ impl MatchSessionV4 {
         crate::v4::transition::verify_clock_accounting(&self.state,self.home_possession_ms,self.away_possession_ms)?;
         crate::v4::transition::verify_scheduler_clock(&self.state, &self.scheduler)?;
         crate::v4::transition::verify_uncontrolled_ball(&self.state)?;
+        if self.uses_locomotion_experiment() {
+            crate::v4::checkpoint::verify_experimental_motion_lifetime(&self.state,
+                self.pending_flight.as_ref(),self.pending_decision.as_ref(),self.pending_carry.as_ref())?;
+        }
         Ok(())
     }
 
