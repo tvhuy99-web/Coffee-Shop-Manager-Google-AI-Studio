@@ -329,7 +329,15 @@ impl MotionPlan {
     /// same segment rather than changing the integration step or target.
     /// Position is not clamped to pitch or target: contact and rules own boundaries.
     pub fn sample_at(&self, elapsed_ms: i64) -> Result<MotionResult, MotionError> {
-        self.walk(elapsed_ms, |_, _, _, _, _| false)
+        self.walk(elapsed_ms, true, |_, _, _, _, _| false)
+    }
+
+    /// Read a position from exactly the same controller segments without
+    /// integrating path-length or acceleration exposure. Contact queries
+    /// may sample hundreds of rejected targets; workload is charged only
+    /// from the committed full motion sample.
+    pub fn sample_position_at(&self, elapsed_ms: i64) -> Result<Vec2, MotionError> {
+        Ok(self.walk(elapsed_ms, false, |_, _, _, _, _| false)?.state.position)
     }
 
     /// Search an already committed path, not a second movement model.
@@ -349,7 +357,7 @@ impl MotionPlan {
         let within = |p: D2| D2::from_vec(p.to_vec()).sub(target64).norm() <= radius;
         let mut hit = if within(D2::from_vec(self.initial.position)) { Some(0) } else { None };
         if hit.is_none() {
-            self.walk(horizon_ms, |at, span, p, v, dv| {
+            self.walk(horizon_ms, true, |at, span, p, v, dv| {
                 let dt = span as f64 / 1000.0;
                 let max_speed = v.norm().max(v.add(dv).norm());
                 // Broad-phase bound plus f32 position rounding allowance.
@@ -411,7 +419,7 @@ impl MotionPlan {
             false
         };
         if !inspect(0, D2::from_vec(self.initial.position)) {
-            self.walk(end, |at, span, p, v, dv| {
+            self.walk(end, true, |at, span, p, v, dv| {
                 for ms in 1..=span {
                     let f = ms as f64 / span as f64;
                     let pos = p.add(v.add(dv.scale(0.5 * f)).scale(ms as f64 / 1000.0));
@@ -449,7 +457,7 @@ impl MotionPlan {
         }
         let mut high = ExposureAccumulator::default();
         let mut sprint = ExposureAccumulator::default();
-        let motion = self.walk(elapsed_ms, |_, span, _, v, dv| {
+        let motion = self.walk(elapsed_ms, true, |_, span, _, v, dv| {
             high.add(span, v, dv, high_mps);
             sprint.add(span, v, dv, sprint_mps);
             false
@@ -457,7 +465,7 @@ impl MotionPlan {
         Ok((motion, high.finish(), sprint.finish()))
     }
 
-    fn walk(&self, elapsed_ms: i64, mut visit: impl FnMut(i64, i64, D2, D2, D2) -> bool)
+    fn walk(&self, elapsed_ms: i64, account_workload: bool, mut visit: impl FnMut(i64, i64, D2, D2, D2) -> bool)
         -> Result<MotionResult, MotionError>
     {
         if !(0..=MAX_MOTION_HORIZON_MS).contains(&elapsed_ms) {
@@ -506,8 +514,10 @@ impl MotionPlan {
             // exactly and the speed norm with Simpson quadrature.
             let middle_v = v.add(dv.scale(0.5));
             p = p.add(middle_v.scale(dt));
-            distance += dt * (v.norm() + 4.0 * middle_v.norm() + next_v.norm()) / 6.0;
-            load += dv.norm();
+            if account_workload {
+                distance += dt * (v.norm() + 4.0 * middle_v.norm() + next_v.norm()) / 6.0;
+                load += dv.norm();
+            }
             v = next_v;
             facing += turn;
             at += used_ms;
@@ -627,6 +637,22 @@ mod solver_tests {
         let fast = plan(initial(10.0, 0.0), intent(100.0, 34.0, 1.0));
         near(fast.sample_at(100).unwrap().state.velocity.x, 9.5, 1e-4);
         near(fast.sample_at(1000).unwrap().state.velocity.x, 8.0, 1e-4);
+    }
+
+    #[test]
+    fn b12_batch1_position_only_query_is_bit_exact() {
+        for (vx,vy) in [(0.0,0.0),(6.0,0.0),(-6.0,0.0),(4.0,3.0),(10.0,-2.0)] {
+            for target in [Vec2::new(40.0,34.0),Vec2::new(42.0,55.0),Vec2::new(5.0,20.0)] {
+                for reaction_ms in [0,137,250] {
+                    let p=plan(initial(vx,vy),MovementIntent{target,intensity:0.85,
+                        desired_facing_rad:Some(1.7),reaction_ms});
+                    for t in [0,1,49,50,51,136,137,138,250,501,1777,4000] {
+                        assert_eq!(p.sample_position_at(t).unwrap(),p.sample_at(t).unwrap().state.position);
+                    }
+                    assert!(p.sample_position_at(-1).is_err());
+                }
+            }
+        }
     }
 
     #[test]

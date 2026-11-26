@@ -511,7 +511,7 @@ impl PassReachCandidate {
     /// Sample the selected locomotion model; invalid plans return None.
     pub fn contact_position_toward(&self, target: Vec2, elapsed_ms: i64) -> Option<Vec2> {
         match self.motion_plan(target).ok()? {
-            Some(plan) => Some(plan.sample_at(elapsed_ms).ok()?.state.position),
+            Some(plan) => plan.sample_position_at(elapsed_ms).ok(),
             None => Some(self.position_toward(target, elapsed_ms)),
         }
     }
@@ -1352,7 +1352,7 @@ fn find_experimental_carry_contact(
     let mut possible=Vec::with_capacity(nearby.len());
     while first<=end_ms {
         let last=first.saturating_add(24).min(end_ms);
-        let center=plan.sample_at(first-start).ok()?.state.position;
+        let center=plan.sample_position_at(first-start).ok()?;
         let carrier_radius=speed*(last-first) as f64/1000.0;
         possible.clear();
         possible.extend(nearby.iter().copied().filter(|&idx| {
@@ -1362,7 +1362,7 @@ fn find_experimental_carry_contact(
         }));
         if !possible.is_empty() {
             for time in first..=last {
-                let pos=if time==first {center} else {plan.sample_at(time-start).ok()?.state.position};
+                let pos=if time==first {center} else {plan.sample_position_at(time-start).ok()?};
                 let elapsed=time-start;
                 let mut best:Option<(usize,f32)>=None;
                 for &idx in &possible {
