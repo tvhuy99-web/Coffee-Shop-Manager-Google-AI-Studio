@@ -1159,10 +1159,12 @@ mod locomotion_full_match_experiment {
         let players: Vec<_> = session.state.players.iter().map(|p| json!({
             "id":p.player_id, "slot":p.slot_id,"goalkeeper":p.is_goalkeeper,
             "distance_m":p.fatigue.distance_m,"aerobic":p.fatigue.aerobic,
-            "anaerobic":p.fatigue.anaerobic,"interval_sprint_counter":p.fatigue.sprint_count,
+            "anaerobic":p.fatigue.anaerobic,"sprint_counter":p.fatigue.sprint_count,
+            "high_intensity_counter":p.fatigue.high_intensity_actions,
         })).collect();
         json!({
             "ok":true,"behavior_id":result.engine_version,"wall_ms":start.elapsed().as_secs_f64()*1000.0,
+            "counter_semantics":if experiment {"upward_speed_crossings_4_2_and_7_mps"} else {"legacy_interval_counts"},
             "fingerprint":result.event_timeline_fingerprint,"events":result.event_count,
             "time_ms":session.sim_time_ms(),"live_ms":session.state.des_clock.ball_in_play_ms,
             "dead_ms":session.state.des_clock.ball_out_of_play_ms,

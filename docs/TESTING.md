@@ -78,3 +78,6 @@ Workflow riêng `B1.2 experimental locomotion evidence` chạy 1.000 cặp full 
 
 
 Exp2 supersedes exp1 for the full-match experiment; same seed population and separate behavior ID. The workflow additionally replays four known exp1 failure seeds. All failure rows remain mandatory evidence. No change to required golden reference or acceptance thresholds.
+
+
+Exp3 changes the test-only behavior ID to `b1.2-measured-workload-exp3`, retaining all paired seeds and strict failure gates. Reports distinguish legacy interval counters from threshold-entry counters; no paired delta between non-equivalent counters. Measured workload and tactical speed requests have independent Rust tests; paired exp3 combines both hypotheses.

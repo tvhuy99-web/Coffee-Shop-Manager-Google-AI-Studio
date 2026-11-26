@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
 
-BEHAVIOR = "b1.2-contact-locomotion-exp2"
+BEHAVIOR = "b1.2-measured-workload-exp3"
 COHORTS = ["reference", "balanced", "strong_away", "high_press"]
 FIELDS = ["home_goals", "away_goals", "shots", "passes", "completed_passes",
           "fouls", "live_ms", "dead_ms", "events", "wall_ms"]
@@ -78,7 +78,11 @@ def main(directory):
             for pid in ap:
                 old, new = ap[pid], bp[pid]
                 group = "GK" if old["goalkeeper"] else old["slot"]
-                for field in ("distance_m", "aerobic", "anaerobic", "interval_sprint_counter"):
+                require(a["counter_semantics"] == "legacy_interval_counts" and b["counter_semantics"] == "upward_speed_crossings_4_2_and_7_mps", "counter semantics mismatch")
+                for key in ("sprint_counter", "high_intensity_counter"):
+                    roles[group]["legacy_interval_" + key].append(number(old[key], key))
+                    roles[group]["experiment_upward_crossing_" + key].append(number(new[key], key))
+                for field in ("distance_m", "aerobic", "anaerobic"):
                     x, y = number(old[field], field), number(new[field], field)
                     if field in ("aerobic", "anaerobic"):
                         require(x <= 100 and y <= 100, "energy outside domain")
@@ -94,10 +98,10 @@ def main(directory):
         "failure_rows": failures,
         "cohort_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in cohorts.items()},
         "role_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in roles.items()},
-        "production_acceptance": "BLOCKED: remaining execution paths, rule boundaries, sprint accounting and tracking calibration incomplete",
-        "notes": ["Exp2 uses shared locomotion for reserved pass/carry/recovery/preparation paths; remaining execution paths and perception are legacy.",
+        "production_acceptance": "BLOCKED: remaining execution paths, rule boundaries, perception, sprint episode definition and tracking calibration incomplete",
+        "notes": ["Exp3 adds role/distance speed requests and measured motion workload to Exp2 paths; remaining execution paths and perception are legacy.",
                   "Distributions are conditional on successful pairs; failures are retained.",
-                  "Sprint counters remain legacy interval counters, not sprint episodes.",
+                  "Legacy interval counters and experiment threshold crossing counts are reported separately; neither is a validated sprint episode metric.",
                   "No outcome target or threshold is used to tune gameplay."],
     }
     (directory / "b12-experiment-summary.json").write_text(

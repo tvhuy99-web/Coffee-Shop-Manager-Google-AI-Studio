@@ -272,6 +272,23 @@ pub(crate) fn record_experimental_motion(
     Ok(())
 }
 
+/// Desired speed from the current tactical responsibility and remaining
+/// distance. The solver still enforces acceleration, braking and capability.
+/// These arrival horizons are exp3 hypotheses, not tracking-fitted parameters.
+fn experimental_tactical_speed(distance_m:f32, phase:crate::v4::state::TacticalPhaseV4,
+    role:Option<match_contracts::event_types::DefensiveRole>, is_gk:bool) -> f32 {
+    use crate::v4::state::TacticalPhaseV4::*;
+    use match_contracts::event_types::DefensiveRole::*;
+    let horizon_s=match role {
+        Some(Press)=>1.0,
+        Some(Screen|Cover|Mark)=>2.0,
+        None if is_gk=>3.0,
+        None if matches!(phase,AttackingTransition|DefensiveTransition)=>1.5,
+        None=>3.0,
+    };
+    distance_m/horizon_s
+}
+
 /// Experimental runtime integration for actors without a reserved contact path.
 /// Called by the DES test experiment, never by the shipping session.
 pub(crate) fn advance_experimental_tactical_motion(
@@ -290,9 +307,13 @@ pub(crate) fn advance_experimental_tactical_motion(
     for (idx, target) in targets.into_iter().enumerate() {
         if reserved[idx] { continue; }
         if let Some(target) = target {
-            let attrs = *player_attrs(state, &state.players[idx]);
+            let p=&state.players[idx];
+            let attrs = *player_attrs(state,p);
+            let role=defense.iter().find(|a|a.idx==idx).map(|a|a.role);
+            let phase=state.team_state(p.side).phase;
+            let requested=experimental_tactical_speed(p.pos.distance(target),phase,role,p.is_goalkeeper);
             let (bound,load) = integrate_experimental_actor(&mut state.players[idx], &attrs, target,
-                None, duration_ms)?;
+                Some(requested), duration_ms)?;
             budgets[idx]=bound;
             record_experimental_motion(&mut loads[idx],load)?;
         } else {
@@ -864,5 +885,46 @@ mod candidate_locomotion_tests {
         assert!(advance_candidate_live_motion(&mut state,&input,TeamSideV4::Home,10,500,&mut rng,&[row,row]).is_err());
         assert_eq!(snap(&state),before);
         assert_eq!(rng.state(),rng_before);
+    }
+}
+
+
+#[cfg(test)]
+mod b12_experimental_workload_tests {
+    use super::*;
+    use crate::v4::state::TacticalPhaseV4::*;
+    use match_contracts::event_types::DefensiveRole::*;
+
+    #[test]
+    fn b12_tactical_speed_is_local_to_distance_and_responsibility() {
+        assert_eq!(experimental_tactical_speed(0.0,OutOfPossession,None,false),0.0);
+        assert_eq!(experimental_tactical_speed(6.0,InPossession,None,false),2.0);
+        assert_eq!(experimental_tactical_speed(6.0,AttackingTransition,None,false),4.0);
+        assert_eq!(experimental_tactical_speed(6.0,OutOfPossession,Some(Press),false),6.0);
+        assert_eq!(experimental_tactical_speed(6.0,OutOfPossession,Some(Cover),false),3.0);
+        assert_eq!(experimental_tactical_speed(6.0,DefensiveTransition,None,true),2.0);
+    }
+
+    #[test]
+    fn b12_workload_consumes_committed_prefix_once() {
+        let cap=MovementCapability{max_speed_mps:8.0,acceleration_mps2:4.0,
+            braking_mps2:5.0,lateral_mps2:3.0,body_turn_radps:3.0};
+        let plan=MotionPlan::new(MotionState{position:Vec2::new(20.0,34.0),
+            velocity:Vec2::default(),facing_rad:0.0},
+            MovementIntent{target:Vec2::new(100.0,34.0),intensity:1.0,
+                desired_facing_rad:None,reaction_ms:0},cap).unwrap();
+        let (_,whole)=sample_experimental_motion(&plan,3000).unwrap();
+        let (_,first)=sample_experimental_motion(&plan,1777).unwrap();
+        let tail=whole.interval(first).unwrap();
+        let mut combined=first;
+        combined.add(tail);
+        assert_eq!(combined.high_entries,whole.high_entries);
+        assert_eq!(combined.sprint_entries,whole.sprint_entries);
+        assert!((combined.high_s-whole.high_s).abs()<1e-5);
+        assert!((combined.high_distance_m-whole.high_distance_m).abs()<1e-5);
+        let mut row=None;
+        record_experimental_motion(&mut row,first).unwrap();
+        assert!(record_experimental_motion(&mut row,tail).is_err());
+        assert_eq!(row,Some(first));
     }
 }
