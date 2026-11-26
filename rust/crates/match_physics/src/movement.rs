@@ -7,6 +7,7 @@ pub enum MotionError {
     InvalidState,
     InvalidIntent,
     InvalidHorizon,
+    InvalidReach,
     NonFiniteResult,
 }
 
@@ -153,6 +154,12 @@ pub struct MotionResult {
     pub acceleration_load_mps: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReachHit {
+    pub elapsed_ms: i64,
+    pub motion: MotionResult,
+}
+
 /// Immutable snapshot for both prediction and execution. Sampling at an absolute
 /// elapsed time never replans, consumes RNG or depends on previous queries.
 /// Not yet wired to production or serialized in checkpoints.
@@ -239,6 +246,52 @@ impl MotionPlan {
     /// same segment rather than changing the integration step or target.
     /// Position is not clamped to pitch or target: contact and rules own boundaries.
     pub fn sample_at(&self, elapsed_ms: i64) -> Result<MotionResult, MotionError> {
+        self.walk(elapsed_ms, |_, _, _, _, _| false)
+    }
+
+    /// Search an already committed path, not a second movement model.
+    /// Returns the first integer millisecond at which the fixed target is
+    /// within reach. Contact with a moving ball and sub-ms order are separate.
+    pub fn first_reach(&self, target: Vec2, reach_m: f32, horizon_ms: i64)
+        -> Result<Option<ReachHit>, MotionError>
+    {
+        if !is_finite_vec2(target) || !reach_m.is_finite() || reach_m < 0.0 {
+            return Err(MotionError::InvalidReach);
+        }
+        if !(0..=MAX_MOTION_HORIZON_MS).contains(&horizon_ms) {
+            return Err(MotionError::InvalidHorizon);
+        }
+        let target64 = D2::from_vec(target);
+        let radius = reach_m as f64;
+        let within = |p: D2| D2::from_vec(p.to_vec()).sub(target64).norm() <= radius;
+        let mut hit = if within(D2::from_vec(self.initial.position)) { Some(0) } else { None };
+        if hit.is_none() {
+            self.walk(horizon_ms, |at, span, p, v, dv| {
+                let dt = span as f64 / 1000.0;
+                let max_speed = v.norm().max(v.add(dv).norm());
+                // Broad-phase bound plus f32 position rounding allowance.
+                let rounding = 4.0 * f32::EPSILON as f64 *
+                    (p.norm() + max_speed * dt + target64.norm() + 1.0);
+                if p.sub(target64).norm() > radius + max_speed * dt + rounding {
+                    return false;
+                }
+                for ms in 1..=span {
+                    let fraction = ms as f64 / span as f64;
+                    let pos = p.add(v.add(dv.scale(0.5 * fraction)).scale(ms as f64 / 1000.0));
+                    if within(pos) { hit = Some(at + ms); return true; }
+                }
+                false
+            })?;
+        }
+        hit.map(|elapsed_ms| {
+            let motion = self.sample_at(elapsed_ms)?;
+            Ok(ReachHit { elapsed_ms, motion })
+        }).transpose()
+    }
+
+    fn walk(&self, elapsed_ms: i64, mut visit: impl FnMut(i64, i64, D2, D2, D2) -> bool)
+        -> Result<MotionResult, MotionError>
+    {
         if !(0..=MAX_MOTION_HORIZON_MS).contains(&elapsed_ms) {
             return Err(MotionError::InvalidHorizon);
         }
@@ -279,6 +332,7 @@ impl MotionPlan {
                 let fraction = dt / full_dt;
                 (velocity_delta(v, desired, self.capability, full_dt).scale(fraction), turn * fraction)
             };
+            if visit(at, used_ms, p, v, dv) { break; }
             let next_v = v.add(dv);
             // Constant acceleration within a segment: integrate the vector
             // exactly and the speed norm with Simpson quadrature.
@@ -438,6 +492,33 @@ mod solver_tests {
         near(a.state.facing_rad.sin()+b.state.facing_rad.sin(), 0.0, 1e-4);
         near(a.distance_m, b.distance_m, 1e-4);
         assert!(a.distance_m <= 8.0*1.377+1e-4);
+    }
+
+    #[test]
+    fn b12_reach_matches_execution_and_earliest_ms() {
+        let target = Vec2::new(45.0, 34.0);
+        let p = plan(initial(0.0, 0.0), intent(60.0, 34.0, 1.0));
+        let hit = p.first_reach(target, 0.5, 3000).unwrap().unwrap();
+        assert_eq!(hit.motion, p.sample_at(hit.elapsed_ms).unwrap());
+        assert!(hit.motion.state.position.distance(target) <= 0.50001);
+        assert!(p.sample_at(hit.elapsed_ms-1).unwrap().state.position.distance(target)>0.5);
+        assert!(p.first_reach(target, 0.5, hit.elapsed_ms-1).unwrap().is_none());
+        assert_eq!(p.first_reach(initial(0.0,0.0).position, 0.0, 0).unwrap().unwrap().elapsed_ms,0);
+        assert_eq!(p.first_reach(target, -1.0, 3000), Err(MotionError::InvalidReach));
+    }
+
+    #[test]
+    fn b12_reach_respects_momentum_and_transient_crossings() {
+        let target=Vec2::new(45.0,34.0);
+        let toward=plan(initial(5.0,0.0),intent(70.0,34.0,1.0));
+        let away=plan(initial(-5.0,0.0),intent(70.0,34.0,1.0));
+        assert!(toward.first_reach(target,0.5,6000).unwrap().unwrap().elapsed_ms
+            < away.first_reach(target,0.5,6000).unwrap().unwrap().elapsed_ms);
+        // Crossing between 50-ms controller endpoints must still be found.
+        let coast=plan(initial(8.0,0.0),MovementIntent{reaction_ms:100,..intent(70.0,34.0,1.0)});
+        let hit=coast.first_reach(Vec2::new(40.2,34.0),0.01,50).unwrap().unwrap();
+        assert!((23..=26).contains(&hit.elapsed_ms));
+        assert_eq!(hit.motion,coast.sample_at(hit.elapsed_ms).unwrap());
     }
 
     #[test]
