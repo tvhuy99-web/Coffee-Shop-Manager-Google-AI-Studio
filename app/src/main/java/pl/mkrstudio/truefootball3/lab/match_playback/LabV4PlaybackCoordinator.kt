@@ -13,12 +13,9 @@ import pl.mkrstudio.truefootball3.audio.TtsSettingsStore
 import kotlin.math.roundToLong
 
 /**
- * V4 viewing-mode timeline filter and legacy sequence playback helper.
- *
- * Under DES v1.4, live interactive V4 playback is unified inside [MatchPlaybackController] and
- * [NarrationScheduler]. This class retains the authoritative [filterEventsForViewingMode] and
- * [isHighlightEvent] helpers (now including `"OWN_GOAL"` in [LabViewingMode.SHORT_HIGHLIGHTS])
- * as well as backward-compatible offline sequence playback.
+ * Timeline filtering and offline sequence playback.
+ * Live interactive playback uses [MatchPlaybackController] and [NarrationScheduler].
+ * [filterEventsForViewingMode] and [isHighlightEvent] define highlight selection.
  */
 class LabV4PlaybackCoordinator(
     private val context: Context,

@@ -534,8 +534,8 @@ pub enum PassContact {
 /// Find the first playable contact along the same trajectory for both sides.
 /// The intended receiver may meet the pass near its planned destination,
 /// rather than automatically waiting for the ball at a fixed timestamp.
-/// Only the intended receiver is eligible in this stage; recovering a missed
-/// pass with other teammates and contested/deflected balls belong to stages 3–4.
+/// Only the intended receiver is eligible here; other recovery and contested balls
+/// require the separate loose-ball or deflection resolver.
 /// Boundary detection remains analytic. Sampling is local, not a global tick.
 pub fn find_pass_contact(
     traj: &BallTrajectory,

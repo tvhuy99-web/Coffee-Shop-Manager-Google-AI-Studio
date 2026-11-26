@@ -386,7 +386,7 @@ impl From<ShotKindV4> for BallFlightKind {
     }
 }
 
-/// Period lifecycle stage in DES v1.4, including explicit half-time and extra-time breaks.
+/// Period lifecycle, including explicit half-time and extra-time breaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "stage", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum HalfStageV4 {

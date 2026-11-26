@@ -44,7 +44,7 @@ internal object LabCommentaryTemplatePolicy {
         receiverName: String,
         side: LabTeamSide?
     ): Boolean {
-        // Java V3's resolver rejects templates with unavailable player identity.
+        // Reject templates that require unavailable player identities.
         val availablePlayer = actorName.isNotBlank() && actorName != "null"
         val availableTarget = targetName.isNotBlank() && targetName != "null"
         val availableReceiver = receiverName.isNotBlank() && receiverName != "null"

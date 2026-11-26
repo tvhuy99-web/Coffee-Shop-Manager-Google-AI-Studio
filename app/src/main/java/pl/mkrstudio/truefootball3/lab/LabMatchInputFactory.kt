@@ -497,9 +497,8 @@ class LabMatchInputFactory(context: Context, assetPath: String = "england_v2/clu
     }
 
     /**
-     * Development bridge: the 54-item stage-2 schema is the source of truth in
-     * the database. The existing Rust JNI match engine still accepts the 20 V3
-     * fields. Only project for V3 parity/exhibition matches.
+     * Project the 54 database attributes into lineup-planning scores only.
+     * The simulation input uses the full 54-attribute schema.
      */
     private fun project54ForLineupPlanning(row: JSONObject): LabPlayerAttributes {
         val attr = row.getJSONObject("simulation").getJSONObject("attributes")

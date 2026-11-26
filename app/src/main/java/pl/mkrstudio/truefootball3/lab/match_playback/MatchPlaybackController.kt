@@ -16,10 +16,8 @@ import kotlin.math.abs
 import kotlin.math.roundToLong
 
 /**
- * Unified DES v1.4 Match Playback Controller.
- *
- * Replaces the legacy dual-timer / TTS-blocked tick loops with a single monotonic simulation-clock
- * controller backed by `SystemClock.elapsedRealtime()` and zero-drift rate re-anchoring across
+ * DES match playback uses a monotonic simulation clock backed by
+ * `SystemClock.elapsedRealtime()` and zero-drift rate re-anchoring across
  * `1.0x / 1.25x / 1.5x / 2.0x / 3.0x`.
  *
  * Key responsibilities:

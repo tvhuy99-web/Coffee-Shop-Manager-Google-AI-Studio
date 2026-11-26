@@ -323,7 +323,7 @@ data class LabPlayerSnapshotV4(
     val heightCm: Int = 180
 )
 
-// --- V3 Reference Models (preserved 100%) ---
+// Lineup-planning attribute model
 
 data class LabPlayerAttributes(
     val goalkeeping: Int,

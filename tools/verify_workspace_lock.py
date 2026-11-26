@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the workspace move does not change any external dependency identity."""
+"""Verify pinned external dependencies and local workspace membership."""
 import sys,tomllib,hashlib
 from pathlib import Path
 base,candidate=map(Path,sys.argv[1:3])
