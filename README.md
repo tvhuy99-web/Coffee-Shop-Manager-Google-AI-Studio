@@ -1,18 +1,27 @@
-# PingFootball 4.0
+# PingFootball 4.0 Foundation
 
-Football simulation foundation: a deterministic Rust DES match engine and Android playback, commentary and audio. [Technical specification and development roadmap](docs/FOOTBALL_SIMULATION_4_SPEC.md).
+Nền tảng mô phỏng bóng đá bằng Rust Discrete Event Simulation (DES), với Android đảm nhiệm trình diễn, lời bình và âm thanh. Phát triển tiếp từ B1: Physics, Rules và Condition.
 
-## Build and test
+## Tài liệu chính thức
 
-- Rust: `cd rust && cargo test --workspace --locked --all-targets`.
-- Android ARM64: `bash tools/build_lab_rust_android.sh`, then `./gradlew :app:assembleDebug`.
-- Commentary: `bash tools/run_commentary_regression.sh`.
-- Use the pinned toolchain and locked dependencies. CI checks contracts, Rust, golden parity, attribute audit, Kotlin and Android APK; device acceptance is separate.
+- [AGENTS.md](AGENTS.md): quy tắc làm việc với mã nguồn.
+- [Kiến trúc](docs/ARCHITECTURE.md): cấu trúc đang tồn tại và ranh giới trách nhiệm.
+- [Hiến chương kỹ thuật](docs/DEVELOPMENT_RULES.md): hợp đồng bất biến và quản trị thay đổi.
+- [Lộ trình](docs/ROADMAP.md): B1–B6, mục tiêu và điều kiện nghiệm thu.
+- [Kiểm thử](docs/TESTING.md): lệnh build, CI, parity, audit và nghiệm thu thiết bị.
 
-## Data and presentation
+## Build nhanh
 
-The `england_v2` assets are development data with simulated rosters, attributes, schedules, contracts and staff; they are not verified current real-world football records. See asset manifests for provenance. Commentary must reflect committed Rust events and use neutral wording or omit cues when evidence is absent. Audio license information is in [AUDIO_LICENSES.md](app/src/main/assets/AUDIO_LICENSES.md).
+```sh
+cd rust
+cargo test --workspace --locked --all-targets
+cd ..
+bash tools/build_lab_rust_android.sh
+bash gradlew :app:validateCommentaryTokens :app:assembleDebug --no-daemon
+```
 
-## Development
+Rust và dependency được khóa bằng manifest toolchain và Cargo.lock. APK Debug ARM64 không phải bản phát hành production.
 
-Keep the simulation authoritative in Rust. Separate behavior changes from refactoring; do not alter deterministic replay, versions, fixtures or test expectations merely to make checks pass. Begin gameplay development with Physics, Rules and Condition. No production release is implied by the foundation.
+Dữ liệu `app/src/main/assets/england_v2/` là bộ dữ liệu phát triển, có hồ sơ, thuộc tính, lịch và tài chính mô phỏng; không phải database bóng đá hiện thực đã xác minh. Giữ provenance trong asset manifest và [giấy phép âm thanh](app/src/main/assets/AUDIO_LICENSES.md).
+
+Trạng thái CI xem tại [GitHub Actions](../../actions). Chỉ kết luận PASS dựa trên lượt chạy tương ứng với commit cần nghiệm thu.
