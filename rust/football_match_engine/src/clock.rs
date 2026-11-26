@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 /// This is NOT a business added-time cap; it only protects against runaway infinite loops.
 pub const DEFAULT_WATCHDOG_MAX_PERIOD_MS: i64 = 75 * 60 * 1000;
 /// Standard 45-minute half regulation duration in milliseconds.
-pub const DEFAULT_HALF_REGULATION_MS: i64 = 45 * 60 * 1000;
+pub const DEFAULT_HALF_REGULATION_MS: i64 = match_contracts::units::REGULATION_HALF_MS;
 /// Standard 15-minute extra-time half regulation duration in milliseconds.
-pub const DEFAULT_EXTRA_TIME_HALF_REGULATION_MS: i64 = 15 * 60 * 1000;
+pub const DEFAULT_EXTRA_TIME_HALF_REGULATION_MS: i64 = match_contracts::units::EXTRA_TIME_HALF_MS;
 
 pub use match_contracts::rule_types::Period;
 

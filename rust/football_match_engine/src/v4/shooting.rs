@@ -228,7 +228,7 @@ pub fn resolve_shot_v4_des(
     );
     let t_now_ms = state.des_clock.sim_time_ms;
     let t_goal_ms = t_now_ms.saturating_add(shot_flight_ms);
-    let flight_sec = (shot_flight_ms as f32 / 1000.0).max(0.05);
+    let flight_sec = match_contracts::units::ms_to_seconds_f32(shot_flight_ms).max(0.05);
 
     let shot_start_z = if is_header { 2.05 } else { 0.35 };
     let target_goal_z = if is_header { 1.35 } else { 1.10 };
@@ -701,7 +701,7 @@ pub fn resolve_shot_v4_des(
                 state.players[att_follow].last_moved_m = moved_m;
                 state.ball.pos = Vec3::new(new_pos.x, new_pos.y, 0.25);
 
-                let rebound_chase_ms = (att_eta_sec.clamp(0.15, REBOUND_WINDOW_SEC) * 1000.0).round() as i64;
+                let rebound_chase_ms = match_contracts::units::seconds_to_ms_nearest_f32(att_eta_sec.clamp(0.15, REBOUND_WINDOW_SEC));
                 let mut follow = resolve_shot_v4_des(
                     state,
                     input,
@@ -754,7 +754,7 @@ pub fn resolve_shot_v4_des(
                 },
                 won_corner: false,
                 flight_ms: shot_flight_ms
-                    .saturating_add((def_eta_sec.clamp(0.15, REBOUND_WINDOW_SEC) * 1000.0).round() as i64),
+                    .saturating_add(match_contracts::units::seconds_to_ms_nearest_f32(def_eta_sec.clamp(0.15, REBOUND_WINDOW_SEC))),
                 dead_ball_kind: None,
                 restart_spot: None,
                 early_interaction: None,

@@ -6,7 +6,7 @@ impl MatchSessionV4 {
         if dt_ms <= 0 {
             return Ok(false);
         }
-        let dt_sec = (dt_ms as f32) / 1000.0;
+        let dt_sec = match_contracts::units::ms_to_seconds_f32(dt_ms);
         let game_sec = self.state.des_clock.game_second();
 
         if is_ball_in_play {

@@ -16,8 +16,8 @@ pub const DEFAULT_RULESET_VERSION: u32 = 1;
 pub const DEFAULT_TIMING_MODEL_ID: &str = "des_timing_v1";
 pub const DEFAULT_TIMING_MODEL_VERSION: u32 = 1;
 
-pub const HALF_DURATION_MS_STANDARD: i64 = 2_700_000;
-pub const EXTRA_TIME_HALF_DURATION_MS: i64 = 900_000;
+pub const HALF_DURATION_MS_STANDARD: i64 = match_contracts::units::REGULATION_HALF_MS;
+pub const EXTRA_TIME_HALF_DURATION_MS: i64 = match_contracts::units::EXTRA_TIME_HALF_MS;
 pub const ADDED_TIME_ROUNDING_MS_STANDARD: i64 = 60_000;
 pub const TECHNICAL_WATCHDOG_MAX_ADDED_MS: i64 = 1_800_000;
 pub const MAX_EVENTS_PER_SAME_MS_DEFAULT: u32 = 64;
@@ -909,7 +909,7 @@ fn nominal_ball_flight_and_spread(
     };
 
     let effective_speed = (base_speed_mps * surface_speed_mult).max(8.0);
-    let nominal_ms = ((dist * arc_factor / effective_speed) * 1000.0).round() as i64;
+    let nominal_ms = match_contracts::units::seconds_to_ms_nearest_f32(dist * arc_factor / effective_speed);
     let spread = if matches!(weather, WeatherCondition::Windy) && is_aerial {
         0.14f64
     } else {

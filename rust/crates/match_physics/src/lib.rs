@@ -145,7 +145,7 @@ impl BallTrajectory {
     /// Evaluates the ball's continuous 3D position at `sim_time_ms`, accounting for
     /// linear drag and downward gravity, with `z` clamped to `>= 0.0`.
     pub fn position_at_ms(&self, sim_time_ms: i64) -> Vec3 {
-        let dt_sec = ((sim_time_ms.saturating_sub(self.start_time_ms)).max(0) as f32) / 1000.0;
+        let dt_sec = match_contracts::units::ms_to_seconds_f32(sim_time_ms.saturating_sub(self.start_time_ms).max(0));
         if dt_sec <= 0.0 {
             return Vec3::new(self.start_pos.x, self.start_pos.y, self.start_pos.z.max(0.0));
         }
@@ -168,7 +168,7 @@ impl BallTrajectory {
 
     /// Evaluates instantaneous 3D velocity at `sim_time_ms`.
     pub fn velocity_at_ms(&self, sim_time_ms: i64) -> Vec3 {
-        let dt_sec = ((sim_time_ms.saturating_sub(self.start_time_ms)).max(0) as f32) / 1000.0;
+        let dt_sec = match_contracts::units::ms_to_seconds_f32(sim_time_ms.saturating_sub(self.start_time_ms).max(0));
         if dt_sec <= 0.0 {
             return self.initial_vel;
         }
@@ -285,7 +285,7 @@ pub fn find_earliest_ball_interaction(
     }
 
     let span_total_ms = t_scheduled_ms - t_now_ms;
-    let max_t_sec = (span_total_ms as f32) / 1000.0;
+    let max_t_sec = match_contracts::units::ms_to_seconds_f32(span_total_ms);
     let p_now = traj.position_at_ms(t_now_ms);
     let v_now = traj.velocity_at_ms(t_now_ms);
     let k = traj.drag.max(0.0);
@@ -313,7 +313,7 @@ pub fn find_earliest_ball_interaction(
 
         if let Some(t_hit_sec) = t_hit_sec_opt {
             let hit_time_ms =
-                (t_now_ms + (t_hit_sec * 1000.0).round() as i64).clamp(t_now_ms, t_scheduled_ms);
+                (t_now_ms + match_contracts::units::seconds_to_ms_nearest_f32(t_hit_sec)).clamp(t_now_ms, t_scheduled_ms);
             let ball_pos = traj.position_at_ms(hit_time_ms);
             let boundary = BoundaryKind::from(side);
             let is_goal_line = matches!(
@@ -349,15 +349,15 @@ pub fn find_earliest_ball_interaction(
         return best_hit;
     }
 
-    let window_t_sec = (window_span_ms as f32) / 1000.0;
+    let window_t_sec = match_contracts::units::ms_to_seconds_f32(window_span_ms);
     let mut corridor_defenders: Vec<&DefenderCandidate> = Vec::new();
 
     for def in defenders {
         let (t_closest, dist_m) = closest_approach_time(p_now.xy(), v_now.xy(), def.pos, window_t_sec);
-        let t_closest_ms = (t_closest * 1000.0).round() as i64;
+        let t_closest_ms = match_contracts::units::seconds_to_ms_nearest_f32(t_closest);
         let move_ms = (t_closest_ms - def.effective_reaction_ms()).max(0);
         let max_cover_m =
-            def.effective_speed_mps() * (move_ms as f32 / 1000.0) + def.effective_reach_m();
+            def.effective_speed_mps() * match_contracts::units::ms_to_seconds_f32(move_ms) + def.effective_reach_m();
 
         // Enter Tier 2 if defender is within the 6.5m contest corridor or kinematically reachable.
         if dist_m <= CONTEST_CORRIDOR_M || dist_m <= max_cover_m {
@@ -383,7 +383,7 @@ pub fn find_earliest_ball_interaction(
 
         for def in &corridor_defenders {
             let move_ms = (dt_sample_ms - def.effective_reaction_ms()).max(0);
-            let cover_m = def.effective_speed_mps() * (move_ms as f32 / 1000.0);
+            let cover_m = def.effective_speed_mps() * match_contracts::units::ms_to_seconds_f32(move_ms);
             let dist_to_ball = def.pos.distance(ball_pos.xy());
             let residual_m = (dist_to_ball - cover_m).max(0.0);
             let reach_m = def.effective_reach_m();
@@ -477,13 +477,13 @@ impl PassReachCandidate {
     /// This same absolute-time path is used to move the selected participant
     /// in the live world, so a predicted contact cannot teleport a player.
     pub fn position_toward(&self, target: Vec2, elapsed_ms: i64) -> Vec2 {
-        let t = elapsed_ms.max(0) as f32 / 1000.0;
+        let t = match_contracts::units::ms_to_seconds_f32(elapsed_ms.max(0));
         let vmax = self.speed_mps.max(0.0);
         let raw_speed = (self.velocity.x * self.velocity.x + self.velocity.y * self.velocity.y).sqrt();
         let scale = if raw_speed > vmax && raw_speed > 0.0 { vmax / raw_speed } else { 1.0 };
         let vx = self.velocity.x * scale;
         let vy = self.velocity.y * scale;
-        let reaction = self.reaction_ms.max(0) as f32 / 1000.0;
+        let reaction = match_contracts::units::ms_to_seconds_f32(self.reaction_ms.max(0));
         let coast_t = t.min(reaction);
         let origin = Vec2::new(self.pos.x + vx * coast_t, self.pos.y + vy * coast_t).clamp_to_pitch();
         if t <= reaction { return origin; }
@@ -549,7 +549,7 @@ pub fn find_pass_contact(
     let end = boundary.as_ref().map_or(t_arrival_ms, |h| h.time_ms);
     let destination = traj.position_at_ms(t_arrival_ms).xy();
     let start = traj.position_at_ms(t_now_ms).xy();
-    let horizon_s = (end - t_now_ms).max(0) as f32 / 1000.0;
+    let horizon_s = match_contracts::units::ms_to_seconds_f32((end - t_now_ms).max(0));
     // Conservative geometric filter: include everyone who could reach the
     // segment at full speed, even if acceleration later rules them out.
     let nearby: Vec<_> = defenders.iter().filter(|p| {
@@ -992,7 +992,7 @@ pub fn find_carry_contact(
     carrier:&PassContactMotion, defenders:&[PassReachCandidate], end_ms:i64,
 )->Option<(usize,i64,PassContactMotion)> {
     let start=carrier.started_at_ms;
-    let horizon=(end_ms-start).max(0) as f32/1000.0;
+    let horizon=match_contracts::units::ms_to_seconds_f32((end_ms-start).max(0));
     let end=carrier.position_at(end_ms);
     let eligible:Vec<_>=defenders.iter().enumerate().filter(|(_,p)|
         match_contracts::spatial::point_to_segment_distance_m(p.pos,carrier.candidate.pos,end)

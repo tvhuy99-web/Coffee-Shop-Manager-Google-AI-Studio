@@ -205,7 +205,7 @@ pub(crate) fn build_pass_trajectory(kind:PassKindV4,passer_pos:Vec2,aim_pos:Vec2
         PassKindV4::Cross => 2.1,
         PassKindV4::Long | PassKindV4::Switch => 3.2,
     };
-    let flight_sec = (flight_ms as f32 / 1000.0).max(0.05);
+    let flight_sec = match_contracts::units::ms_to_seconds_f32(flight_ms).max(0.05);
     let drag = if kind.is_aerial() { 0.08f32 } else { 0.16f32 };
     let drag_integral = if drag > 1e-5 {
         (1.0 - (-drag * flight_sec).exp()) / drag
@@ -998,7 +998,7 @@ fn execute_dribble_duel_impl(
 )->DesBallPlayOutcome {
     let mut events = Vec::with_capacity(5);
     let dt = dt_sec.max(0.0);
-    let elapsed_ms = (dt * 1000.0).round() as i64;
+    let elapsed_ms = match_contracts::units::seconds_to_ms_nearest_f32(dt);
     let noise_scale = dt.min(1.0).sqrt();
 
     let att_side = state.players[carrier_idx].side;
