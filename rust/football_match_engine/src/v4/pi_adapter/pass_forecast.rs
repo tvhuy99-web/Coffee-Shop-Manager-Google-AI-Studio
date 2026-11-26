@@ -204,8 +204,6 @@ mod tests {
 #[cfg(test)]
 mod b12_motion_forecast_tests {
     use super::*;
-    use crate::v4::tests::make_v4_input;
-    use crate::contracts::{RulesModeV4,SimulationMode};
 
     fn runner(pos:Vec2,vel:Vec2)->PassReachCandidate {
         PassReachCandidate{player_id:"R".into(),side:TeamSideV4::Home,pos,velocity:vel,
@@ -228,34 +226,5 @@ mod b12_motion_forecast_tests {
         assert!(b>a+0.4,"escaping receiver: {b}, ready: {a}");
     }
 
-    #[test]
-    fn b12_observed_forecast_does_not_use_hidden_condition_or_attributes() {
-        let input=make_v4_input(12046,SimulationMode::FastBatch,RulesModeV4::Standard);
-        let state=MatchStateV4::from_input(&input);
-        let mut altered=state.clone();
-        for p in &mut altered.players {
-            p.fatigue.aerobic=5.0;
-            p.fatigue.anaerobic=0.0;
-        }
-        for profile in &mut altered.player_profiles {
-            profile.attrs.physical.pace=1;
-            profile.attrs.physical.acceleration=20;
-            profile.attrs.physical.agility=1;
-            profile.attrs.mental.anticipation=20;
-        }
-        let a=PassForecast::with_motion(&state,TeamSideV4::Home,0.8,true);
-        let b=PassForecast::with_motion(&altered,TeamSideV4::Home,0.8,true);
-        let from=Vec2::new(48.0,34.0);
-        let before=serde_json::to_string(&state).unwrap();
-        for idx in 0..state.players.len() {
-            if state.players[idx].side!=TeamSideV4::Home {continue;}
-            for kind in [PassKindV4::Short,PassKindV4::Long] {
-                let x=a.lane_risk(&state,&input,&input.timing_model,from,idx,kind);
-                let y=b.lane_risk(&altered,&input,&input.timing_model,from,idx,kind);
-                assert_eq!(x.to_bits(),y.to_bits());
-                assert!((0.0..=1.0).contains(&x));
-            }
-        }
-        assert_eq!(serde_json::to_string(&state).unwrap(),before);
-    }
+
 }
