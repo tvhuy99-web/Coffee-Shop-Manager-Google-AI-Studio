@@ -770,6 +770,9 @@ mod a4_atomic_api_tests {
     fn a4_transaction_performance_report(){
         use std::time::Instant;
         let mut rows=Vec::new();
+        fn percentile(sorted:&[f64],p:f64)->f64 {
+            sorted[((sorted.len() as f64*p).ceil() as usize).saturating_sub(1).min(sorted.len()-1)]
+        }
         for seed in [4242,4243,4244] {
             let input=make_v4_input(seed,SimulationMode::FullEvent,RulesModeV4::Standard);
             let mut reference=MatchSessionV4::new(input.clone()).unwrap();
@@ -777,16 +780,44 @@ mod a4_atomic_api_tests {
             let expected=reference.run_to_full_time().unwrap();
             rows.push(serde_json::json!({"seed":seed,"mode":"whole_match","elapsedMs":start.elapsed().as_secs_f64()*1000.0,
                 "events":expected.event_count,"fingerprint":expected.event_timeline_fingerprint}));
+            let mut fast_input=input.clone();
+            fast_input.simulation_mode=SimulationMode::FastBatch;
+            let mut fast=MatchSessionV4::new(fast_input).unwrap();
+            let start=Instant::now();
+            let fast_result=fast.run_to_full_time().unwrap();
+            let fast_ms=start.elapsed().as_secs_f64()*1000.0;
+            assert_eq!(fast_result.event_timeline_fingerprint,expected.event_timeline_fingerprint);
+            assert_eq!(fast_result.event_count,expected.event_count);
+            assert_eq!(serde_json::to_string(&fast_result.summary).unwrap(),serde_json::to_string(&expected.summary).unwrap());
+            rows.push(serde_json::json!({"seed":seed,"mode":"fast_batch","elapsedMs":fast_ms,"matchesPerSecond":1000.0/fast_ms,
+                "events":fast_result.event_count,"fingerprint":fast_result.event_timeline_fingerprint}));
+            let mut restore_source=MatchSessionV4::new(input.clone()).unwrap();
+            restore_source.start_next_period().unwrap();
+            restore_source.advance_steps(500).unwrap();
+            let start=Instant::now();
+            let checkpoint=restore_source.export_checkpoint().unwrap();
+            let bytes=serde_json::to_vec(&checkpoint).unwrap();
+            let save_ms=start.elapsed().as_secs_f64()*1000.0;
+            let start=Instant::now();
+            let decoded=serde_json::from_slice(&bytes).unwrap();
+            let mut restored=MatchSessionV4::from_checkpoint(decoded).unwrap();
+            let restore_ms=start.elapsed().as_secs_f64()*1000.0;
+            assert_eq!(snapshot(&restore_source),snapshot(&restored));
+            assert_eq!(restored.run_to_full_time().unwrap().event_timeline_fingerprint,expected.event_timeline_fingerprint);
+            rows.push(serde_json::json!({"seed":seed,"mode":"checkpoint","bytes":bytes.len(),"serializeMs":save_ms,"restoreMs":restore_ms}));
             for batch in [1usize,32,500] {
                 let mut s=MatchSessionV4::new(input.clone()).unwrap();
                 let start=Instant::now();
                 let mut calls=0u64;
                 let mut max_call_ms=0.0f64;
+                let mut latency=Vec::new();
                 let mut delivered=0usize;
                 while !s.is_full_time(){
                     let call_start=Instant::now();
                     let step=if s.stage.is_break() {s.start_next_period().unwrap()} else {s.advance_steps(batch).unwrap()};
-                    max_call_ms=max_call_ms.max(call_start.elapsed().as_secs_f64()*1000.0);
+                    let call_ms=call_start.elapsed().as_secs_f64()*1000.0;
+                    max_call_ms=max_call_ms.max(call_ms);
+                    latency.push(call_ms);
                     calls+=1;
                     delivered+=step.new_events.len();
                     assert!(calls<=100_000,"interactive benchmark watchdog");
@@ -797,12 +828,14 @@ mod a4_atomic_api_tests {
                 assert_eq!(actual.event_count,expected.event_count);
                 assert_eq!(delivered,actual.event_count as usize);
                 assert_eq!(serde_json::to_string(&actual.summary).unwrap(),serde_json::to_string(&expected.summary).unwrap());
+                latency.sort_by(f64::total_cmp);
                 rows.push(serde_json::json!({"seed":seed,"mode":"interactive","batch":batch,"calls":calls,
+                    "p50CallMs":percentile(&latency,0.50),"p95CallMs":percentile(&latency,0.95),"p99CallMs":percentile(&latency,0.99),"eventsPerSecond":actual.event_count as f64*1000.0/elapsed,
                     "elapsedMs":elapsed,"maxCallMs":max_call_ms,"events":actual.event_count,
                     "fingerprint":actual.event_timeline_fingerprint}));
             }
         }
-        let report=serde_json::json!({"schema":1,"scope":"host release build, FullEvent, three seeds; not Android device performance","measurements":rows});
+        let report=serde_json::json!({"schema":2,"scope":"host release build, three seeds, FastBatch/FullEvent/checkpoint; not Android device performance","measurements":rows});
         let json=serde_json::to_string_pretty(&report).unwrap();
         println!("{json}");
         if let Ok(path)=std::env::var("A4_PERF_REPORT_PATH"){std::fs::write(path,json).unwrap();}

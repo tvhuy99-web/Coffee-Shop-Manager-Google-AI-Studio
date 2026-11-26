@@ -20,6 +20,7 @@ e = read(R.parent/'contracts/events.rs')
 t = read(R/'tests.rs')
 w = read(K/'match_playback/LabRustLiveSession.kt')
 ui = read(K/'LabReferenceMatchActivity.kt')
+roster = read(K/'match_playback/MatchRosterProjection.kt')
 st = read(K/'match_playback/LabGlobalSeedReplayStore.kt')
 factory = read(K/'LabMatchInputFactory.kt')
 main = read(K/'LabMainActivity.kt')
@@ -29,7 +30,7 @@ test('half-time allows player change without consuming a window', 'fn is_interva
 test('V4 command can express simultaneous substitutions', 'SubstituteBatch' in commands and '"SUBSTITUTE_BATCH"' in w and '"changes"' in w)
 test('Rust roster state reports actual substitutes and counters', 'pub struct TeamRosterStateV4' in e and 'home_roster: self.roster_snapshot' in s and 'away_roster: self.roster_snapshot' in s)
 test('commands emitted between steps are delivered', 'last_delivered_event_index' in s and 'let prev_len = self.last_delivered_event_index;' in s)
-test('Android UI reconciles roster with Rust rather than local guesses only', 'syncV4HomeRoster' in ui and 'homeRosterIndex' in ui and 'homeWindowsUsed' in ui)
+test('Android UI reconciles roster with Rust rather than local guesses only', 'roster.syncV4HomeRoster(authoritative)' in ui and all(x in roster for x in ['homeRosterIndex', 'homeWindowsUsed', 'onPitchPlayerIds', 'availableBenchPlayerIds', 'substitutionsUsed', 'substitutionWindowsUsed']))
 test('Android UI wires same-stoppage batch selection to native command', all(x in ui for x in ['setMultiChoiceItems', 'chooseV4IncomingPlayers', '.put("type", "SUBSTITUTE_BATCH")', '.put("changes", items)', 'ctrl.submitCommandJson(cmdJson)']))
 # DES timing/frontier/pause behavior is checked by mandatory run_des_playback_jvm.sh.
 # These are source integration checks only, not a substitute for that test.

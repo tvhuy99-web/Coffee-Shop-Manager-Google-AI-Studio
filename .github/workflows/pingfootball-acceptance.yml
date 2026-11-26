@@ -87,7 +87,7 @@ jobs:
             cargo test --workspace --locked --all-targets -- --nocapture
             cargo test --release --locked --lib pi_attribute_isolated_ -- --nocapture
             cargo test --release --locked --lib pi_psychology_ -- --nocapture
-            A4_PERF_REPORT_PATH="$GITHUB_WORKSPACE/evidence/a4-performance.json" cargo test --release --locked --lib a4_transaction_performance_report -- --ignored --nocapture
+            /usr/bin/time -v -o "$GITHUB_WORKSPACE/evidence/a4-host-process-resources.txt" env A4_PERF_REPORT_PATH="$GITHUB_WORKSPACE/evidence/a4-performance.json" cargo test --release --locked --lib a4_transaction_performance_report -- --ignored --nocapture
           ) 2>&1 | tee evidence/rust.log
       - uses: actions/upload-artifact@v4
         if: always()
@@ -394,5 +394,18 @@ jobs:
           import json,os
           results=json.loads(os.environ['RESULTS'])
           assert len(results)==7 and all(v['result']=='success' for v in results.values()), results
-          print('All required A3-A5 incremental layers passed (signed release/device/strict legacy formatting tracked separately).')
+          from pathlib import Path
+          report={'schema':1,'commit':os.environ['GITHUB_SHA'],'runId':os.environ['GITHUB_RUN_ID'],
+                  'automatedAcceptance':'PASS','layers':{k:v['result'] for k,v in results.items()},
+                  'scope':'A-1 through A8 only; B1-B6 excluded',
+                  'deviceAcceptance':'BLOCKED_PENDING_REAL_DEVICE_AND_ADR_009',
+                  'releaseApproved':False}
+          Path('acceptance-evidence').mkdir(exist_ok=True)
+          Path('acceptance-evidence/acceptance.json').write_text(json.dumps(report,indent=2)+'\n')
+          print('All L0-L4 automated layers passed; A8 device acceptance and formal review remain separate.')
           PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase-a-automated-acceptance
+          path: acceptance-evidence/
+          if-no-files-found: error
