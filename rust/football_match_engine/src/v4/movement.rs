@@ -555,7 +555,7 @@ pub(crate) fn commit_experimental_contact(
 
 /// The experimental policy must not confuse a retained scheduler actor index
 /// (e.g. the last passer) with exclusive physical control of the ball.
-fn experimental_controlled_actor(state: &MatchStateV4) -> Option<usize> {
+pub(crate) fn experimental_controlled_actor(state: &MatchStateV4) -> Option<usize> {
     if state.ball.control != BallControlState::Controlled { return None; }
     let id = state.ball.owner_player_id.as_deref()?;
     let side = state.ball.owner_side?;

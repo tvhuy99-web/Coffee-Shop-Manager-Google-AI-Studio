@@ -908,8 +908,12 @@ impl MatchSessionV4 {
             pass_contact_motion: block_motion,
             offside_at_launch,
         };
+        let (target_y_mm,target_z_mm)=if restart.is_some(){
+            let target=flight.trajectory.position_at_ms(flight.planned_arrival_ms);
+            ((target.y*1000.0).round() as i32,(target.z*1000.0).round() as i32)
+        }else{(34_000,1_100)};
         let payload = DesEventPayload::ShotArrival { shooter_id: self.state.players[shooter_idx].player_id.clone(), side,
-            target_y_mm: 34_000, target_z_mm: 1_100 };
+            target_y_mm, target_z_mm };
         self.install_flight(flight, payload, shooter_idx)?;
         if let Some((kind,_,_))=restart {
             let penalty=kind==DeadBallKind::PenaltyKick;

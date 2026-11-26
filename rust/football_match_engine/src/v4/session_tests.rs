@@ -1106,6 +1106,31 @@ mod locomotion_full_match_experiment {
     }
 
     #[test]
+    fn b12_batch2_controlled_settle_follows_actual_owner() {
+        let input=make_v4_input(12056,SimulationMode::FastBatch,RulesModeV4::Standard);
+        let mut s=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+        s.step_one_des_event(true).unwrap();
+        s.scheduler.invalidate_live_play();
+        let side=s.possession_side;
+        let idx=s.kickoff_carrier_index(side);
+        let start=Vec2::new(50.0,34.0);
+        s.state.players[idx].pos=start;
+        s.state.players[idx].vel=Vec2::new(2.0,0.0);
+        s.state.ball.pos=Vec3::new(50.25,34.0,0.2);
+        s.finish_pass_recovery(side,idx,&[],"SET_PIECE_RECOVERY").unwrap();
+        let ball=s.state.ball.pos;
+        let now=s.sim_time_ms();
+        s.schedule_test_clock_probe(now+100).unwrap();
+        s.step_one_des_event(true).unwrap();
+        assert_eq!(s.sim_time_ms(),now+100);
+        let p=&s.state.players[idx];
+        assert_eq!(s.state.ball.owner_player_id.as_deref(),Some(p.player_id.as_str()));
+        assert!(p.pos.distance(start)>0.01);
+        assert_eq!(s.state.ball.pos,Vec3::new(ball.x+(p.pos.x-start.x),ball.y+(p.pos.y-start.y),ball.z));
+        assert_eq!(s.state.ball.vel,Vec3::new(p.vel.x,p.vel.y,0.0));
+    }
+
+    #[test]
     fn b12_batch2_specialist_shots_commit_only_at_resolution() {
         for side in [TeamSideV4::Home,TeamSideV4::Away] {
             for kind in [DeadBallKind::PenaltyKick,DeadBallKind::DirectFreeKick] {

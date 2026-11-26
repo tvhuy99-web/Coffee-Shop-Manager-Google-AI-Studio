@@ -174,6 +174,20 @@ impl MatchSessionV4 {
                     }
                 }
             }
+            // The settled/held control interval has no separate reserved
+            // path. Preserve its contact offset and height relative to the
+            // actual owner; do not leave a controlled ball behind while
+            // the owner moves, or pick a different owner by carrier_idx.
+            if experimental && self.pending_flight.is_none() && self.pending_carry.is_none()
+                && self.pending_decision.is_none() && self.state.ball.control==BallControlState::Controlled {
+                let idx=crate::v4::movement::experimental_controlled_actor(&self.state)
+                    .ok_or_else(||V4Error::InvalidInput("controlled interval has no active owner".into()))?;
+                let p=&self.state.players[idx];
+                let prev=prev_positions[idx];
+                self.state.ball.pos=Vec3::new(self.state.ball.pos.x+(p.pos.x-prev.x),
+                    self.state.ball.pos.y+(p.pos.y-prev.y),self.state.ball.pos.z).clamp_to_pitch();
+                self.state.ball.vel=Vec3::new(p.vel.x,p.vel.y,0.0);
+            }
             // Measure the realized movement after physical contact path
             // overrides, rather than the preliminary tactical displacement.
             // A selected carry challenger is an independent physical race;
