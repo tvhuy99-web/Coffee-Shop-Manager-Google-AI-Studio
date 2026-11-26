@@ -93,3 +93,6 @@ Exp5r1 retries the same 1000 pairs after the failed Exp5 handoff (821/1000). Fou
 
 
 Exp5r2 adds mandatory shot-contact preflight before the 1000-pair workflow: atomic accepted/declined contact tests, actual reserved path/restore test, and eight recorded failing seed replays. If preflight fails the population is not run; no completion claim or summary accepted without all 1000 pairs. Legacy L0–L4 remains independently required.
+
+
+Exp5r3 retains the mandatory preflight and adds `b12_exp5_parry_ends_one_flight_then_schedules_recovery`: actual DES save, independent loose-ball race, no owner during recovery, preserved offside snapshot, checkpoint/restore parity. The previous preflight stopped at compile-time E0308; no paired results existed for Exp5r2. Run full legacy L0–L4 independently and all 1000 experiment pairs only after focused regressions pass.

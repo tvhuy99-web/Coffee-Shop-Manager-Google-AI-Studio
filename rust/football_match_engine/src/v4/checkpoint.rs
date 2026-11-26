@@ -248,7 +248,7 @@ pub struct MatchSessionSnapshotV4 {
     pub locomotion_experiment_id: Option<String>,
 }
 
-pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-atomic-shot-contact-exp5r2";
+pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-separated-shot-rebound-exp5r3";
 
 /// Self-verifying versioned DES v1.4 match checkpoint envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -402,6 +402,16 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
     let mut contact_paths = Vec::new();
     if let Some(f)=&p.pending_flight {
         if experimental && matches!(f.action,FlightActionV4::Shot{..}) {
+            // A shot with a parry must end at its own arrival, not
+            // include a recursively resolved follow-up shot.
+            if f.ball_after.control==crate::v4::state::BallControlState::Loose {
+                let parries=f.outcome.events.iter().filter(|ev|ev.kind==crate::v4::events::EventTypeV4::Rebound).count();
+                if parries!=1 || f.resolves_at_ms!=f.planned_arrival_ms
+                    || f.early_interaction.is_some() || f.pass_contact_motion.is_some()
+                    || f.ball_after.owner_side.is_some() || f.ball_after.owner_player_id.is_some() {
+                    return Err(bad("invalid separated parry flight"));
+                }
+            }
             let block=f.early_interaction.as_ref().filter(|h|h.kind==crate::v4::interaction::InteractionKind::ShotBlocked);
             let block_event=f.outcome.events.iter().any(|ev|ev.kind==crate::v4::events::EventTypeV4::Block);
             if block.is_some()!=block_event {

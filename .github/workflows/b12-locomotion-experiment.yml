@@ -31,6 +31,7 @@ jobs:
           cd rust/football_match_engine
           cargo test --release --locked --lib b12_exp5_contact_outcome_is_atomic_in_both_directions -- --nocapture
           cargo test --release --locked --lib b12_exp5_shot_block_path_survives_checkpoint_and_real_des -- --nocapture
+          cargo test --release --locked --lib b12_exp5_parry_ends_one_flight_then_schedules_recovery -- --nocapture
       - name: Replay eight previous exp5 and exp5r1 failures
         run: |
           set -euo pipefail
