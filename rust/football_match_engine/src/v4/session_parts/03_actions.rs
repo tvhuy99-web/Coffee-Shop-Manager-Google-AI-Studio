@@ -641,36 +641,49 @@ impl MatchSessionV4 {
         let experimental=self.uses_locomotion_experiment();
         let shot = crate::v4::shooting::resolve_shot_v4_des_with_motion(&mut resolved, &self.input, &self.input.timing_model,
             shooter_idx, assist_idx, shot_kind, false, experimental, &mut self.rng);
-        // Preserve the immutable path selected in the physical race. A
-        // prediction/result cannot be converted to a new candidate here.
-        let block_motion=shot.block_motion;
-        if experimental {
-            match (shot.early_interaction.as_ref().filter(|h|h.kind==InteractionKind::ShotBlocked),block_motion.as_ref()) {
-                (Some(hit),Some(path))=>{
-                    let actor=self.state.players.iter().find(|p|p.player_id==path.candidate.player_id && p.side==path.candidate.side)
-                        .ok_or_else(||V4Error::InvalidInput("missing shot blocker".into()))?;
-                    let end=path.experimental_plan().map_err(|e|V4Error::InvalidInput(format!("invalid shot block plan: {e:?}")))?
-                        .ok_or_else(||V4Error::InvalidInput("missing shot block locomotion".into()))?
-                        .sample_at(hit.time_ms-now).map_err(|e|V4Error::InvalidInput(format!("invalid shot block sample: {e:?}")))?;
-                    let residual=end.state.position.distance(hit.ball_pos.xy());
-                    if !actor.on_pitch || actor.sent_off || actor.pos!=path.candidate.pos
-                        || actor.vel!=path.candidate.velocity
-                        || path.candidate.locomotion.is_none_or(|m|m.facing_rad!=actor.facing_rad)
-                        || hit.defender_id.as_deref()!=Some(actor.player_id.as_str())
-                        || hit.defender_side!=Some(actor.side) || path.started_at_ms!=now
-                        || path.target!=hit.ball_pos.xy() || hit.ball_pos.z>path.candidate.playable_height_m
-                        || hit.time_ms!=now.saturating_add(shot.flight_ms.max(1))
-                        || residual>path.candidate.reach_m+1e-5
-                    {
-                        return Err(V4Error::InvalidInput(format!(
-                            "shot block handoff mismatch actor={} start={} hit={} predicted_residual={} sampled_residual={} reach={} target={:?} origin={:?}",
-                            actor.player_id,now,hit.time_ms,hit.distance_m,residual,path.candidate.reach_m,path.target,path.candidate.pos)));
-                    }
+        use crate::v4::shooting::ShotContactResolution;
+        let is_block_event=shot.outcome.events.iter().any(|ev|ev.kind==EventTypeV4::Block);
+        // Decompose the single accepted witness exactly once, only when
+        // publishing the backwards-compatible pending-flight fields.
+        let (early_interaction,block_motion)=match shot.early_interaction {
+            ShotContactResolution::CommittedBlock(opportunity)=>{
+                let hit=opportunity.hit;
+                let path=opportunity.motion;
+                let actor=self.state.players.iter().find(|p|p.player_id==path.candidate.player_id && p.side==path.candidate.side)
+                    .ok_or_else(||V4Error::InvalidInput("missing shot blocker".into()))?;
+                let end=path.experimental_plan().map_err(|e|V4Error::InvalidInput(format!("invalid shot block plan: {e:?}")))?
+                    .ok_or_else(||V4Error::InvalidInput("missing shot block locomotion".into()))?
+                    .sample_at(hit.time_ms-now).map_err(|e|V4Error::InvalidInput(format!("invalid shot block sample: {e:?}")))?;
+                let residual=end.state.position.distance(hit.ball_pos.xy());
+                if !experimental || !is_block_event || hit.kind!=InteractionKind::ShotBlocked
+                    || !actor.on_pitch || actor.sent_off || actor.pos!=path.candidate.pos
+                    || actor.vel!=path.candidate.velocity
+                    || path.candidate.locomotion.is_none_or(|m|m.facing_rad!=actor.facing_rad)
+                    || hit.defender_id.as_deref()!=Some(actor.player_id.as_str())
+                    || hit.defender_side!=Some(actor.side) || path.started_at_ms!=now
+                    || path.target!=hit.ball_pos.xy() || hit.ball_pos.z>path.candidate.playable_height_m
+                    || hit.time_ms!=now.saturating_add(shot.flight_ms.max(1))
+                    || residual>path.candidate.reach_m+1e-5
+                {
+                    return Err(V4Error::InvalidInput(format!(
+                        "shot block witness mismatch actor={} start={} hit={} predicted_residual={} sampled_residual={} reach={} target={:?} origin={:?} block_event={}",
+                        actor.player_id,now,hit.time_ms,hit.distance_m,residual,path.candidate.reach_m,path.target,path.candidate.pos,is_block_event)));
                 }
-                (None,None)=>{}
-                _=>return Err(V4Error::InvalidInput("missing or unexpected shot block path".into())),
+                (Some(hit),Some(path))
             }
-        }
+            ShotContactResolution::LegacyHit(hit)=>{
+                if experimental {
+                    return Err(V4Error::InvalidInput(format!("legacy shot contact in experimental resolver: {:?}",hit.kind)));
+                }
+                (Some(hit),None)
+            }
+            ShotContactResolution::None=>{
+                if experimental && is_block_event {
+                    return Err(V4Error::InvalidInput("experimental block event without committed contact witness".into()));
+                }
+                (None,None)
+            }
+        };
         let delta = FlightCounterDeltaV4::between(&self.state, &resolved);
         self.state.next_highlight_sequence_id = resolved.next_highlight_sequence_id;
         let flight = PendingFlightSnapshotV4 {
@@ -679,7 +692,7 @@ impl MatchSessionV4 {
             resolves_at_ms: now.saturating_add(shot.flight_ms.max(1)),
             action: FlightActionV4::Shot { shooter_idx },
             outcome: shot.outcome, ball_after: resolved.ball, counter_delta: delta,
-            won_corner: shot.won_corner, early_interaction: shot.early_interaction,
+            won_corner: shot.won_corner, early_interaction,
             pass_contact_motion: block_motion,
             offside_at_launch: Vec::new(),
         };

@@ -26,7 +26,7 @@ pub use match_contracts::rule_types::ShotKindV4;
 /// dead-ball restart classification (`GoalCelebration`, `GoalKick`, `Corner`),
 /// and any live-ball block interaction before the goal line.
 #[derive(Debug, Clone)]
-pub struct DesShotOutcome {
+pub struct DesShotOutcome<C = Option<EarlyInteractionHit>> {
     pub trajectory: BallTrajectory,
     pub planned_flight_ms: i64,
     pub outcome: BallPlayOutcome,
@@ -34,8 +34,36 @@ pub struct DesShotOutcome {
     pub flight_ms: i64,
     pub dead_ball_kind: Option<DeadBallKind>,
     pub restart_spot: Option<Vec3>,
-    pub early_interaction: Option<EarlyInteractionHit>,
-    pub(crate) block_motion: Option<match_physics::PassContactMotion>,
+    pub early_interaction: C,
+}
+
+/// One discriminated result: a rejected opportunity never carries a path;
+/// an experimental block cannot exist without its hit AND reserved motion.
+/// Legacy results retain the original public Option<EarlyInteractionHit>.
+#[derive(Debug, Clone)]
+pub(crate) enum ShotContactResolution {
+    None,
+    LegacyHit(EarlyInteractionHit),
+    CommittedBlock(match_physics::ShotBlockOpportunity),
+}
+
+impl<C> DesShotOutcome<C> {
+    fn map_contact<T>(self, map:impl FnOnce(C)->T)->DesShotOutcome<T> {
+        DesShotOutcome {
+            trajectory:self.trajectory, planned_flight_ms:self.planned_flight_ms,
+            outcome:self.outcome, won_corner:self.won_corner, flight_ms:self.flight_ms,
+            dead_ball_kind:self.dead_ball_kind, restart_spot:self.restart_spot,
+            early_interaction:map(self.early_interaction),
+        }
+    }
+}
+
+fn shot_block_commit_probability(state:&MatchStateV4,idx:usize)->f32 {
+    let attrs=player_attrs(state,&state.players[idx]);
+    let skill=normalize_attr(attrs.mental.bravery)*0.40
+        +normalize_attr(attrs.mental.positioning)*0.35
+        +normalize_attr(attrs.mental.anticipation)*0.25;
+    (0.36+skill*0.44).clamp(0.25,0.82)
 }
 
 /// DES-native shot resolver:
@@ -60,6 +88,11 @@ pub fn resolve_shot_v4_des(
     rng: &mut DeterministicRng,
 ) -> DesShotOutcome {
     resolve_shot_v4_des_with_motion(state,input,timing,shooter_idx,assist_idx,forced_kind,is_rebound,false,rng)
+        .map_contact(|contact|match contact {
+            ShotContactResolution::None=>None,
+            ShotContactResolution::LegacyHit(hit)=>Some(hit),
+            ShotContactResolution::CommittedBlock(_)=>unreachable!("legacy shot selected experimental contact"),
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -73,7 +106,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
     is_rebound: bool,
     experimental: bool,
     rng: &mut DeterministicRng,
-) -> DesShotOutcome {
+) -> DesShotOutcome<ShotContactResolution> {
     let mut events = Vec::with_capacity(6);
     let att_side = state.players[shooter_idx].side;
     let def_side = att_side.opposite();
@@ -275,61 +308,47 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
 
     // 1. Live-ball block check BEFORE reaching the goal line via continuous interaction detector.
     if experimental || (!one_vs_one && !is_header) {
-        let mut selected_motion=None;
-        let early_hit = if experimental {
+        let blocked_candidate:Option<(usize,Vec3,i64,ShotContactResolution)>=if experimental {
             let defenders:Vec<_>=state.players.iter().enumerate()
                 .filter(|(_,p)|p.on_pitch && !p.sent_off && p.side==def_side && !p.is_goalkeeper)
                 .map(|(idx,_)|crate::v4::ball_play::pass_reach_candidate_for_motion(state,idx,true,true))
                 .collect();
-            match_physics::find_locomotion_shot_block(&shot_traj,&defenders,t_now_ms,t_goal_ms).map(|opportunity| {
-                selected_motion=Some(opportunity.motion);
-                opportunity.hit
-            })
+            match_physics::find_locomotion_shot_block(&shot_traj,&defenders,t_now_ms,t_goal_ms)
+                .and_then(|opportunity| {
+                    let idx=state.players.iter().position(|p|
+                        p.player_id==opportunity.motion.candidate.player_id && p.side==def_side)
+                        .expect("shot block candidate belongs to the authoritative roster");
+                    // The only place where a physical opportunity becomes an
+                    // accepted block. A failed commitment drops the whole value.
+                    if (rng.next_double() as f32)<shot_block_commit_probability(state,idx) {
+                        let elapsed=(opportunity.hit.time_ms-t_now_ms).max(1);
+                        let pos=opportunity.hit.ball_pos.clamp_to_pitch();
+                        Some((idx,pos,elapsed,ShotContactResolution::CommittedBlock(opportunity)))
+                    } else {None}
+                })
         } else {
             let defenders=build_defender_candidates(state,def_side,false);
-            find_earliest_ball_interaction(&shot_traj,&defenders,t_now_ms,t_goal_ms)
+            let early_hit=find_earliest_ball_interaction(&shot_traj,&defenders,t_now_ms,t_goal_ms);
+            if let Some(hit)=early_hit.filter(|h|h.kind==InteractionKind::ShotBlocked) {
+                let blk_idx=hit.defender_id.as_deref()
+                    .and_then(|id|state.players.iter().position(|p|p.player_id==id))
+                    .unwrap_or_else(||first_outfield_idx(state,def_side));
+                if (rng.next_double() as f32)<shot_block_commit_probability(state,blk_idx) {
+                    let hit_elapsed=(hit.time_ms-t_now_ms).max(1);
+                    let pos=hit.ball_pos.clamp_to_pitch();
+                    Some((blk_idx,pos,hit_elapsed,ShotContactResolution::LegacyHit(hit)))
+                } else {None}
+            } else if let Some((blk_idx,blk_prob))=find_shot_blocker(state,att_side,shooter_pos,goal_center) {
+                if (rng.next_double() as f32)<blk_prob {
+                    let pos=Vec3::new(state.players[blk_idx].pos.x,state.players[blk_idx].pos.y,0.7).clamp_to_pitch();
+                    let frac=(shooter_pos.distance(pos.xy())/dist_m.max(1.0)).clamp(0.10,0.90);
+                    let hit_elapsed=((shot_flight_ms as f32)*frac).round().max(1.0) as i64;
+                    Some((blk_idx,pos,hit_elapsed,ShotContactResolution::None))
+                } else {None}
+            } else {None}
         };
 
-        let blocked_candidate: Option<(usize, Vec3, i64, Option<EarlyInteractionHit>)> =
-            if let Some(hit) = early_hit.filter(|h| h.kind == InteractionKind::ShotBlocked) {
-                let blk_idx = hit
-                    .defender_id
-                    .as_deref()
-                    .and_then(|id| state.players.iter().position(|p| p.player_id == id))
-                    .unwrap_or_else(|| first_outfield_idx(state, def_side));
-                let def_attrs = *player_attrs(state, &state.players[blk_idx]);
-                let blk_skill = normalize_attr(def_attrs.mental.bravery) * 0.40
-                    + normalize_attr(def_attrs.mental.positioning) * 0.35
-                    + normalize_attr(def_attrs.mental.anticipation) * 0.25;
-                let commit_prob = (0.36 + blk_skill * 0.44).clamp(0.25, 0.82);
-                if (rng.next_double() as f32) < commit_prob {
-                    let hit_elapsed = (hit.time_ms - t_now_ms).max(1);
-                    let pos = hit.ball_pos.clamp_to_pitch();
-                    Some((blk_idx, pos, hit_elapsed, Some(hit)))
-                } else {
-                    None
-                }
-            } else if let Some((blk_idx, blk_prob)) =
-                if experimental {None} else {find_shot_blocker(state, att_side, shooter_pos, goal_center)}
-            {
-                if (rng.next_double() as f32) < blk_prob {
-                    let pos = Vec3::new(
-                        state.players[blk_idx].pos.x,
-                        state.players[blk_idx].pos.y,
-                        0.7,
-                    )
-                    .clamp_to_pitch();
-                    let frac = (shooter_pos.distance(pos.xy()) / dist_m.max(1.0)).clamp(0.10, 0.90);
-                    let hit_elapsed = ((shot_flight_ms as f32) * frac).round().max(1.0) as i64;
-                    Some((blk_idx, pos, hit_elapsed, None))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-        if let Some((blk_idx, blk_pos, blk_elapsed_ms, hit_opt)) = blocked_candidate {
+        if let Some((blk_idx, blk_pos, blk_elapsed_ms, contact)) = blocked_candidate {
             let blk_id = state.players[blk_idx].player_id.clone();
             state.team_state_mut(att_side).shots_blocked += 1;
             let def_attrs = *player_attrs(state, &state.players[blk_idx]);
@@ -397,8 +416,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                     flight_ms: blk_elapsed_ms,
                     dead_ball_kind: Some(DeadBallKind::GoalCelebration),
                     restart_spot: Some(Vec3::center_spot()),
-                    early_interaction: hit_opt,
-                    block_motion: selected_motion,
+                    early_interaction: contact,
                 };
             }
             state.ball.pos = blk_pos;
@@ -421,8 +439,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 flight_ms: blk_elapsed_ms,
                 dead_ball_kind: None,
                 restart_spot: None,
-                early_interaction: hit_opt,
-                block_motion: selected_motion,
+                early_interaction: contact,
             };
         }
     }
@@ -483,8 +500,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
             flight_ms: shot_flight_ms,
             dead_ball_kind: Some(DeadBallKind::GoalKick),
             restart_spot: Some(gk_pos),
-            early_interaction: None,
-            block_motion: None,
+            early_interaction: ShotContactResolution::None,
         };
     }
 
@@ -557,8 +573,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 flight_ms: shot_flight_ms,
                 dead_ball_kind: Some(DeadBallKind::GoalCelebration),
                 restart_spot: Some(Vec3::center_spot()),
-                early_interaction: None,
-                block_motion: None,
+                early_interaction: ShotContactResolution::None,
             }
         }
         GkShotOutcome::SavedHeld => {
@@ -632,8 +647,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 flight_ms: shot_flight_ms,
                 dead_ball_kind: None,
                 restart_spot: None,
-                early_interaction: None,
-                block_motion: None,
+                early_interaction: ShotContactResolution::None,
             }
         }
         GkShotOutcome::SavedParriedRebound => {
@@ -789,8 +803,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                     .saturating_add(match_contracts::units::seconds_to_ms_nearest_f32(def_eta_sec.clamp(0.15, REBOUND_WINDOW_SEC))),
                 dead_ball_kind: None,
                 restart_spot: None,
-                early_interaction: None,
-                block_motion: None,
+                early_interaction: ShotContactResolution::None,
             }
         }
         GkShotOutcome::SavedTippedCorner => {
@@ -848,8 +861,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 flight_ms: shot_flight_ms,
                 dead_ball_kind: Some(DeadBallKind::Corner),
                 restart_spot: Some(corner_spot),
-                early_interaction: None,
-                block_motion: None,
+                early_interaction: ShotContactResolution::None,
             }
         }
     }
