@@ -1113,21 +1113,36 @@ pub fn contact_control_probability(
 /// each millisecond. Walk it once, preserving the old search bounds,
 /// residual comparison, first timestamp and input-order tie policy.
 fn find_fixed_recovery_forward(candidates:&[PassReachCandidate],spot:Vec2)->Option<(usize,i64)>{
-    let horizon=movement::MAX_MOTION_HORIZON_MS;
-    let ball=Vec3::ground(spot.x,spot.y);
+    let ball=BallTrajectory{start_time_ms:0,start_pos:Vec3::ground(spot.x,spot.y),
+        initial_vel:Vec3::default(),gravity_z:0.0,drag:0.0,is_shot:false,is_carrier_dribble:false};
+    find_fixed_horizontal_contact(&ball,candidates,250,movement::MAX_MOTION_HORIZON_MS)
+        .map(|(idx,time,_)|(idx,time))
+}
+
+/// Fixed horizontal destination, potentially changing height. Use the
+/// same per-sample eligibility and original window partition as the
+/// ordinary straight trajectory scan; do not treat airborne balls as ground.
+fn find_fixed_horizontal_contact(traj:&BallTrajectory,candidates:&[PassReachCandidate],
+    first:i64,end:i64)->Option<(usize,i64,Vec3)>{
+    let now=traj.start_time_ms;
+    let horizon=end.checked_sub(now)?;
+    let first_elapsed=first.checked_sub(now)?;
+    if !(1..=movement::MAX_MOTION_HORIZON_MS).contains(&horizon)
+        || first_elapsed<=0 || first_elapsed>horizon {return None;}
+    let spot=traj.position_at_ms(first).xy();
     let mut best:Option<(usize,i64,f32)>=None;
     for (idx,p) in candidates.iter().enumerate(){
         if p.reaction_ms<0 || !p.reach_m.is_finite() || p.reach_m<0.0
             || !locomotion_window_may_reach(p,spot,spot,horizon){continue;}
         let Some(plan)=p.motion_plan(spot).ok().flatten() else{continue;};
         let end=best.map_or(horizon,|(_,t,_)|t);
-        let hit=plan.first_matching_position(250,end,|time,pos|{
-            // Match the existing 25-ms window boundary and per-sample
-            // conservative filters exactly, not a new reach threshold.
+        let hit=plan.first_matching_position(first_elapsed,end,|time,pos|{
+            // Check height only at possible physical contacts. Keep the
+            // existing windows and per-sample conservative filters.
             pos.distance(spot)<=p.reach_m
                 && locomotion_window_may_reach(p,spot,spot,
-                    (250+((time-250)/25)*25+24).min(horizon))
-                && p.contact_bounds_allow(ball,time)
+                    (first_elapsed+((time-first_elapsed)/25)*25+24).min(horizon))
+                && p.contact_bounds_allow(traj.position_at_ms(now+time),time)
         }).ok().flatten();
         if let Some((time,pos))=hit{
             let d=pos.distance(spot);
@@ -1137,7 +1152,7 @@ fn find_fixed_recovery_forward(candidates:&[PassReachCandidate],spot:Vec2)->Opti
             }
         }
     }
-    best.map(|(idx,time,_)|(idx,time))
+    best.map(|(idx,time,_)|(idx,now+time,traj.position_at_ms(now+time)))
 }
 
 pub fn find_grounded_ball_recovery(
@@ -1264,6 +1279,16 @@ pub fn find_moving_ball_recovery(traj: &BallTrajectory, candidates: &[PassReachC
             while first<hi {
                 let mid=first+(hi-first)/2;
                 if speed_ok(mid) {hi=mid;} else {first=mid+1;}
+            }
+            // The horizontal trajectory is constant when both components
+            // are exactly zero. Height still follows the original flight.
+            if traj.initial_vel.x==0.0 && traj.initial_vel.y==0.0
+                && traj.drag.is_finite() && traj.start_pos.x.is_finite() && traj.start_pos.y.is_finite() {
+                if let Some((candidate_idx,time_ms,ball_pos))=find_fixed_horizontal_contact(
+                    traj,candidates,first,last){
+                    return Some(LooseBallResolution::Player{candidate_idx,time_ms,ball_pos});
+                }
+                return boundary.map(LooseBallResolution::Boundary);
             }
             if let Some((candidate_idx,time_ms,ball_pos,_))=scan_locomotion_contacts(
                 traj,&refs,now,first,last,None,|_,_,_,_|true) {
@@ -1393,6 +1418,60 @@ fn find_experimental_carry_contact(
     let start=carrier.started_at_ms;
     let horizon=end_ms.checked_sub(start)?;
     if !(1..=movement::MAX_MOTION_HORIZON_MS).contains(&horizon) {return None;}
+    let plan=carrier.experimental_plan().ok()??;
+    let speed=plan.maximum_path_speed_mps() as f64;
+    let first=horizon.min(150);
+    let nearby:Vec<_>=defenders.iter().enumerate().filter(|(_,p)|
+        p.reaction_ms>=0 && p.reach_m.is_finite() && p.reach_m>=0.0
+        && p.reaction_ms<=horizon
+        && (p.pos.distance(carrier.candidate.pos) as f64
+            <=locomotion_displacement_bound_m(p,horizon)+speed*horizon as f64/1000.0+p.reach_m as f64+0.01))
+        .map(|(idx,_)|idx).collect();
+    if nearby.is_empty() {return None;}
+    let mut possible=Vec::with_capacity(nearby.len());
+    let mut winner=None;
+    // Stream the already fixed carrier plan. Window centers and samples
+    // use exactly the same segment arithmetic as the old absolute query.
+    // Challenger target changes with the sample, so its solver still
+    // starts at launch; do not reuse a different-target controller state.
+    let hit=plan.first_matching_position(first,horizon,|elapsed,pos|{
+        if (elapsed-first)%25==0 {
+            let last=elapsed.saturating_add(24).min(horizon);
+            let carrier_radius=speed*(last-elapsed) as f64/1000.0;
+            possible.clear();
+            possible.extend(nearby.iter().copied().filter(|&idx|{
+                let p=&defenders[idx];
+                p.reaction_ms<=last && p.pos.distance(pos) as f64
+                    <=locomotion_displacement_bound_m(p,last)+carrier_radius+p.reach_m as f64+0.01
+            }));
+        }
+        let mut best:Option<(usize,f32)>=None;
+        for &idx in &possible {
+            let p=&defenders[idx];
+            if elapsed<p.reaction_ms {continue;}
+            if p.pos.distance(pos) as f64>locomotion_displacement_bound_m(p,elapsed)+p.reach_m as f64+0.01 {continue;}
+            let Some(reached)=p.contact_position_toward(pos,elapsed) else {continue;};
+            let d=reached.distance(pos);
+            if d<=p.reach_m && best.is_none_or(|(old,old_d)|
+                d<old_d-1e-4 || ((d-old_d).abs()<=1e-4 && p.player_id<defenders[old].player_id)) {
+                best=Some((idx,d));
+            }
+        }
+        winner=best.map(|(idx,_)|idx);
+        winner.is_some()
+    }).ok()??;
+    let idx=winner?;
+    Some((idx,start.checked_add(hit.0)?,PassContactMotion{
+        candidate:defenders[idx].clone(),target:hit.1,started_at_ms:start}))
+}
+
+#[cfg(test)]
+fn prior_batch3_carry_contact(
+    carrier:&PassContactMotion,defenders:&[PassReachCandidate],end_ms:i64,
+)->Option<(usize,i64,PassContactMotion)>{
+    let start=carrier.started_at_ms;
+    let horizon=end_ms.checked_sub(start)?;
+    if !(1..=movement::MAX_MOTION_HORIZON_MS).contains(&horizon){return None;}
     let plan=carrier.experimental_plan().ok()??;
     let speed=plan.maximum_path_speed_mps() as f64;
     let mut first=start.checked_add(horizon.min(150))?;
@@ -1767,6 +1846,64 @@ mod b12_contact_locomotion_tests {
                                 .is_some_and(|r|r.distance(pos)<=p.reach_m)
                         });
                         assert_eq!(find_carry_contact(&c,&[p.clone()],900).map(|(_,t,_)|t),expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn b12_batch3_streamed_carry_matches_previous_window_search(){
+        for side in [TeamSideV4::Home,TeamSideV4::Away]{
+            let sign=if side==TeamSideV4::Home{1.0}else{-1.0};
+            let x=if side==TeamSideV4::Home{40.0}else{65.0};
+            for vx in [-5.0,0.0,7.0]{
+                for delay in [0,137,350]{
+                    for end in [150,681,1701]{
+                        let mut runner=candidate(x,vx*sign);
+                        runner.side=side;
+                        runner.reaction_ms=delay;
+                        let carrier=PassContactMotion{candidate:runner,target:Vec2::new(x+15.0*sign,41.0),
+                            started_at_ms:100};
+                        let mut a=candidate(x+2.0*sign,-2.0*sign);
+                        a.side=side.opposite();a.player_id="B".into();a.reaction_ms=delay;
+                        let mut b=a.clone();b.player_id="A".into();b.pos.y+=0.25;
+                        let defenders=[a,b];
+                        assert_eq!(find_experimental_carry_contact(&carrier,&defenders,100+end),
+                            prior_batch3_carry_contact(&carrier,&defenders,100+end));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn b12_batch3_vertical_recovery_matches_previous_window_search(){
+        for side in [TeamSideV4::Home,TeamSideV4::Away]{
+            let mirror=|x:f32|if side==TeamSideV4::Home{x}else{105.0-x};
+            for height in [0.0,1.2,3.8]{
+                for vz in [-4.0,0.0,5.0]{
+                    for delay in [0,137,350]{
+                        let mut a=candidate(mirror(40.0),0.0);
+                        a.side=side;a.reaction_ms=delay;a.player_id="B".into();
+                        let mut b=a.clone();b.player_id="A".into();b.playable_height_m=2.6;
+                        let players=[a,b];
+                        let traj=BallTrajectory{start_time_ms:1017,
+                            start_pos:Vec3::new(mirror(43.0),34.0,height),
+                            initial_vel:Vec3::new(0.0,0.0,vz),gravity_z:9.81,drag:1.6,
+                            is_shot:false,is_carrier_dribble:false};
+                        let refs:Vec<_>=players.iter().collect();
+                        let expected=scan_locomotion_contacts(&traj,&refs,1017,1267,121017,None,|_,_,_,_|true)
+                            .map(|(candidate_idx,time_ms,ball_pos,_)|
+                                LooseBallResolution::Player{candidate_idx,time_ms,ball_pos});
+                        let actual=find_moving_ball_recovery(&traj,&players);
+                        match (actual,expected){
+                            (Some(LooseBallResolution::Player{candidate_idx:a,time_ms:b,ball_pos:c}),
+                             Some(LooseBallResolution::Player{candidate_idx:x,time_ms:y,ball_pos:z}))=>
+                                assert_eq!((a,b,c),(x,y,z)),
+                            (None,None)=>{},
+                            pair=>panic!("vertical recovery parity mismatch: {pair:?}"),
+                        }
                     }
                 }
             }
