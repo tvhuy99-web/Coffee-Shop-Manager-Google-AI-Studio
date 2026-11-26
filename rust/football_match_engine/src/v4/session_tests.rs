@@ -1106,6 +1106,46 @@ mod locomotion_full_match_experiment {
     }
 
     #[test]
+    fn b12_batch2_specialist_shots_commit_only_at_resolution() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            for kind in [DeadBallKind::PenaltyKick,DeadBallKind::DirectFreeKick] {
+                let input=make_v4_input(12055,SimulationMode::FastBatch,RulesModeV4::Standard);
+                let mut s=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+                s.step_one_des_event(true).unwrap();
+                let spot=if kind==DeadBallKind::PenaltyKick{
+                    let p=crate::v4::spatial::penalty_spot(side);Vec3::ground(p.x,p.y)
+                }else{Vec3::ground(if side==TeamSideV4::Home{84.0}else{21.0},34.0)};
+                let shots=s.state.team_state(side).shots;
+                s.open_dead_ball(kind,side,spot,false,false).unwrap();
+                for _ in 0..60{
+                    s.step_one_des_event(true).unwrap();
+                    if s.state.dead_ball.is_none(){break;}
+                }
+                assert!(s.state.dead_ball.is_none());
+                let f=s.pending_flight.as_ref().expect("scheduled specialist shot");
+                assert!(matches!(f.action,FlightActionV4::Shot{..}));
+                assert_eq!(f.trajectory.start_pos.xy(),spot.xy());
+                assert_eq!(s.state.team_state(side).shots,shots);
+                assert_eq!(s.state.ball.control,BallControlState::InFlight);
+                assert!(s.state.ball.owner_player_id.is_none());
+                assert!(s.state.players[s.carrier_idx].pos.distance(spot.xy())<=0.75);
+                let at=f.resolves_at_ms;
+                let ck=s.export_checkpoint().unwrap();
+                let mut restored=MatchSessionV4::from_checkpoint(ck).unwrap();
+                for current in [&mut s,&mut restored] {
+                    for _ in 0..100{
+                        if current.sim_time_ms()>=at{break;}
+                        current.step_one_des_event(true).unwrap();
+                    }
+                    assert_eq!(current.sim_time_ms(),at);
+                    assert_eq!(current.state.team_state(side).shots,shots+1);
+                }
+                assert_eq!(s.export_checkpoint().unwrap().checksum_hex,restored.export_checkpoint().unwrap().checksum_hex);
+            }
+        }
+    }
+
+    #[test]
     fn b12_batch2_specialist_delivery_has_no_player_teleport() {
         for side in [TeamSideV4::Home,TeamSideV4::Away] {
             for kind in [DeadBallKind::Corner,DeadBallKind::IndirectFreeKick] {

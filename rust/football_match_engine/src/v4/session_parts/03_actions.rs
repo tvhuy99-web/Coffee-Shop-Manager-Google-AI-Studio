@@ -807,12 +807,17 @@ impl MatchSessionV4 {
     /// CRITICAL-01: Schedules a shot in-flight so `Goal`/`Save`/`ShotOffTarget` occurs at
     /// `t_shot + shot_flight_ms` (or early `ShotBlocked` at `t_block`), never at `t_shot`.
     fn schedule_shot_flight(&mut self, shooter_idx: usize, assist_idx: Option<usize>, shot_kind: Option<ShotKindV4>) -> Result<(), V4Error> {
+        self.schedule_shot_with_restart(shooter_idx,assist_idx,shot_kind,None)
+    }
+
+    fn schedule_shot_with_restart(&mut self,shooter_idx:usize,assist_idx:Option<usize>,
+        shot_kind:Option<ShotKindV4>,restart:Option<(DeadBallKind,Vec2,bool)>)->Result<(),V4Error>{
         let now = self.state.des_clock.sim_time_ms;
         let side = self.state.players[shooter_idx].side;
         let mut resolved = self.state.clone();
         let experimental=self.uses_locomotion_experiment();
-        let shot = crate::v4::shooting::resolve_shot_v4_des_with_motion(&mut resolved, &self.input, &self.input.timing_model,
-            shooter_idx, assist_idx, shot_kind, false, experimental, &mut self.rng);
+        let shot = crate::v4::shooting::resolve_shot_with_restart(&mut resolved, &self.input, &self.input.timing_model,
+            shooter_idx, assist_idx, shot_kind, false, experimental,restart, &mut self.rng);
         use crate::v4::shooting::ShotContactResolution;
         let is_block_event=shot.outcome.events.iter().any(|ev|ev.kind==EventTypeV4::Block);
         let save_event=shot.outcome.events.iter().find(|ev|ev.kind==EventTypeV4::Save);
@@ -905,7 +910,20 @@ impl MatchSessionV4 {
         };
         let payload = DesEventPayload::ShotArrival { shooter_id: self.state.players[shooter_idx].player_id.clone(), side,
             target_y_mm: 34_000, target_z_mm: 1_100 };
-        self.install_flight(flight, payload, shooter_idx)
+        self.install_flight(flight, payload, shooter_idx)?;
+        if let Some((kind,_,_))=restart {
+            let penalty=kind==DeadBallKind::PenaltyKick;
+            let id=self.state.players[shooter_idx].player_id.clone();
+            if penalty {
+                self.emit(EventTypeV4::PenaltyAwarded,HighlightTier::GoalKey,None,Some(side),Some(id.clone()),None,
+                    EventMetadataV4{in_box:Some(true),..EventMetadataV4::default()});
+            }
+            self.emit(if penalty{EventTypeV4::PenaltyKick}else{EventTypeV4::FreeKick},
+                HighlightTier::Extended,None,Some(side),Some(id),None,
+                EventMetadataV4{in_box:penalty.then_some(true),free_kick_executed:(!penalty).then_some(true),
+                    ..EventMetadataV4::default()});
+        }
+        Ok(())
     }
 
     fn handle_shot_arrival(&mut self) -> Result<(), V4Error> {

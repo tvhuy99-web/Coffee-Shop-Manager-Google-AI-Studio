@@ -256,6 +256,8 @@ impl MatchSessionV4 {
         let restart_spot=if self.uses_locomotion_experiment() && kind==DeadBallKind::PenaltyKick {
             let p=crate::v4::spatial::penalty_spot(restart_side);
             Vec3::ground(p.x,p.y)
+        }else if self.uses_locomotion_experiment() && kind==DeadBallKind::GoalKick {
+            Vec3::ground(if restart_side==TeamSideV4::Home{5.5}else{PITCH_LENGTH_M-5.5},34.0)
         }else{restart_spot};
         let db = DeadBallState::new(
             kind,
@@ -336,6 +338,8 @@ impl MatchSessionV4 {
         let kickoff=matches!(db.kind,DeadBallKind::GoalCelebration|DeadBallKind::Kickoff);
         if kickoff && db.phase==DeadBallPhase::Celebrating {return targets;}
         let center=Vec3::center_spot().xy();
+        let penalty=db.kind==DeadBallKind::PenaltyKick;
+        let penalty_keeper=penalty.then(||self.find_goalkeeper_index(db.restart_side.opposite()));
         for (idx,p) in self.state.players.iter().enumerate(){
             if !p.on_pitch || p.sent_off {continue;}
             if idx==taker {
@@ -346,6 +350,17 @@ impl MatchSessionV4 {
                     Vec2::new(spot.x.clamp(0.3,PITCH_LENGTH_M-0.3),spot.y.clamp(0.3,67.7))
                 };
                 targets[idx]=Some((target,3.5));
+            }else if penalty {
+                let spot=db.restart_spot.xy();
+                if penalty_keeper==Some(idx) {
+                    targets[idx]=Some((Vec2::new(if p.side==TeamSideV4::Home{0.2}else{PITCH_LENGTH_M-0.2},34.0),3.5));
+                }else{
+                    // Conservative player-center setup: outside the area,
+                    // behind the mark and farther than the arc radius.
+                    let x=if db.restart_side==TeamSideV4::Home{p.pos.x.min(spot.x-10.0)}
+                        else{p.pos.x.max(spot.x+10.0)};
+                    targets[idx]=Some((Vec2::new(x.clamp(0.5,PITCH_LENGTH_M-0.5),p.pos.y.clamp(0.5,67.5)),3.5));
+                }
             }else if kickoff {
                 // Move only as far as necessary to the own half, leaving
                 // opposing players outside the center circle. No forced
@@ -374,6 +389,21 @@ impl MatchSessionV4 {
         let kickoff=matches!(db.kind,DeadBallKind::GoalCelebration|DeadBallKind::Kickoff);
         let spot=if kickoff{Vec3::center_spot().xy()}else{db.restart_spot.xy()};
         if p.pos.distance(spot)>0.75 || p.vel.distance(Vec2::default())>0.8 {return Ok(false);}
+        if db.kind==DeadBallKind::PenaltyKick {
+            let keeper=self.find_goalkeeper_index(db.restart_side.opposite());
+            for (idx,p) in self.state.players.iter().enumerate(){
+                if idx==taker||!p.on_pitch||p.sent_off{continue;}
+                if idx==keeper{
+                    let goal_x=if p.side==TeamSideV4::Home{0.0}else{PITCH_LENGTH_M};
+                    if (p.pos.x-goal_x).abs()>0.5 || (p.pos.y-34.0).abs()>3.0
+                        || p.vel.distance(Vec2::default())>0.8{return Ok(false);}
+                }else{
+                    let behind=if db.restart_side==TeamSideV4::Home{p.pos.x<=spot.x}else{p.pos.x>=spot.x};
+                    if !behind || is_in_attacking_penalty_box(db.restart_side,p.pos)
+                        || p.pos.distance(spot)<9.15{return Ok(false);}
+                }
+            }
+        }
         if kickoff {
             for (idx,p) in self.state.players.iter().enumerate(){
                 if idx==taker || !p.on_pitch || p.sent_off {continue;}
@@ -498,6 +528,17 @@ impl MatchSessionV4 {
             let taker=self.experimental_restart_actor(&db)
                 .ok_or_else(||V4Error::InvalidInput("missing delivery taker".into()))?;
             return self.schedule_experimental_set_piece_delivery(&db,taker);
+        }
+        if self.uses_locomotion_experiment() && matches!(db.kind,
+            DeadBallKind::PenaltyKick|DeadBallKind::DirectFreeKick|DeadBallKind::QuickFreeKick) {
+            let taker=self.experimental_restart_actor(&db)
+                .ok_or_else(||V4Error::InvalidInput("missing specialist shooter".into()))?;
+            self.possession_side=restart_side;
+            self.carrier_idx=taker;
+            self.last_passer_idx=None;
+            let kind=if db.kind==DeadBallKind::PenaltyKick{ShotKindV4::Driven}else{ShotKindV4::Curled};
+            return self.schedule_shot_with_restart(taker,None,Some(kind),
+                Some((db.kind,db.restart_spot.xy(),self.ruleset.allow_penalty_rebound)));
         }
         match db.kind {
             DeadBallKind::GoalCelebration | DeadBallKind::Kickoff => {

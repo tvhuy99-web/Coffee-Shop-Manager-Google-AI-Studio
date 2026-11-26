@@ -148,12 +148,25 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
     experimental: bool,
     rng: &mut DeterministicRng,
 ) -> DesShotOutcome<ShotContactResolution> {
+    resolve_shot_with_restart(state,input,timing,shooter_idx,assist_idx,forced_kind,is_rebound,experimental,None,rng)
+}
+
+/// A set-piece shot uses the same DES flight and contact witness contract.
+/// The existing specialist skill formulas are supplied at the launch spot;
+/// ordinary shots and legacy callers continue through the original wrapper.
+pub(crate) fn resolve_shot_with_restart(
+    state:&mut MatchStateV4,input:&MatchInputV4,timing:&TimingModelConfig,
+    shooter_idx:usize,assist_idx:Option<usize>,forced_kind:Option<ShotKindV4>,
+    is_rebound:bool,experimental:bool,restart:Option<(DeadBallKind,Vec2,bool)>,
+    rng:&mut DeterministicRng,
+)->DesShotOutcome<ShotContactResolution>{
+    let penalty=restart.is_some_and(|(kind,_,_)|kind==DeadBallKind::PenaltyKick);
     let mut events = Vec::with_capacity(6);
     let att_side = state.players[shooter_idx].side;
     let def_side = att_side.opposite();
     let gk_idx = find_gk_idx(state, def_side);
 
-    let shooter_pos = state.players[shooter_idx].pos;
+    let shooter_pos = restart.map_or(state.players[shooter_idx].pos,|(_,spot,_)|spot);
     let shooter_id = state.players[shooter_idx].player_id.clone();
     let gk_id = state.players[gk_idx].player_id.clone();
 
@@ -170,7 +183,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
 
     // Detect 1v1: inside 18m with low defender presence between shooter and goal
     let one_vs_one =
-        in_box && dist_m <= 16.5 && ctx.nearest_defender_dist_m >= 3.8 && !is_rebound;
+        restart.is_none() && in_box && dist_m <= 16.5 && ctx.nearest_defender_dist_m >= 3.8 && !is_rebound;
 
     // Classify shot kind
     let kind = if is_rebound {
@@ -269,6 +282,12 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
         * (1.0 - press_pen - wet_pen))
         .clamp(0.015, 0.72);
 
+    let fk_skill=normalize_attr_elite(shooter_attrs.technical.free_kicks)*0.58
+        +normalize_attr(shooter_attrs.technical.technique)*0.24
+        +normalize_attr(shooter_attrs.technical.long_shots)*0.18;
+    let xg=if penalty{0.78}else if restart.is_some(){
+        ((0.16-(dist_m-17.0).max(0.0)*0.009)*(0.65+fk_skill*0.70)).clamp(0.02,0.24)
+    }else{xg};
     let seq_id = state.next_highlight_sequence_id;
     state.next_highlight_sequence_id = state.next_highlight_sequence_id.saturating_add(1);
     state.team_state_mut(att_side).shots += 1;
@@ -286,6 +305,11 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
         goalkeeper: Some(gk_id.clone()),
         ..EventMetadataV4::default()
     };
+
+    if let Some((restart_kind,_,_))=restart {
+        base_meta.extra.insert("restartShot".into(),format!("{restart_kind:?}"));
+        if !penalty {base_meta.free_kick_executed=Some(true);}
+    }
 
     // Emit GoalkeeperRush when an aggressive sweeper-keeper narrows a 1v1
     if one_vs_one && gk_attrs.goalkeeping.rushing_out >= 13 {
@@ -322,10 +346,18 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
 
     let shot_start_z = if is_header { 2.05 } else { 0.35 };
     let target_goal_z = if is_header { 1.35 } else { 1.10 };
+    let specialist_on_target=restart.map(|_| {
+        // The historical penalty model has goal/save only; keep that
+        // limitation explicit until technical execution B1.5.
+        penalty || (rng.next_double() as f32)<(0.28+fk_skill*0.36).clamp(0.20,0.68)
+    });
+    // For a specialist miss use its actual nominal miss direction; normal
+    // shot geometry is unchanged in this locomotion integration step.
+    let target_y=if specialist_on_target==Some(false){goal_center.y+5.0}else{goal_center.y};
     let drag = 0.06f32;
     let drag_integral = (1.0 - (-drag * flight_sec).exp()) / drag;
     let vx = (goal_center.x - shooter_pos.x) / drag_integral;
-    let vy = (goal_center.y - shooter_pos.y) / drag_integral;
+    let vy = (target_y - shooter_pos.y) / drag_integral;
     let vz = (target_goal_z - shot_start_z + 0.5 * DEFAULT_GRAVITY_Z_MPS2 * flight_sec * flight_sec)
         / drag_integral;
 
@@ -353,7 +385,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
     // Legacy draw order remains block, accuracy, keeper, unchanged.
     let on_target_prob =
         (0.34 + fin_skill * 0.34 * foot_mod - press_pen * 0.55 - wet_pen).clamp(0.18, 0.78);
-    let experimental_on_target = experimental.then(|| (rng.next_double() as f32) <= on_target_prob);
+    let experimental_on_target = specialist_on_target.or_else(||experimental.then(|| (rng.next_double() as f32) <= on_target_prob));
     let mut experimental_save = None;
     let mut experimental_save_outcome = None;
 
@@ -361,7 +393,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
     if experimental || (!one_vs_one && !is_header) {
         let blocked_candidate:Option<(usize,Vec3,i64,ShotContactResolution)>=if experimental {
             let defenders:Vec<_>=state.players.iter().enumerate()
-                .filter(|(_,p)|p.on_pitch && !p.sent_off && p.side==def_side && !p.is_goalkeeper)
+                .filter(|(_,p)|!penalty && p.on_pitch && !p.sent_off && p.side==def_side && !p.is_goalkeeper)
                 .map(|(idx,_)|crate::v4::ball_play::pass_reach_candidate_for_motion(state,idx,true,true))
                 .collect();
             let block=match_physics::find_locomotion_shot_block(&shot_traj,&defenders,t_now_ms,t_goal_ms);
@@ -376,8 +408,31 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                         .expect("shot block candidate belongs to the authoritative roster");
                     (rng.next_double() as f32)<shot_block_commit_probability(state,idx)
                 },
-                |_,rng| resolve_gk_shot_reaction(&gk_attrs,gk_fam,gk_aero,xg,dist_m,
-                    one_vs_one,is_finesse,is_header,input,rng));
+                |_,rng| {
+                    if penalty {
+                        let pen_skill=normalize_attr_elite(shooter_attrs.technical.penalties)*0.50
+                            +normalize_attr(shooter_attrs.mental.composure)*0.30
+                            +normalize_attr(shooter_attrs.hidden.pressure)*0.20;
+                        let gk_skill=normalize_attr_elite(gk_attrs.goalkeeping.reflexes)*0.55
+                            +normalize_attr(gk_attrs.goalkeeping.one_on_ones)*0.45;
+                        // Provisional reuse of the old specialist skill roll
+                        // conditional on an actually reachable hand contact.
+                        let score_prob=(0.76+(pen_skill-gk_skill)*0.20).clamp(0.56,0.93);
+                        if (rng.next_double() as f32)<score_prob {GkShotOutcome::GoalConceded}
+                        else {
+                            let wet_slip=match input.match_environment.weather {
+                                WeatherCondition::HeavyRain=>0.14,WeatherCondition::LightRain=>0.06,_=>0.0,
+                            };
+                            let hold=(0.26+normalize_attr(gk_attrs.goalkeeping.handling)*0.44-wet_slip).clamp(0.12,0.78);
+                            if restart.is_some_and(|(_,_,allow)|!allow)||(rng.next_double() as f32)<hold {
+                                GkShotOutcome::SavedHeld
+                            }else{GkShotOutcome::SavedParriedRebound}
+                        }
+                    }else{
+                        resolve_gk_shot_reaction(&gk_attrs,gk_fam,gk_aero,xg,dist_m,
+                            one_vs_one,is_finesse,is_header,input,rng)
+                    }
+                });
             match winner {
                 ShotContactResolution::CommittedBlock(opportunity)=>{
                     let idx=state.players.iter().position(|p|
@@ -519,7 +574,9 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
         state.team_state_mut(att_side).shots_off_target += 1;
         base_meta.scored = Some(false);
         base_meta.outcome = Some("OFF_TARGET".into());
-        let miss_pos = Vec3::new(goal_center.x, (goal_center.y + 5.0).clamp(0.0, 68.0), 1.8);
+        let miss_pos = if restart.is_some(){shot_traj.position_at_ms(t_goal_ms).clamp_to_pitch()}else{
+            Vec3::new(goal_center.x, (goal_center.y + 5.0).clamp(0.0, 68.0), 1.8)
+        };
         events.push(EmittedPlayEvent {
             kind: if is_header {
                 EventTypeV4::Header
@@ -743,11 +800,13 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 TeamSideV4::Home => (PITCH_LENGTH_M - 8.5).clamp(0.0, PITCH_LENGTH_M),
                 TeamSideV4::Away => 8.5,
             };
-            let reb_pos = Vec3::new(
+            let legacy_reb_pos = Vec3::new(
                 reb_x,
                 (PITCH_HALF_WIDTH_M + (rng.next_double() as f32 - 0.5) * 10.0).clamp(16.0, 52.0),
                 0.3,
             );
+            let reb_pos=if restart.is_some(){save_contact.as_ref().map_or(legacy_reb_pos,|c|c.ball_pos)}
+                else{legacy_reb_pos};
             let contact_pos=save_contact.as_ref().map_or(reb_pos,|c|c.ball_pos);
             events.push(EmittedPlayEvent {
                 kind: EventTypeV4::ShotOnTarget,
@@ -793,7 +852,13 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
             // loose-ball spawn until goalkeeper/deflection physics lands.
             if let Some(contact)=save_contact {
                 state.ball.pos=reb_pos;
-                state.ball.vel=Vec3::default();
+                state.ball.vel=if restart.is_some(){
+                    let keeper_pos=contact.motion.candidate.contact_position_toward(
+                        contact.motion.target,contact.time_ms-t_now_ms)
+                        .expect("committed keeper path is reachable");
+                    match_physics::blocked_ball_velocity(shot_traj.velocity_at_ms(contact.time_ms),
+                        keeper_pos,contact.ball_pos)
+                }else{Vec3::default()};
                 state.ball.control=BallControlState::Loose;
                 state.ball.owner_side=None;
                 state.ball.owner_player_id=None;
