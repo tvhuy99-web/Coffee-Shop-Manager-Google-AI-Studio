@@ -30,8 +30,10 @@ pub mod tactics;
 pub mod transition;
 
 #[cfg(test)]
+#[path = "../../../tests/engine/v4_tests.rs"]
 mod tests;
 #[cfg(test)]
+#[path = "../../../tests/engine/attribute_impact_tests.rs"]
 mod attribute_impact_tests;
 
 pub const ENGINE_VERSION_V4: &str = "v4.1.1-des";

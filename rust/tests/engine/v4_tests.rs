@@ -1557,33 +1557,47 @@ fn p2_all_54_named_attributes_serialise_validate_and_change_input_fingerprint() 
 fn p2_50_match_attributes_have_explicit_runtime_wiring_and_4_are_career_hooks() {
     // Structural wiring test only. This is deliberately NOT presented as
     // evidence of 50 independently measured behavioral effects.
-    let sources = [
-        include_str!("ball_play.rs"), include_str!("shooting.rs"),
-        include_str!("goalkeeper.rs"), include_str!("set_pieces.rs"),
-        include_str!("movement.rs"), include_str!("perception.rs"),
-        // PI owns these policies since stage 5.1; compatibility reexports
-        // are not the implementation. Keep the original 50-attribute gate.
-        include_str!("../../../crates/player_intelligence/src/decision.rs"),
-        include_str!("../../../crates/player_intelligence/src/timing.rs"),
-        include_str!("../../../crates/player_intelligence/src/off_ball.rs"),
-        include_str!("pi_adapter/goalkeeper.rs"),
-        include_str!("../../../crates/player_intelligence/src/utility.rs"),
-        include_str!("../../../crates/player_intelligence/src/on_ball.rs"),
-        include_str!("../../../crates/player_intelligence/src/support.rs"),
-        include_str!("../../../crates/player_intelligence/src/defensive.rs"),
-        include_str!("pi_adapter/tackle.rs"),
-        include_str!("../../../crates/player_intelligence/src/tackle.rs"),
-        include_str!("pi_adapter/pass_forecast.rs"),
-        include_str!("tactics.rs"), include_str!("psychology.rs"),
-        include_str!("../../../crates/player_condition/src/lib.rs"),
-        include_str!("../../../crates/match_tactics/src/lib.rs"),
-        include_str!("../../../crates/match_physics/src/lib.rs"),
-        include_str!("../../../crates/match_rules/src/lib.rs"),
-        include_str!("../../../crates/coach_intelligence/src/lib.rs"),
-        include_str!("../../../crates/player_intelligence/src/goalkeeper.rs"),
-        include_str!("ai_manager.rs"), include_str!("session.rs"),
-    ].join("
-");
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let mut sources = String::new();
+    for path in [
+        "football_match_engine/src/v4/ball_play.rs",
+        "football_match_engine/src/v4/shooting.rs",
+        "football_match_engine/src/v4/goalkeeper.rs",
+        "football_match_engine/src/v4/set_pieces.rs",
+        "football_match_engine/src/v4/movement.rs",
+        "football_match_engine/src/v4/perception.rs",
+        "crates/player_intelligence/src/decision.rs",
+        "crates/player_intelligence/src/timing.rs",
+        "crates/player_intelligence/src/off_ball.rs",
+        "football_match_engine/src/v4/pi_adapter/goalkeeper.rs",
+        "crates/player_intelligence/src/utility.rs",
+        "crates/player_intelligence/src/on_ball.rs",
+        "crates/player_intelligence/src/support.rs",
+        "crates/player_intelligence/src/defensive.rs",
+        "football_match_engine/src/v4/pi_adapter/tackle.rs",
+        "crates/player_intelligence/src/tackle.rs",
+        "football_match_engine/src/v4/pi_adapter/pass_forecast.rs",
+        "football_match_engine/src/v4/tactics.rs",
+        "football_match_engine/src/v4/psychology.rs",
+        "crates/player_condition/src/lib.rs",
+        "crates/match_tactics/src/lib.rs",
+        "crates/match_physics/src/lib.rs",
+        "crates/match_rules/src/lib.rs",
+        "crates/coach_intelligence/src/lib.rs",
+        "crates/player_intelligence/src/goalkeeper.rs",
+        "football_match_engine/src/v4/ai_manager.rs",
+        "football_match_engine/src/v4/session.rs",
+    ] {
+        sources.push_str(&std::fs::read_to_string(workspace.join(path)).expect(path));
+        sources.push('\n');
+    }
+    let mut parts:Vec<_>=std::fs::read_dir(workspace.join("football_match_engine/src/v4/session_parts")).unwrap()
+        .map(|entry|entry.unwrap().path()).filter(|path|path.extension().is_some_and(|ext|ext=="rs")).collect();
+    parts.sort();
+    for path in parts {
+        sources.push_str(&std::fs::read_to_string(&path).expect("session transition source"));
+        sources.push('\n');
+    }
     let career = ["professionalism", "ambition", "adaptability", "loyalty"];
     let mut in_match = 0;
     for (name, _) in PlayerAttributes54::uniform(12).unwrap().all_named() {
@@ -2779,7 +2793,7 @@ fn pi4_legacy_api_and_direct_policy_match() {
         assert_eq!(a.state(), b.state());
     }
     // The manifest is frozen independently from runtime constants, not generated from them.
-    let m: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/pi4_baseline_identity.json")).unwrap();
+    let m: serde_json::Value = serde_json::from_str(include_str!("../../football_match_engine/tests/fixtures/pi4_baseline_identity.json")).unwrap();
     assert_eq!(m["schema"].as_u64(), Some(1));
     assert_eq!(m["pi_module_version"].as_str(), Some(pi::PI_MODULE_VERSION));
     assert_eq!(m["pi_policy_id"].as_str(), Some(pi::PI_POLICY_ID));
@@ -3856,4 +3870,4 @@ fn pi_defense_tackle_loose_kinematics_uses_contact_point_and_moving_frame() {
 }
 
 // Immutable A-1 fixture is part of the test build; CI does not modify source.
-include!("../../../../tests/a1/deep_golden_fixture.rs");
+include!("../../../tests/a1/deep_golden_fixture.rs");

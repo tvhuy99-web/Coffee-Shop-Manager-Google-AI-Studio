@@ -4,6 +4,7 @@
 STATIC/STRUCTURAL checks, not a substitute for cargo tests or Android UI QA.
 """
 from pathlib import Path
+from engine_source import session_source, engine_test_source
 import json
 import sys
 ROOT = Path(__file__).resolve().parent.parent
@@ -14,10 +15,10 @@ def test(name, condition):
     checks.append((name, bool(condition)))
 def read(p):return p.read_text(encoding='utf-8')
 a = read(R/'substitution.rs')
-s = read(R/'session.rs')
+s = session_source(R)
 commands = read(R/'session_commands.rs')
 e = read(R.parent/'contracts/events.rs')
-t = read(R/'tests.rs')
+t = engine_test_source(R)
 w = read(K/'match_playback/LabRustLiveSession.kt')
 ui = read(K/'LabReferenceMatchActivity.kt')
 roster = read(K/'match_playback/MatchRosterProjection.kt')

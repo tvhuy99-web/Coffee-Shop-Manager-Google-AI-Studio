@@ -27,7 +27,7 @@ jobs:
           mkdir -p evidence
           (
             bash tools/test_a8_device_harness.sh
-            for script in verify_lab_v2 verify_england_v2 verify_parity_fixtures verify_v4_p0_p1_patch verify_v4_p1_234 verify_v4_p2 verify_v4_des_contract; do python3 "tools/$script.py"; done
+            for script in verify_lab_v2 verify_england_v2 verify_parity_fixtures verify_v4_p0_p1_patch verify_v4_p1_234 verify_v4_p2 verify_v4_des_contract verify_phase_a_boundaries; do python3 "tools/$script.py"; done
             python3 tools/verify_workspace_lock.py docs/evidence/a-1/frozen-Cargo.lock rust/Cargo.lock
           ) 2>&1 | tee evidence/static.log
           (

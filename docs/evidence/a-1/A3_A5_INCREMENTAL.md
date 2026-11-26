@@ -14,3 +14,6 @@ The four-package checkpoint d17062a passed all 19 L0–L4 jobs in run 4562529775
 - football_match_engine_jni: actual JNI bridge, cdylib named football_match_engine, depends only on engine/contracts internally.
 
 CI enforces explicit local DAG. A3/A4 ownership, full DTO isolation, strict formatting, physical crate directory for match_engine, and integration harness migration are outstanding. Candidate not claimed accepted until all gates green. No behavior version bump, no main merge.
+
+## Final Phase A structural pass
+Session transition method groups are mechanically extracted into `session_parts` while retaining the same Engine module/private state, exact method bodies, call ordering and checkpoint format. White-box integration sources live in `rust/tests/engine` using explicit `#[path]` modules (test paths and private access intentionally preserved); public calibration remains a production API. Attribute wiring scans the specified runtime source inventory and session parts instead of compile-time source includes. Static source gates expand implementation includes. New L0 policy boundary check rejects direct engine state/input/RNG references in the leaf PI and Coach crates. Existing compatibility reexports and Kotlin namespaces remain unchanged. Pending CI, no behavior version bump.

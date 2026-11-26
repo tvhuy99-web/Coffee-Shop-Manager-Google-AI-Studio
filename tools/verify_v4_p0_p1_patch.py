@@ -3,6 +3,7 @@
 NOT a substitute for `cargo test` or an Android ARM64 device smoke test.
 """
 from pathlib import Path
+from engine_source import session_source, engine_test_source
 import json, re, sys
 ROOT=Path(__file__).resolve().parent.parent
 R=ROOT/'rust/football_match_engine/src'
@@ -27,7 +28,7 @@ def between(source, start, end):
     stop = source.find(end, begin + len(start))
     return source[begin:stop] if stop >= 0 else ''
 ball=get(R/'v4/ball_play.rs')
-sess=get(R/'v4/session.rs')
+sess=session_source(R/'v4')
 commands=get(R/'v4/session_commands.rs')
 replay=get(R/'v4/session_replay.rs')
 jni=get(ROOT/'rust/crates/football_match_engine_jni/src/lib.rs')
@@ -102,7 +103,7 @@ chk('JNI bridge supports replay and DES protocol',
 chk('Android lifecycle serializes close versus active JNI call',
     wrapper.count('@Synchronized')>=5 and '@Volatile private var handle' in wrapper)
 chk('Regression tests cover key P0/P1 cases',
-    all(s in get(R/'v4/tests.rs') for s in [
+    all(s in engine_test_source(R/'v4') for s in [
         'p0_offside_position_is_not_automatically_an_offence',
         'p0_controlled_game_replays_identical_commands_and_fingerprint',
         'p0_shootout_scores_come_only_from_actual_kicks',

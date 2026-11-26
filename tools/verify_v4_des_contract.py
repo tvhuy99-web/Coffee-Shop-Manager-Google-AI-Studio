@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from engine_source import session_source, engine_test_source
 from typing import List, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -301,7 +302,7 @@ def main() -> int:
     v4_all_text = "\n".join(
         strip_comments_only(p.read_text(encoding="utf-8")) for p in sorted(RUST_V4.glob("*.rs"))
     )
-    session_rs = strip_comments_only((RUST_V4 / "session.rs").read_text(encoding="utf-8"))
+    session_rs = strip_comments_only(session_source(RUST_V4))
     state_rs = strip_comments_only((ROOT / "rust/crates/player_condition/src/lib.rs").read_text(encoding="utf-8"))
     audio_kt = strip_comments_only((KOTLIN_LAB / "match_audio/LabAudioDirector.kt").read_text(encoding="utf-8"))
 
@@ -337,7 +338,7 @@ def main() -> int:
     )
 
     # 6. All 15 mandatory DES v1.4 tests present in v4/tests.rs
-    tests_rs = (RUST_V4 / "tests.rs").read_text(encoding="utf-8")
+    tests_rs = engine_test_source(RUST_V4)
     missing_tests = [
         t for t in REQUIRED_DES_TESTS if re.search(rf"fn\s+{re.escape(t)}\s*\(", tests_rs) is None
     ]
@@ -365,10 +366,10 @@ def main() -> int:
 
     # --- Rework Pass 2 checks (Independent Review CRITICAL-01..09 + QA-01..12) ---
     root = Path(__file__).resolve().parent.parent
-    sess_rs = (root / "rust/football_match_engine/src/v4/session.rs").read_text()
+    sess_rs = session_source(root / "rust/football_match_engine/src/v4")
     rng_rs = (root / "rust/football_match_engine/src/rng.rs").read_text()
     diag_rs = (root / "rust/crates/match_telemetry/src/lib.rs").read_text()
-    tests_rs = (root / "rust/football_match_engine/src/v4/tests.rs").read_text()
+    tests_rs = engine_test_source(root / "rust/football_match_engine/src/v4")
     ctrl_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/match_playback/MatchPlaybackController.kt").read_text()
     ns_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/match_commentary/NarrationScheduler.kt").read_text()
     tts_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/audio/match_commentary/MatchTtsManager.kt").read_text()

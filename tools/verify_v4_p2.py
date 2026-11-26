@@ -2,6 +2,7 @@
 """Phase-2 static contract checks; they do NOT replace cargo test or Android QA."""
 import json
 from pathlib import Path
+from engine_source import session_source, engine_test_source
 R = Path(__file__).resolve().parent.parent
 V = R / 'rust/football_match_engine/src/v4'
 assert (V/'own_goal.rs').is_file() and (V/'stats.rs').is_file()
@@ -11,7 +12,7 @@ base=(V.parent/'contracts/events.rs').read_text()
 for required in ['pub own_goals: u8','pub own_goals_for: u16','pub own_goals_conceded: u16',
                  'pub shots_off_target: u16','pub shots_blocked: u16','pub saves: u16']:
  assert required in base, required
-text=(V/'session.rs').read_text()
+text=session_source(V)
 assert 'EventTypeV4::Goal | EventTypeV4::OwnGoal' in text
 assert 'own_goals_for: self.state.home.own_goals_for' in text
 assert 'own_goals_for: self.state.away.own_goals_for' in text
@@ -22,8 +23,8 @@ assert 'state.team_state_mut(att_side).shots_off_target += 1' in (V/'shooting.rs
 assert 'state.team_state_mut(def_side).saves += 1' in (V/'set_pieces.rs').read_text()
 assert 'pub fn audit_result(' in (V/'stats.rs').read_text()
 assert 'pub fn validate_summary(' in (V/'stats.rs').read_text()
-assert 'p2_fastbatch_summary_and_timeline_match_fullevent' in (V/'tests.rs').read_text()
-assert 'p2_all_54_named_attributes_serialise_validate_and_change_input_fingerprint' in (V/'tests.rs').read_text()
+assert 'p2_fastbatch_summary_and_timeline_match_fullevent' in engine_test_source(V)
+assert 'p2_all_54_named_attributes_serialise_validate_and_change_input_fingerprint' in engine_test_source(V)
 assets=R/'app/src/main/assets/england_v2'
 files = sorted(assets.glob('division_ENG_*.json'))
 assert len(files) == 11, len(files)
