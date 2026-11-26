@@ -42,6 +42,8 @@ jobs:
           cargo test --release --locked --lib b12_exp7_keeper_facing_is_independent_of_guard_movement -- --nocapture
           cargo test --release --locked --lib b12_exp8_keeper_restart_target_stays_in_own_goal_area -- --nocapture
           cargo test --release --locked --lib b12_exp8_keeper_restart_motion_uses_solver_not_teleport -- --nocapture
+          cargo test --release --locked --lib b12_exp9_only_actual_owner_gets_carrier_intent -- --nocapture
+          cargo test --release --locked --lib b12_exp9_guard_uses_solver_braking_without_shape_speed_cap -- --nocapture
       - name: Replay eight previous exp5 and exp5r1 failures
         run: |
           set -euo pipefail

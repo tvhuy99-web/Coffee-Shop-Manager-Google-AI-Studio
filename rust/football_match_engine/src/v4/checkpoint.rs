@@ -248,7 +248,7 @@ pub struct MatchSessionSnapshotV4 {
     pub locomotion_experiment_id: Option<String>,
 }
 
-pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-keeper-restart-exp8";
+pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-control-guard-exp9";
 
 /// Self-verifying versioned DES v1.4 match checkpoint envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
