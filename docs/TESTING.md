@@ -96,3 +96,6 @@ Exp5r2 adds mandatory shot-contact preflight before the 1000-pair workflow: atom
 
 
 Exp5r3 retains the mandatory preflight and adds `b12_exp5_parry_ends_one_flight_then_schedules_recovery`: actual DES save, independent loose-ball race, no owner during recovery, preserved offside snapshot, checkpoint/restore parity. The previous preflight stopped at compile-time E0308; no paired results existed for Exp5r2. Run full legacy L0–L4 independently and all 1000 experiment pairs only after focused regressions pass.
+
+
+Exp6 preflight retains existing shot-block and eight recorded failure-seed regressions, updates separated-parry regression for early actual save contact, and adds keeper reach/hand-contact geometry and held-save ownership tests. Experimental ID `b1.2-goalkeeper-contact-exp6`. Complete paired report adds total saves without changing production diagnostics schema or golden references.

@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
 
-BEHAVIOR = "b1.2-separated-shot-rebound-exp5r3"
+BEHAVIOR = "b1.2-goalkeeper-contact-exp6"
 COHORTS = ["reference", "balanced", "strong_away", "high_press"]
 FIELDS = ["home_goals", "away_goals", "shots", "passes", "completed_passes",
           "fouls", "live_ms", "dead_ms", "events", "wall_ms",
@@ -16,7 +16,7 @@ FIELDS = ["home_goals", "away_goals", "shots", "passes", "completed_passes",
           "pass_risk_pairs", "pass_risk_initial_sum", "pass_risk_release_sum", "reaim_choices",
           "possessions", "final_third_possessions", "penalty_area_possessions",
           "possessions_with_shot", "shots_from_box", "shots_blocked", "shots_on_target",
-          "shots_off_target", "shot_xg", "carry_starts", "carry_contacts",
+          "shots_off_target", "shot_xg", "saves", "carry_starts", "carry_contacts",
           "carry_turnovers", "tackle_opportunities", "tackle_commit_choices"]
 
 
@@ -106,7 +106,7 @@ def main(directory):
         "cohort_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in cohorts.items()},
         "role_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in roles.items()},
         "production_acceptance": "BLOCKED: remaining execution paths, rule boundaries, non-pass perception, sprint episode definition, performance and tracking calibration incomplete",
-        "notes": ["Exp5r3 ends a parried shot at its own arrival and schedules a separate loose-ball race; legacy recursive rebound behavior remains isolated.",
+        "notes": ["Exp6 requires a reachable keeper hand-contact witness for a save and separates held-ball distribution; other shot probability formulas remain unchanged.",
                   "Distributions are conditional on successful pairs; failures are retained.",
                   "Legacy interval counters and experiment threshold crossing counts are reported separately; neither is a validated sprint episode metric.",
                   "Pass diagnostic counters retain their existing definitions; not disjoint causes and not forced to sum to pass attempts.",

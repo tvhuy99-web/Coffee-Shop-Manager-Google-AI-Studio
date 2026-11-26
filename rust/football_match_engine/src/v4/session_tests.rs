@@ -1154,12 +1154,68 @@ mod locomotion_full_match_experiment {
                             assert!(!had_block);
                             if available.is_some() {declined+=1;}
                         }
+                        ShotContactResolution::CommittedSave(witness)=>{
+                            assert!(!had_block);
+                            assert!(shot.outcome.events.iter().any(|e|e.kind==EventTypeV4::Save));
+                            assert_eq!(witness.time_ms,launch+shot.flight_ms);
+                            let sample=witness.motion.experimental_plan().unwrap().unwrap().sample_at(shot.flight_ms).unwrap();
+                            assert!(sample.state.position.distance(witness.ball_pos.xy())<=witness.motion.candidate.reach_m+1e-5);
+                            if available.is_some() {declined+=1;}
+                        }
                         ShotContactResolution::LegacyHit(_)=>panic!("legacy contact leaked into experiment"),
                     }
                 }
                 assert!(accepted>0,"no accepted contact for {side:?} {kind:?}");
                 assert!(declined>0,"no declined opportunity for {side:?} {kind:?}");
             }
+        }
+    }
+
+    #[test]
+    fn b12_exp6_keeper_reach_and_held_save_are_separate_actions() {
+        use crate::v4::shooting::{resolve_shot_v4_des_with_motion,ShotContactResolution};
+        use crate::rng::DeterministicRng;
+        let input=make_v4_input(12061,SimulationMode::FastBatch,RulesModeV4::Standard);
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            let mut initial=MatchStateV4::from_input(&input);
+            let shooter=initial.players.iter().position(|p|p.side==side && p.on_pitch && !p.is_goalkeeper).unwrap();
+            let keeper=initial.players.iter().position(|p|p.side!=side && p.on_pitch && p.is_goalkeeper).unwrap();
+            let mirror=|x:f32|if side==TeamSideV4::Home {x}else{105.0-x};
+            for p in &mut initial.players {
+                p.pos=Vec2::new(mirror(50.0),5.0);
+                p.vel=Vec2::default();
+            }
+            initial.players[shooter].pos=Vec2::new(mirror(85.0),34.0);
+            initial.players[keeper].pos=Vec2::new(mirror(102.0),34.0);
+            let profile=initial.players[keeper].profile_idx;
+            initial.player_profiles[profile].attrs.goalkeeping.aerial_reach=20;
+            initial.player_profiles[profile].attrs.goalkeeping.reflexes=20;
+            let mut held=0;
+            for seed in 0..96 {
+                let mut near=initial.clone();
+                let mut far=initial.clone();
+                far.players[keeper].pos.y=4.0;
+                let mut a=DeterministicRng::new(seed);
+                let mut b=a.clone();
+                let close=resolve_shot_v4_des_with_motion(&mut near,&input,&input.timing_model,
+                    shooter,None,Some(ShotKindV4::Driven),false,true,&mut a);
+                let distant=resolve_shot_v4_des_with_motion(&mut far,&input,&input.timing_model,
+                    shooter,None,Some(ShotKindV4::Driven),false,true,&mut b);
+                assert!(!distant.outcome.events.iter().any(|ev|ev.kind==EventTypeV4::Save));
+                if let ShotContactResolution::CommittedSave(contact)=close.early_interaction {
+                    assert_eq!(contact.motion.candidate.player_id,initial.players[keeper].player_id);
+                    assert_eq!(contact.ball_pos,close.trajectory.position_at_ms(contact.time_ms));
+                    assert_eq!(contact.time_ms,close.trajectory.start_time_ms+close.flight_ms);
+                    if near.ball.control==BallControlState::Controlled {
+                        held+=1;
+                        assert_eq!(near.ball.owner_player_id.as_deref(),Some(initial.players[keeper].player_id.as_str()));
+                        assert_eq!(close.outcome.next_carrier_idx,keeper);
+                        assert!(!close.outcome.events.iter().any(|ev|ev.kind==EventTypeV4::GoalkeeperDistribution));
+                        assert_eq!(near.ball.pos,contact.ball_pos);
+                    }
+                }
+            }
+            assert!(held>0,"no held save in deterministic reachable fixture {side:?}");
         }
     }
 
@@ -1181,10 +1237,11 @@ mod locomotion_full_match_experiment {
             let at=flight.resolves_at_ms;
             let launch=flight.trajectory.start_time_ms;
             let offside=flight.offside_at_launch.clone();
-            assert_eq!(at,flight.planned_arrival_ms);
-            assert!(at>launch);
+            assert!(at<=flight.planned_arrival_ms && at>launch);
             assert!(flight.early_interaction.is_none());
-            assert!(flight.pass_contact_motion.is_none());
+            let save_path=flight.pass_contact_motion.clone().expect("reserved saving keeper");
+            let terminal=save_path.experimental_plan().unwrap().unwrap().sample_at(at-launch).unwrap().state;
+            assert!(terminal.position.distance(save_path.target)<=save_path.candidate.reach_m+1e-5);
             assert!(flight.ball_after.owner_player_id.is_none());
             assert!(flight.ball_after.owner_side.is_none());
             assert_eq!(flight.ball_after.last_touch_side,Some(side.opposite()));
@@ -1201,6 +1258,10 @@ mod locomotion_full_match_experiment {
                     current.completed_beats+=1;
                 }
                 assert_eq!(current.sim_time_ms(),at);
+                let keeper=current.state.players.iter().find(|p|p.player_id==save_path.candidate.player_id).unwrap();
+                assert!(keeper.is_goalkeeper);
+                assert_eq!(keeper.pos,terminal.position);
+                assert_eq!(keeper.vel,terminal.velocity);
                 let pending=current.pending_flight.as_ref().expect("scheduled loose rebound race");
                 assert_eq!(pending.trajectory.start_time_ms,at);
                 assert!(pending.resolves_at_ms>at);
@@ -1359,6 +1420,7 @@ mod locomotion_full_match_experiment {
             "shots_on_target":diag.home.shots_on_target+diag.away.shots_on_target,
             "shots_off_target":diag.home.shots_off_target+diag.away.shots_off_target,
             "shot_xg":diag.home.shot_xg+diag.away.shot_xg,
+            "saves":session.state.home.saves+session.state.away.saves,
             "carry_starts":diag.des.carry_starts,
             "carry_contacts":diag.des.carry_contacts,
             "carry_turnovers":diag.des.carry_turnovers,
