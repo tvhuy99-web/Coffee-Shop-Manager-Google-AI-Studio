@@ -81,3 +81,5 @@ Tốc độ trình diễn 1.0x/1.25x/1.5x/2.0x/3.0x không đổi gameplay. Mụ
 Rust toolchain 1.100.0, Cargo.lock, Android compileSdk 35/minSdk 26/targetSdk 29. JDK 17, NDK 27.2.12479018 trong CI. Debug package pl.mkrstudio.truefootball3.debug, ARM64; native protocol 5, 16 JNI exports được CI kiểm tra. Những giá trị định danh cụ thể lấy từ manifest/mã và cấu hình đang chạy, không đổi để đồng bộ tên tài liệu.
 
 Xem [TESTING](TESTING.md) cho bằng chứng thực tế và [ROADMAP](ROADMAP.md) cho kiến trúc đích.
+
+Hợp đồng không gian và số học chi tiết: [WORLD_CONTRACTS](WORLD_CONTRACTS.md).

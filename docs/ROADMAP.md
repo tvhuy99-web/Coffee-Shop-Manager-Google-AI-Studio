@@ -23,6 +23,8 @@ RULE-01 ruleset/restart; RULE-02 offside/advantage; RULE-03 foul/card/penalty th
 
 Điều tra, không coi là số đo hiện tại: ít phạm lỗi (opportunity → commit → reached contact → body contact → foul → stoppage), bóng sống dài (phân rã restart và thời gian), vận động quá nhiều (target churn/đuổi bóng so với mô hình motion), cách biệt sức mạnh phi tuyến (gradient/factorial skill/fatigue/confidence/utility). Đo lại trên nền tảng trước kết luận. Cấm cap tỷ số hoặc bù đội yếu. Sửa movement trước khi chỉnh stamina nếu sai do chuyển động.
 
+B1.1 (PHY-01) dùng [WORLD_CONTRACTS](WORLD_CONTRACTS.md) làm hợp đồng chi tiết. Thứ tự: B1.1.1 audit, B1.1.2 spatial, B1.1.3 numeric, B1.1.4 time, B1.1.5 invariants, B1.1.6 acceptance.
+
 Bước đầu tiên: PHY-01 inventory các đơn vị và frame trong match_contracts, match_physics, match_rules, engine clock/scheduler; lập bảng caller, invariant, test mirror/dt. Không đổi hành vi trong commit inventory; nếu phát hiện bug cần sửa thành commit B riêng.
 
 ## B2. Player Intelligence
