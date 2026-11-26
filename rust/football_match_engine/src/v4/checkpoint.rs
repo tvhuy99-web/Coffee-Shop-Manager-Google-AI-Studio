@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::{MatchDiagnosticsCollectorV4, MatchDiagnosticsV4};
-use crate::v4::perception::PassKindV4;
+use crate::player_intelligence::PassKindV4;
 use crate::v4::interaction::EarlyInteractionHit;
 use crate::v4::error::V4Error;
 use crate::v4::events::MatchEventV4;
@@ -151,16 +151,27 @@ impl FlightCounterDeltaV4 {
         }).collect();
         Self { home: TeamFlightDeltaV4::between(&before.home, &after.home), away: TeamFlightDeltaV4::between(&before.away, &after.away), players }
     }
-    pub fn apply(&self, state: &mut MatchStateV4) {
-        self.home.apply(&mut state.home); self.away.apply(&mut state.away);
-        for delta in &self.players {
-            if let Some(player) = state.players.iter_mut().find(|p| p.player_id == delta.player_id) {
-                player.goals = player.goals.saturating_add(delta.goals);
-                player.own_goals = player.own_goals.saturating_add(delta.own_goals);
-                player.assists = player.assists.saturating_add(delta.assists);
-                player.rating_tenths = (i16::from(player.rating_tenths) + delta.rating_delta).clamp(0, 100) as u8;
+    /// Validate the entire delta before touching team or player counters.
+    pub fn validate_references(&self,state:&MatchStateV4)->Result<(),V4Error>{
+        let mut seen=std::collections::HashSet::new();
+        for delta in &self.players{
+            if !seen.insert(delta.player_id.as_str()) || !state.players.iter().any(|p|p.player_id==delta.player_id){
+                return Err(V4Error::InvalidInput(format!("INV-08: unknown or duplicate flight delta player {}",delta.player_id)));
             }
         }
+        Ok(())
+    }
+    pub fn apply(&self, state: &mut MatchStateV4) -> Result<(),V4Error> {
+        self.validate_references(state)?;
+        self.home.apply(&mut state.home); self.away.apply(&mut state.away);
+        for delta in &self.players {
+            let player=state.players.iter_mut().find(|p| p.player_id==delta.player_id).expect("validated delta");
+            player.goals = player.goals.saturating_add(delta.goals);
+            player.own_goals = player.own_goals.saturating_add(delta.own_goals);
+            player.assists = player.assists.saturating_add(delta.assists);
+            player.rating_tenths = (i16::from(player.rating_tenths) + delta.rating_delta).clamp(0,100) as u8;
+        }
+        Ok(())
     }
 }
 
@@ -326,6 +337,57 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
             "checkpoint checksum mismatch: expected {}, computed {}",
             ckpt.checksum_hex, actual_checksum
         )));
+    }
+
+    // The checksum authenticates bytes only; it does not prove they describe
+    // a structurally restorable session. Reject invalid references before
+    // any engine indexing, even if the sender recomputed the checksum.
+    let p=&ckpt.payload;
+    let bad=|detail:&str| V4Error::InvalidInput(format!("checkpoint structural invariant: {detail}"));
+    if ckpt.sim_time_ms!=p.state.des_clock.sim_time_ms || ckpt.sim_time_ms<0 {
+        return Err(bad("envelope time differs from authoritative clock"));
+    }
+    if p.rng.root_seed!=p.input.seed {return Err(bad("RNG root seed differs from input"));}
+    crate::v4::transition::verify_commit_structure(&p.state)?;
+    crate::v4::transition::verify_roster_profiles(&p.state,&p.input)?;
+    crate::v4::transition::verify_uncontrolled_ball(&p.state)?;
+    p.scheduler.validate_snapshot().map_err(bad)?;
+    if p.next_event_sequence!=p.stats.event_count {return Err(bad("event sequence mismatch"));}
+    if p.stats.carrier_idx>=p.state.players.len() || p.stats.last_passer_idx.is_some_and(|i|i>=p.state.players.len()) {
+        return Err(bad("carrier or passer index out of roster"));
+    }
+    if p.state.players.iter().any(|player|player.profile_idx>=p.state.player_profiles.len()) {
+        return Err(bad("player profile index out of bounds"));
+    }
+    if p.pending_carry.as_ref().is_some_and(|c|c.carrier_idx>=p.state.players.len()) {
+        return Err(bad("pending carry index out of roster"));
+    }
+    if let Some(f)=&p.pending_flight {
+        f.counter_delta.validate_references(&p.state)?;
+        if f.outcome.next_carrier_idx>=p.state.players.len(){return Err(bad("pending next carrier index out of roster"));}
+        match f.action {
+            FlightActionV4::Pass{passer_idx,..} if passer_idx>=p.state.players.len()=>return Err(bad("pending passer index out of roster")),
+            FlightActionV4::Shot{shooter_idx} if shooter_idx>=p.state.players.len()=>return Err(bad("pending shooter index out of roster")),
+            _=>{}
+        }
+    }
+    if let Some(d)=&p.pending_decision {
+        use crate::player_intelligence::PlannedActionV4;
+        if !p.state.players.iter().any(|player|player.player_id==d.player_id && player.side==d.side) {
+            return Err(bad("pending decision actor not in roster"));
+        }
+        match d.plan.action {
+            PlannedActionV4::Pass{target_idx,..} if target_idx>=p.state.players.len()=>return Err(bad("pending pass target out of roster")),
+            PlannedActionV4::Dribble{defender_idx:Some(i)} if i>=p.state.players.len()=>return Err(bad("pending defender index out of roster")),
+            _=>{}
+        }
+    }
+    crate::v4::transition::verify_clock_accounting(&p.state,p.stats.home_possession_ms,p.stats.away_possession_ms)?;
+    crate::v4::transition::verify_command_journal(&p.applied_commands,p.stats.next_command_id,ckpt.sim_time_ms)?;
+    crate::v4::transition::verify_event_journal(&p.stats.retained_events,p.stats.event_count,p.stats.last_delivered_event_index,
+        p.input.simulation_mode.retain_events(),p.stats.finished,ckpt.sim_time_ms)?;
+    if p.stats.finished && !matches!(p.half_stage,HalfStageV4::FullTime) {
+        return Err(bad("result closed before full time"));
     }
 
     Ok(())

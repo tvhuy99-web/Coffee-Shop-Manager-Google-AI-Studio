@@ -1,5 +1,7 @@
 package pl.mkrstudio.truefootball3.lab
 
+import pl.mkrstudio.truefootball3.match_playback.LabGlobalSeedReplayStore
+
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
@@ -34,7 +36,6 @@ class LabMainActivity : Activity() {
     private var teamNames: List<String> = emptyList()
     private var currentScreen: Screen = Screen.MAIN
     private var trialViewingSpinner: Spinner? = null
-    private var trialEngineSpinner: Spinner? = null
     private val batchExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -70,12 +71,7 @@ class LabMainActivity : Activity() {
             LabViewingMode.EXTENDED_HIGHLIGHTS -> 1
             LabViewingMode.SHORT_HIGHLIGHTS -> 2
         }
-        val engineIdx = when (simSettings.engineVersion) {
-            LabEngineVersion.V3 -> 0
-            LabEngineVersion.V4 -> 1
-        }
         trialViewingSpinner?.let { if (it.selectedItemPosition != viewIdx) it.setSelection(viewIdx) }
-        trialEngineSpinner?.let { if (it.selectedItemPosition != engineIdx) it.setSelection(engineIdx) }
     }
 
     private fun vertical(title: String): LinearLayout {
@@ -126,7 +122,6 @@ class LabMainActivity : Activity() {
     private fun showMain() {
         currentScreen = Screen.MAIN
         trialViewingSpinner = null
-        trialEngineSpinner = null
         val root = vertical("FOOTBALL MATCH LAB")
         button(root, "Bắt đầu") { Toast.makeText(this, "Chưa triển khai", Toast.LENGTH_SHORT).show() }
         button(root, "Tải lại") { Toast.makeText(this, "Chưa triển khai", Toast.LENGTH_SHORT).show() }
@@ -163,7 +158,6 @@ class LabMainActivity : Activity() {
     private fun showLogs() {
         currentScreen = Screen.LOGS
         trialViewingSpinner = null
-        trialEngineSpinner = null
         val root = vertical("NHẬT KÝ HOẠT ĐỘNG")
         val statusView = TextView(this).apply {
             textSize = 14f
@@ -237,7 +231,6 @@ class LabMainActivity : Activity() {
     private fun showSettingsMenu() {
         currentScreen = Screen.SETTINGS
         trialViewingSpinner = null
-        trialEngineSpinner = null
         val root = vertical("CÀI ĐẶT")
         button(root, "Cài đặt TTS") { startActivity(Intent(this, TtsSettingsActivity::class.java)) }
         button(root, "Cài đặt âm thanh") { startActivity(Intent(this, SoundSettingsActivity::class.java)) }
@@ -339,21 +332,6 @@ class LabMainActivity : Activity() {
             }
         }
 
-        val engineVersions = listOf(LabEngineVersion.V3, LabEngineVersion.V4)
-        val initialEngineIdx = engineVersions.indexOf(savedSettings.engineVersion).coerceAtLeast(0)
-        val engineSpinner = makeSpinner(
-            "Chế độ mô phỏng",
-            listOf("3.0", "4.0"),
-            initialEngineIdx
-        )
-        trialEngineSpinner = engineSpinner
-        engineSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                val chosen = engineVersions.getOrElse(position) { LabEngineVersion.V4 }
-                settingsStore.updateEngineVersion(chosen)
-            }
-        }
 
         val rulesSpinner = makeSpinner(
             "Luật thi đấu",
@@ -400,9 +378,8 @@ class LabMainActivity : Activity() {
                     .show()
             } else {
                 val selectedViewing = viewingModes.getOrElse(viewingModeSpinner.selectedItemPosition) { LabViewingMode.FULL_MATCH }
-                val selectedEngine = engineVersions.getOrElse(engineSpinner.selectedItemPosition) { LabEngineVersion.V4 }
+                val selectedEngine = LabEngineVersion.V4
                 settingsStore.updateViewingMode(selectedViewing)
-                settingsStore.updateEngineVersion(selectedEngine)
                 val seed = if (seedSpinner.selectedItemPosition == 1) 123456789L else System.currentTimeMillis()
                 startActivity(Intent(this, LabReferenceMatchActivity::class.java).apply {
                     putExtra(LabReferenceMatchActivity.EXTRA_HOME, a)
@@ -426,7 +403,7 @@ class LabMainActivity : Activity() {
                 Toast.makeText(this, "Vui lòng chọn hai đội khác nhau.", Toast.LENGTH_SHORT).show()
                 return@button
             }
-            val selectedEngine = engineVersions.getOrElse(engineSpinner.selectedItemPosition) { LabEngineVersion.V4 }
+            val selectedEngine = LabEngineVersion.V4
             val knockout = rulesSpinner.selectedItemPosition == 1
             val hTac = LabTacticalPresets.TacticalConfig(
                 LabTacticalPresets.FORMATIONS[homeForm.selectedItemPosition],
@@ -451,10 +428,7 @@ class LabMainActivity : Activity() {
         homeTactics: LabTacticalPresets.TacticalConfig,
         awayTactics: LabTacticalPresets.TacticalConfig
     ) {
-        val ready = when (engineVersion) {
-            LabEngineVersion.V3 -> NativeBridge.isFullEngineReady()
-            LabEngineVersion.V4 -> NativeBridge.isV4EngineReady()
-        }
+        val ready = NativeBridge.isV4EngineReady()
         if (!ready) {
             Toast.makeText(this, "Thư viện lõi Rust ${engineVersion.labelVi} (.so) chưa sẵn sàng trong APK.", Toast.LENGTH_LONG).show()
             return
@@ -475,63 +449,40 @@ class LabMainActivity : Activity() {
             val baseSeed = 20260000L
 
             try {
-                if (engineVersion == LabEngineVersion.V4) {
-                    val inputs = JSONArray()
-                    for (i in 0 until matches) {
-                        val s = baseSeed + i * 7919L
-                        val j = factory.createRustV4InputJson(
-                            homeName = home,
-                            awayName = away,
-                            seed = s,
-                            knockout = knockout,
-                            simulationMode = LabSimulationMode.FAST_BATCH,
-                            homeTactics = homeTactics,
-                            awayTactics = awayTactics
-                        )
-                        inputs.put(JSONObject(j))
+                val inputs = JSONArray()
+                for (i in 0 until matches) {
+                    val s = baseSeed + i * 7919L
+                    val j = factory.createRustV4InputJson(
+                        homeName = home,
+                        awayName = away,
+                        seed = s,
+                        knockout = knockout,
+                        simulationMode = LabSimulationMode.FAST_BATCH,
+                        homeTactics = homeTactics,
+                        awayTactics = awayTactics
+                    )
+                    inputs.put(JSONObject(j))
+                }
+                val batchResp = JSONObject(NativeBridge.simulateBatchV4(inputs.toString()))
+                val results = batchResp.optJSONArray("results")
+                    ?: throw IllegalStateException(batchResp.optString("error", "Rust V4 batch failed"))
+                for (i in 0 until results.length()) {
+                    val item = results.getJSONObject(i)
+                    if (!item.optBoolean("ok", false)) {
+                        throw IllegalStateException(item.optString("error", "Rust V4 simulate failed"))
                     }
-                    val batchResp = JSONObject(NativeBridge.simulateBatchV4(inputs.toString()))
-                    val results = batchResp.optJSONArray("results")
-                        ?: throw IllegalStateException(batchResp.optString("error", "Rust V4 batch failed"))
-                    for (i in 0 until results.length()) {
-                        val item = results.getJSONObject(i)
-                        if (!item.optBoolean("ok", false)) {
-                            throw IllegalStateException(item.optString("error", "Rust V4 simulate failed"))
-                        }
-                        val summary = item.optJSONObject("summary") ?: continue
-                        val hs = summary.optJSONObject("home") ?: continue
-                        val asObj = summary.optJSONObject("away") ?: continue
-                        val hg = hs.optInt("goals", 0)
-                        val ag = asObj.optInt("goals", 0)
-                        totalHomeGoals += hg
-                        totalAwayGoals += ag
-                        if (hg > ag) homeWins++ else if (ag > hg) awayWins++ else draws++
-                        totalHomeShots += hs.optInt("shots", 0)
-                        totalAwayShots += asObj.optInt("shots", 0)
-                        totalHomeXg += hs.optDouble("xg", 0.0)
-                        totalAwayXg += asObj.optDouble("xg", 0.0)
-                    }
-                } else {
-                    for (i in 0 until matches) {
-                        val s = baseSeed + i * 7919L
-                        val json = factory.createRustInputJson(home, away, s, 90, knockout, homeTactics, awayTactics)
-                        val resp = JSONObject(NativeBridge.simulateMatch(json))
-                        if (!resp.optBoolean("ok", false)) {
-                            throw IllegalStateException(resp.optString("error", "Rust V3 simulate failed"))
-                        }
-                        val hg = resp.optInt("homeGoals", 0)
-                        val ag = resp.optInt("awayGoals", 0)
-                        totalHomeGoals += hg
-                        totalAwayGoals += ag
-                        if (hg > ag) homeWins++ else if (ag > hg) awayWins++ else draws++
-                        val stats = resp.optJSONObject("statistics")
-                        val hs = stats?.optJSONObject("home")
-                        val asObj = stats?.optJSONObject("away")
-                        totalHomeShots += hs?.optInt("shots", 0) ?: 0
-                        totalAwayShots += asObj?.optInt("shots", 0) ?: 0
-                        totalHomeXg += (hs?.optLong("expectedGoalsMilli", 0L) ?: 0L) / 1000.0
-                        totalAwayXg += (asObj?.optLong("expectedGoalsMilli", 0L) ?: 0L) / 1000.0
-                    }
+                    val summary = item.optJSONObject("summary") ?: continue
+                    val hs = summary.optJSONObject("home") ?: continue
+                    val asObj = summary.optJSONObject("away") ?: continue
+                    val hg = hs.optInt("goals", 0)
+                    val ag = asObj.optInt("goals", 0)
+                    totalHomeGoals += hg
+                    totalAwayGoals += ag
+                    if (hg > ag) homeWins++ else if (ag > hg) awayWins++ else draws++
+                    totalHomeShots += hs.optInt("shots", 0)
+                    totalAwayShots += asObj.optInt("shots", 0)
+                    totalHomeXg += hs.optDouble("xg", 0.0)
+                    totalAwayXg += asObj.optDouble("xg", 0.0)
                 }
                 val elapsedMs = SystemClock.elapsedRealtime() - t0
                 val summary = buildString {

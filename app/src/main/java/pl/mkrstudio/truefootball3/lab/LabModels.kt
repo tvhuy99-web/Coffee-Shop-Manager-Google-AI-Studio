@@ -87,7 +87,6 @@ enum class LabHighlightTier { NONE, EXTENDED, GOAL_KEY }
  * without altering the 90-minute simulation outcome.
  */
 enum class LabEngineVersion(val labelVi: String) {
-    V3("3.0"),
     V4("4.0")
 }
 

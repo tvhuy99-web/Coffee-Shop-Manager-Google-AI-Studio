@@ -8,17 +8,7 @@ pub const DEFAULT_HALF_REGULATION_MS: i64 = 45 * 60 * 1000;
 /// Standard 15-minute extra-time half regulation duration in milliseconds.
 pub const DEFAULT_EXTRA_TIME_HALF_REGULATION_MS: i64 = 15 * 60 * 1000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[repr(i32)]
-pub enum Period {
-    NotStarted = 0,
-    FirstHalf = 1,
-    SecondHalf = 2,
-    ExtraTimeFirst = 3,
-    ExtraTimeSecond = 4,
-    Shootout = 5,
-    FullTime = 6,
-}
+pub use match_contracts::rule_types::Period;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClockState {

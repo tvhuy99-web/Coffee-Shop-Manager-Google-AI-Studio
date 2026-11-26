@@ -20,28 +20,7 @@ use crate::v4::spatial::{
 };
 use crate::v4::state::{BallControlState, MatchStateV4, PlayerRuntimeStateV4};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ShotKindV4 {
-    Driven,
-    Curled,
-    Header,
-    OneTouch,
-    LongRange,
-    Rebound,
-}
-
-impl ShotKindV4 {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ShotKindV4::Driven => "DRIVEN",
-            ShotKindV4::Curled => "CURLED",
-            ShotKindV4::Header => "HEADER",
-            ShotKindV4::OneTouch => "ONE_TOUCH",
-            ShotKindV4::LongRange => "LONG_RANGE",
-            ShotKindV4::Rebound => "REBOUND",
-        }
-    }
-}
+pub use match_contracts::rule_types::ShotKindV4;
 
 /// DES shot resolution result carrying exact ball flight time (`flight_ms`),
 /// dead-ball restart classification (`GoalCelebration`, `GoalKick`, `Corner`),

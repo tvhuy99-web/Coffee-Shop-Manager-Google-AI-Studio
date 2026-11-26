@@ -22,7 +22,7 @@ import java.util.Locale
 /**
  * Independent "Cài đặt mô phỏng" screen alongside "Cài đặt TTS" and "Cài đặt âm thanh".
  * Synchronized bidirectionally with the Trial screen for viewing mode (Full trận / Chi tiết / Ngắn gọn)
- * and simulation engine mode (3.0 / 4.0).
+ * on Match Engine 4.0 (54 chỉ số — 90 phút DES).
  */
 class SimulationSettingsActivity : Activity() {
     private lateinit var store: SimulationSettingsStore
@@ -52,44 +52,12 @@ class SimulationSettingsActivity : Activity() {
         })
 
         column.addView(TextView(this).apply {
-            text = "Các lựa chọn dưới đây được đồng bộ trực tiếp với màn hình Thử nghiệm trận đấu."
+            text = "Động cơ mô phỏng: Match Engine 4.0 (54 chỉ số — 90 phút DES). Các lựa chọn dưới đây được đồng bộ với màn hình Thử nghiệm trận đấu."
             textSize = 15f
             setTextColor(Color.rgb(210, 226, 240))
             setPadding(0, 0, 0, dp(12))
         })
 
-        // --- Engine version selector (3.0 / 4.0) ---
-        column.addView(TextView(this).apply {
-            text = "Chế độ mô phỏng"
-            textSize = 17f
-            setTextColor(Color.rgb(185, 224, 255))
-            setPadding(0, dp(4), 0, dp(4))
-        })
-
-        val engineGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        val rbV3 = RadioButton(this).apply {
-            id = View.generateViewId()
-            text = "Phiên bản 3.0 (20 chỉ số — bản tham chiếu)"
-            textSize = 16f
-            setTextColor(Color.WHITE)
-            minHeight = dp(48)
-        }
-        val rbV4 = RadioButton(this).apply {
-            id = View.generateViewId()
-            text = "Phiên bản 4.0 (54 chỉ số — 90 phút)"
-            textSize = 16f
-            setTextColor(Color.WHITE)
-            minHeight = dp(48)
-        }
-        engineGroup.addView(rbV3)
-        engineGroup.addView(rbV4)
-        when (current.engineVersion) {
-            LabEngineVersion.V3 -> engineGroup.check(rbV3.id)
-            LabEngineVersion.V4 -> engineGroup.check(rbV4.id)
-        }
-        column.addView(engineGroup, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
-
-        // --- Viewing mode selector (Full trận / Chi tiết / Ngắn gọn) ---
         column.addView(TextView(this).apply {
             text = "Chế độ xem trận đấu"
             textSize = 17f
@@ -166,21 +134,17 @@ class SimulationSettingsActivity : Activity() {
                         rbShort.id -> LabViewingMode.SHORT_HIGHLIGHTS
                         else -> LabViewingMode.FULL_MATCH
                     }
-                    val selectedEngine = when (engineGroup.checkedRadioButtonId) {
-                        rbV3.id -> LabEngineVersion.V3
-                        else -> LabEngineVersion.V4
-                    }
                     store.save(
                         SimulationSettingsStore.Settings(
                             viewingMode = selectedMode,
-                            engineVersion = selectedEngine,
+                            engineVersion = LabEngineVersion.V4,
                             includeTurningPointsInShort = cbTurningPoints.isChecked,
                             syncMatchSpeedWithTts = cbSyncTts.isChecked
                         )
                     )
                     Toast.makeText(
                         this@SimulationSettingsActivity,
-                        "Đã lưu: ${selectedEngine.labelVi} • ${selectedMode.labelVi}",
+                        "Đã lưu: 4.0 • ${selectedMode.labelVi}",
                         Toast.LENGTH_SHORT
                     ).show()
                     finish()

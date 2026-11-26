@@ -1,0 +1,95 @@
+name: A-1 preserve historical CI archives
+on:
+  push:
+    branches: ['refactor/football-simulation-4']
+    paths:
+      - '.github/workflows/a1-archive-historical.yml'
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: pingfootball-a1-historical-archive
+  cancel-in-progress: false
+jobs:
+  archive:
+    if: github.repository == 'tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio' && github.ref == 'refs/heads/refactor/football-simulation-4'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: evidence/a1-historical
+      - name: Download original ZIP bytes and verify provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git branch --show-current)" = 'evidence/a1-historical'
+          python3 - <<'PY'
+          import hashlib, json, os, re, subprocess, zipfile
+          from pathlib import Path
+          repo = 'tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio'
+          index = json.loads(Path('docs/evidence/a-1/historical-artifacts.json').read_text())
+          dest = Path('docs/evidence/a-1/archive')
+          dest.mkdir(parents=True, exist_ok=True)
+          rows = []
+          expected_runs = {
+              45520666910: '1d7bf1b43a4384dff8b8ffbcb4953d18933e9393',
+              45520666555: '1d7bf1b43a4384dff8b8ffbcb4953d18933e9393',
+              45527962031: 'c2c392d8b3ccc57985e87337e8994fd7033328ee',
+          }
+          assert {r['run_id']: r['head_sha'] for r in index['runs']} == expected_runs
+          for run in index['runs']:
+              for item in run['artifacts']:
+                  assert type(item['id']) is int and item['id'] > 0
+                  assert re.fullmatch(r'[a-z0-9_-]+', item['name'])
+                  assert re.fullmatch(r'[0-9a-f]{64}', item['sha256'])
+                  path = dest / f"{run['run_id']}-{item['name']}.zip"
+                  if not path.exists():
+                      tmp = path.with_suffix('.zip.tmp')
+                      with tmp.open('wb') as output:
+                          result = subprocess.run(
+                              ['gh', 'api', f"/repos/{repo}/actions/artifacts/{item['id']}/zip"],
+                              stdout=output, check=False)
+                      if result.returncode:
+                          tmp.unlink(missing_ok=True)
+                          raise SystemExit(f"Download failed for artifact {item['id']}")
+                      if hashlib.sha256(tmp.read_bytes()).hexdigest() != item['sha256']:
+                          tmp.unlink(missing_ok=True)
+                          raise SystemExit(f"ZIP checksum mismatch for artifact {item['id']}")
+                      tmp.rename(path)
+                  assert hashlib.sha256(path.read_bytes()).hexdigest() == item['sha256']
+                  assert path.stat().st_size == item['size_bytes']
+                  with zipfile.ZipFile(path) as z:
+                      assert z.testzip() is None
+                      assert z.read('commit.txt').decode().strip() == run['head_sha']
+                      files = {n: hashlib.sha256(z.read(n)).hexdigest()
+                               for n in z.namelist() if not n.endswith('/')}
+                  rows.append({'file':path.name,'artifact_id':item['id'],
+                               'run_id':run['run_id'],'head_sha':run['head_sha'],
+                               'sha256':item['sha256'],'member_sha256':files})
+          assert len(rows) == len({r['artifact_id'] for r in rows}) == 19
+          assert len(list(dest.glob('*.zip'))) == 19
+          (dest/'verified-manifest.json').write_text(json.dumps({
+              'schema':1,'status':'verified historical archives, not locked golden',
+              'artifacts':rows}, indent=2, sort_keys=True)+'\n')
+          print('Verified original ZIPs:', len(rows))
+          PY
+      - name: Commit only verified historical evidence to the archive branch
+        run: |
+          set -euo pipefail
+          test "$(git branch --show-current)" = 'evidence/a1-historical'
+          git add -- docs/evidence/a-1/archive/
+          if git diff --cached --quiet; then
+            echo "Archives already preserved."
+            exit 0
+          fi
+          git diff --cached --name-only | while IFS= read -r path; do
+            case "$path" in docs/evidence/a-1/archive/*) ;; *) exit 1 ;; esac
+          done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'evidence(A-1): preserve 19 SHA-256 verified historical CI archives'
+          git push origin HEAD:refs/heads/evidence/a1-historical

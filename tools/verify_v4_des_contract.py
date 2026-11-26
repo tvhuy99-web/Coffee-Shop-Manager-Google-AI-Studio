@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from engine_source import session_source, engine_test_source
 from typing import List, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -216,8 +217,9 @@ def main() -> int:
     rs_files = [
         RUST_SRC / "lib.rs",
         RUST_SRC / "clock.rs",
-        RUST_SRC / "jni_bridge.rs",
+        ROOT / "rust/crates/football_match_engine_jni/src/lib.rs",
         *sorted(RUST_V4.glob("*.rs")),
+        *sorted((ROOT / "rust/crates").rglob("*.rs")),
     ]
     kt_files = [
         *sorted(KOTLIN_LAB.glob("*.kt")),
@@ -239,7 +241,7 @@ def main() -> int:
 
     # 2. Version constants in Rust v4/mod.rs & lib.rs cast
     mod_rs = (RUST_V4 / "mod.rs").read_text(encoding="utf-8")
-    lib_rs = (RUST_SRC / "lib.rs").read_text(encoding="utf-8")
+    lib_rs = (ROOT / "rust/crates/football_match_engine_jni/src/lib.rs").read_text(encoding="utf-8")
     check(
         "Rust JNI_BRIDGE_VERSION == 8",
         re.search(r"pub\s+const\s+JNI_BRIDGE_VERSION\s*:\s*i32\s*=\s*8\s*;", mod_rs) is not None,
@@ -256,9 +258,9 @@ def main() -> int:
         "Expected pub const EVENT_SCHEMA_VERSION_V4: u32 = 5 in v4/mod.rs",
     )
     check(
-        "Rust lib.rs casts ENGINE_PROTOCOL_VERSION_V4 as i32",
+        "Rust jni_bridge.rs casts ENGINE_PROTOCOL_VERSION_V4 as i32",
         "v4::ENGINE_PROTOCOL_VERSION_V4 as i32" in lib_rs,
-        "Expected `v4::ENGINE_PROTOCOL_VERSION_V4 as i32` in lib.rs",
+        "Expected `v4::ENGINE_PROTOCOL_VERSION_V4 as i32` in jni_bridge.rs",
     )
 
     # 3. Kotlin NativeBridge.isV4DesReady() matches bridge >= 8 & protocol >= 5
@@ -274,7 +276,7 @@ def main() -> int:
     )
 
     # 4. 100% match of 5 new JNI functions between jni_bridge.rs and NativeBridge.kt
-    jni_rs = (RUST_SRC / "jni_bridge.rs").read_text(encoding="utf-8")
+    jni_rs = (ROOT / "rust/crates/football_match_engine_jni/src/lib.rs").read_text(encoding="utf-8")
     missing_rust_jni = [
         fn_name
         for fn_name in REQUIRED_NEW_JNI_METHODS
@@ -300,9 +302,9 @@ def main() -> int:
     v4_all_text = "\n".join(
         strip_comments_only(p.read_text(encoding="utf-8")) for p in sorted(RUST_V4.glob("*.rs"))
     )
-    session_rs = strip_comments_only((RUST_V4 / "session.rs").read_text(encoding="utf-8"))
-    state_rs = strip_comments_only((RUST_V4 / "state.rs").read_text(encoding="utf-8"))
-    audio_kt = strip_comments_only((KOTLIN_LAB / "LabAudioDirector.kt").read_text(encoding="utf-8"))
+    session_rs = strip_comments_only(session_source(RUST_V4))
+    state_rs = strip_comments_only((ROOT / "rust/crates/player_condition/src/lib.rs").read_text(encoding="utf-8"))
+    audio_kt = strip_comments_only((KOTLIN_LAB / "match_audio/LabAudioDirector.kt").read_text(encoding="utf-8"))
 
     check(
         "Zero regression: 0 occurrences of `dt_sec.clamp(1.0, 6.0)` in v4/",
@@ -336,7 +338,7 @@ def main() -> int:
     )
 
     # 6. All 15 mandatory DES v1.4 tests present in v4/tests.rs
-    tests_rs = (RUST_V4 / "tests.rs").read_text(encoding="utf-8")
+    tests_rs = engine_test_source(RUST_V4)
     missing_tests = [
         t for t in REQUIRED_DES_TESTS if re.search(rf"fn\s+{re.escape(t)}\s*\(", tests_rs) is None
     ]
@@ -346,29 +348,31 @@ def main() -> int:
         f"Missing tests: {missing_tests}",
     )
 
-    # 7. OWN_GOAL included in SHORT_HIGHLIGHTS
+    # 7. V4 presentation uses the production coordinator, not the deleted V3 filter.
     ref_activity_kt = (KOTLIN_LAB / "LabReferenceMatchActivity.kt").read_text(encoding="utf-8")
+    coordinator_kt = (KOTLIN_LAB / "match_playback/LabV4PlaybackCoordinator.kt").read_text(encoding="utf-8")
+    controller_kt = (KOTLIN_LAB / "match_playback/MatchPlaybackController.kt").read_text(encoding="utf-8")
     short_hl_match = re.search(
-        r"LabViewingMode\.SHORT_HIGHLIGHTS\s*->\s*kind\s+in\s+setOf\(([\s\S]*?)\)",
-        ref_activity_kt,
+        r'LabViewingMode\.SHORT_HIGHLIGHTS\s*->\s*\{\s*if\s*\(([^)]*)\)',
+        coordinator_kt,
     )
-    has_own_goal_short = short_hl_match is not None and "LabEventType.OWN_GOAL" in short_hl_match.group(1)
+    has_own_goal_short = short_hl_match is not None and 'kind == "OWN_GOAL"' in short_hl_match.group(1)
     check(
-        "SHORT_HIGHLIGHTS includes LabEventType.OWN_GOAL",
-        has_own_goal_short,
-        "LabEventType.OWN_GOAL not found in SHORT_HIGHLIGHTS setOf(...) in LabReferenceMatchActivity.kt",
+        "Production V4 short highlights include OWN_GOAL and controller delegates filtering",
+        has_own_goal_short and "LabV4PlaybackCoordinator.filterEventsForViewingMode(" in controller_kt
+        and "convertV4StepEvents(stepObj, rawEvents, filteredEvents)" in ref_activity_kt,
+        "Missing OWN_GOAL or V4 production filter wiring",
     )
-
 
     # --- Rework Pass 2 checks (Independent Review CRITICAL-01..09 + QA-01..12) ---
     root = Path(__file__).resolve().parent.parent
-    sess_rs = (root / "rust/football_match_engine/src/v4/session.rs").read_text()
+    sess_rs = session_source(root / "rust/football_match_engine/src/v4")
     rng_rs = (root / "rust/football_match_engine/src/rng.rs").read_text()
-    diag_rs = (root / "rust/football_match_engine/src/v4/diagnostics.rs").read_text()
-    tests_rs = (root / "rust/football_match_engine/src/v4/tests.rs").read_text()
-    ctrl_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/MatchPlaybackController.kt").read_text()
-    ns_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/NarrationScheduler.kt").read_text()
-    tts_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/audio/MatchTtsManager.kt").read_text()
+    diag_rs = (root / "rust/crates/match_telemetry/src/lib.rs").read_text()
+    tests_rs = engine_test_source(root / "rust/football_match_engine/src/v4")
+    ctrl_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/match_playback/MatchPlaybackController.kt").read_text()
+    ns_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/match_commentary/NarrationScheduler.kt").read_text()
+    tts_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/audio/match_commentary/MatchTtsManager.kt").read_text()
     act_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/LabReferenceMatchActivity.kt").read_text()
 
     check(

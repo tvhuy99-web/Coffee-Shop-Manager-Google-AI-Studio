@@ -293,6 +293,26 @@ impl EventScheduler {
         Ok(None)
     }
 
+    /// Validate restored scheduler identity and timing, without purging stale entries
+    /// or changing heap order. Cancelled entries may legitimately precede the cursor.
+    pub(crate) fn validate_snapshot(&self)->Result<(), &'static str>{
+        if self.current_time_ms<0 || self.next_sequence==0 || self.live_play_generation==0 || self.period_generation==0
+            || self.zero_dt_streak>MAX_ZERO_DT_STREAK || self.total_popped>MAX_TOTAL_POPPED_EVENTS {
+            return Err("invalid scheduler cursor, generation or watchdog counters");
+        }
+        let mut seen=std::collections::HashSet::new();
+        for entry in &self.queue {
+            let event=&entry.0;
+            if event.insertion_sequence==0 || event.insertion_sequence>=self.next_sequence || !seen.insert(event.insertion_sequence){
+                return Err("invalid or duplicate scheduler insertion sequence");
+            }
+            if self.is_event_valid(event) && event.event_time_ms<self.current_time_ms {
+                return Err("valid scheduler event precedes cursor");
+            }
+        }
+        Ok(())
+    }
+
     /// Returns the timestamp of the next valid (non-cancelled) event without popping it,
     /// lazily purging cancelled events from the top of the heap.
     pub fn peek_next_valid_time_ms(&mut self) -> Option<i64> {

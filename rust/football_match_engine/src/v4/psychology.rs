@@ -21,43 +21,7 @@ pub const PERSONAL_CONFIDENCE_BOUND:f32=0.12;
 /// probabilities into continuous-time Poisson hazard rates.
 pub const REFERENCE_BEAT_SEC: f32 = 11.0;
 
-/// Computes deterministic pre-match form multiplier from `consistency`, `big_matches`,
-/// `match_importance`, and the meta/career readiness hook (`professionalism` + `adaptability`).
-pub fn compute_prematch_form_multiplier(
-    attrs: &PlayerAttributes54,
-    match_importance: u8,
-    rng: &mut DeterministicRng,
-) -> f32 {
-    sample_prematch_form(attrs,match_importance,rng).1
-}
-
-/// One draw, two explicitly separated outputs:
-/// (football match-day form, legacy career-influenced confidence factor).
-/// Only the first is consumed by match decision uncertainty.
-pub(crate) fn sample_prematch_form(
-    attrs:&PlayerAttributes54,match_importance:u8,rng:&mut DeterministicRng
-)->(f32,f32) {
-    let cons = normalize_attr(attrs.hidden.consistency);
-    let big = normalize_attr(attrs.hidden.big_matches);
-    let readiness = attrs.career_readiness_hook();
-
-    // Higher consistency shrinks random match-day variance
-    let spread = (0.14 - cons * 0.11).clamp(0.025, 0.14);
-    let variance = (rng.next_double() as f32 - 0.5) * 2.0 * spread;
-
-    // Big-match temperament activates when match_importance >= 65
-    let big_delta = if match_importance >= 65 {
-        let weight = ((match_importance as f32 - 60.0) / 40.0).clamp(0.0, 1.0);
-        (big - 0.5) * 0.16 * weight
-    } else {
-        0.0
-    };
-
-    let career_stability = (readiness - 0.5) * 0.04;
-    let match_only=(1.0+variance+big_delta).clamp(0.84,1.16);
-    let legacy=(1.0+variance+big_delta+career_stability).clamp(0.84,1.16);
-    (match_only,legacy)
-}
+pub use player_condition::{compute_prematch_form_multiplier, sample_prematch_form};
 
 /// A reserve has a match-day form just like a starter. Sample it from
 /// a named independent stream so the value is fixed for this match and
@@ -399,26 +363,7 @@ pub fn resolve_foul_discipline(
     events
 }
 
-/// Computes post-match career carryover delta (`morale_delta`) using `ambition` & `loyalty`
-/// (completing the 4 meta/career attribute hooks alongside `professionalism` & `adaptability`).
-pub fn compute_post_match_morale_delta(
-    attrs: &PlayerAttributes54,
-    won: bool,
-    drew: bool,
-    rating: f32,
-) -> i8 {
-    let amb = normalize_attr(attrs.hidden.ambition);
-    let loy = normalize_attr(attrs.hidden.loyalty);
-    let base: f32 = if won {
-        4.0 + amb * 3.0
-    } else if drew {
-        (loy - amb) * 2.0
-    } else {
-        -4.0 - amb * 3.0 + loy * 1.5
-    };
-    let perf = (rating - 6.5) * 2.0;
-    (base + perf).round().clamp(-12.0, 12.0) as i8
-}
+pub use player_condition::compute_post_match_morale_delta;
 
 fn team_leadership_aura(state: &MatchStateV4, input: &MatchInputV4, side: TeamSideV4) -> f32 {
     let mut best = 0.0f32;

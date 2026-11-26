@@ -1,5 +1,17 @@
 package pl.mkrstudio.truefootball3.lab
 
+import pl.mkrstudio.truefootball3.match_audio.LabAudioDirector
+import pl.mkrstudio.truefootball3.match_commentary.LabCommentaryEngine
+import pl.mkrstudio.truefootball3.match_commentary.MatchEventCueAdapter
+import pl.mkrstudio.truefootball3.match_commentary.NarrationScheduler
+import pl.mkrstudio.truefootball3.match_playback.LabGlobalSeedReplayStore
+import pl.mkrstudio.truefootball3.match_playback.LabRustLiveSession
+import pl.mkrstudio.truefootball3.match_playback.MatchCheckpointStore
+import pl.mkrstudio.truefootball3.match_playback.MatchPlaybackController
+import pl.mkrstudio.truefootball3.match_playback.MatchRosterProjection
+import pl.mkrstudio.truefootball3.match_playback.MatchStatsProjection
+import pl.mkrstudio.truefootball3.match_playback.RosterEntry
+
 import android.app.Activity
 import android.app.AlertDialog
 import android.graphics.Color
@@ -16,14 +28,14 @@ import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
 import pl.mkrstudio.truefootball3.adapters.CommentaryRecordAdapter
-import pl.mkrstudio.truefootball3.audio.MatchAudioManager
-import pl.mkrstudio.truefootball3.audio.MatchTtsManager
+import pl.mkrstudio.truefootball3.match_audio.MatchAudioManager
+import pl.mkrstudio.truefootball3.match_commentary.MatchTtsManager
 import pl.mkrstudio.truefootball3.audio.TtsSettingsStore
 import java.util.ArrayList
 import java.util.HashMap
 import java.util.concurrent.Executors
+import pl.mkrstudio.truefootball3.presentation.PresentationSessionGate
 import kotlin.math.abs
-import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 /**
@@ -46,53 +58,23 @@ class LabReferenceMatchActivity : Activity() {
         private const val MAX_SUBSTITUTIONS = 5
     }
 
-    private data class LabNarration(
-        val minute: Int,
-        val displayMinute: String,
-        val homeGoals: Int,
-        val awayGoals: Int,
-        val text: String,
-        val kind: LabEventType,
-        val side: LabTeamSide?,
-        val isWoodwork: Boolean = false,
-        val isPenalty: Boolean = false,
-        val isShootoutScored: Boolean? = null,
-        val simulationBeat: Long = 0L,
-        val gameSecond: Int = 0,
-        val simTimeMs: Long = gameSecond * 1000L
-    )
-
-    private data class RosterEntry(
-        val id: String,
-        val name: String,
-        val position: String
-    ) {
-        val label: String get() = "$name ($position)"
-    }
 
     private val main = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor()
+    private val sessionGate = PresentationSessionGate()
     private val records = ArrayList<HashMap<String, Any>>()
-    private val narration = ArrayList<LabNarration>()
-    private val homeOnPitch = ArrayList<RosterEntry>()
-    private val homeBench = ArrayList<RosterEntry>()
-    private val homeRosterIndex = HashMap<String, RosterEntry>()
-    private var homeSubsUsed = 0
-    private var homeWindowsUsed = 0
-    private var intervalSubstitutionAllowed = false
+    private val roster = MatchRosterProjection()
+    private val homeOnPitch get() = roster.homeOnPitch
+    private val homeBench get() = roster.homeBench
+    private val homeSubsUsed get() = roster.homeSubsUsed
+    private val homeWindowsUsed get() = roster.homeWindowsUsed
+    private val intervalSubstitutionAllowed get() = roster.intervalSubstitutionAllowed
     private var commandDialogActive = false
-    private var simulationStepPending = false
 
-    // Legacy V3 playback state
-    private var played = 0
+    // Match presentation state
     private var paused = false
-    private var playbackMs = 320L
-    private var manualSpeedOverride = false
     private var finished = false
-    private var liveGameSecond = 0
-    private var lastV4PlayingPeriod = 1
-    private var runningHomeGoals = 0
-    private var runningAwayGoals = 0
+    private var cueAdapter = MatchEventCueAdapter()
     private var v4InputJson = ""
     private var v4MatchId = ""
     private var statsSummaryText = "Chưa có thống kê trận đấu."
@@ -130,59 +112,6 @@ class LabReferenceMatchActivity : Activity() {
     private var knockout = false
     private var seed = 123456789L
 
-    private fun currentV3StepDelayMs(): Long {
-        if (manualSpeedOverride) return playbackMs
-        val simSettings = SimulationSettingsStore(this).load()
-        if (!simSettings.syncMatchSpeedWithTts) return playbackMs
-        val rate = (TtsSettingsStore(this).load().ratePercent / 100f).coerceIn(0.5f, 5.0f)
-        return (playbackMs / rate).roundToLong().coerceAtLeast(100L)
-    }
-
-    /** Legacy V3 tick loop (preserved untouched for V3 compatibility). */
-    private val v3Tick = object : Runnable {
-        override fun run() {
-            if (engineVersion != LabEngineVersion.V3) return
-            if (isFinishing || isDestroyed || paused || commandDialogActive) return
-            if (played >= narration.size) {
-                val session = liveRustSession
-                if (session != null && session.isOpen && !finished && !simulationStepPending) {
-                    simulationStepPending = true
-                    executor.execute { stepLegacyV3Session() }
-                    return
-                }
-                if (finished) {
-                    state.text = "Hết giờ. Chọn bất kỳ dòng nào trong danh sách để nghe lại."
-                }
-                return
-            }
-            val item = narration[played++]
-            header.text = "$home ${item.homeGoals} – ${item.awayGoals} $away  (${item.displayMinute}')"
-            records.add(hashMapOf("time" to item.minute, "commentary" to item.text))
-            if (played % 3 == 0 || played == narration.size || item.kind == LabEventType.GOAL) {
-                recordAdapter.notifyDataSetChanged()
-                list.setSelection(records.size - 1)
-            }
-            state.text = "Phút ${item.displayMinute}' • ${engineVersion.labelVi} • ${viewingMode.labelVi} ($played/${narration.size})"
-            audioDirector?.onEvent(
-                kind = item.kind,
-                side = item.side,
-                minute = item.minute,
-                goalDiffAbs = abs(item.homeGoals - item.awayGoals),
-                simTimeMs = item.simTimeMs,
-                isWoodwork = item.isWoodwork,
-                isPenalty = item.isPenalty,
-                isShootoutScored = item.isShootoutScored
-            )
-            val delayMs = currentV3StepDelayMs()
-            val manager = tts
-            if (manager != null && manager.isEnabled()) {
-                manager.speak(item.text, Runnable { main.postDelayed(this, delayMs) })
-            } else {
-                main.postDelayed(this, delayMs)
-            }
-        }
-    }
-
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -203,9 +132,7 @@ class LabReferenceMatchActivity : Activity() {
         viewingMode = intent.getStringExtra(EXTRA_VIEWING_MODE)?.let {
             try { LabViewingMode.valueOf(it) } catch (_: IllegalArgumentException) { null }
         } ?: savedSim.viewingMode
-        engineVersion = intent.getStringExtra(EXTRA_ENGINE_VERSION)?.let {
-            try { LabEngineVersion.valueOf(it) } catch (_: IllegalArgumentException) { null }
-        } ?: savedSim.engineVersion
+        engineVersion = LabEngineVersion.V4
         includeTurningPointsInShort = savedSim.includeTurningPointsInShort
         knockout = intent.getBooleanExtra(EXTRA_KNOCKOUT, false)
         seed = intent.getLongExtra(EXTRA_SEED, 123456789L)
@@ -246,7 +173,7 @@ class LabReferenceMatchActivity : Activity() {
         playbackRow.addView(playButton, LinearLayout.LayoutParams(0, dp(48), 1f))
 
         speedButton = Button(this).apply {
-            text = if (engineVersion == LabEngineVersion.V4) "Tốc độ: 1.0x" else "Tốc độ"
+            text = "Tốc độ: 1.0x"
             isAllCaps = false
             setOnClickListener { cyclePlaybackSpeed() }
         }
@@ -307,7 +234,7 @@ class LabReferenceMatchActivity : Activity() {
         }
         root.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
         list.setOnItemClickListener { _, _, position, _ ->
-            if (engineVersion != LabEngineVersion.V4 || finished) (records.getOrNull(position)?.get("commentary") as? String)?.let { tts?.speak(it) }
+            if (finished) (records.getOrNull(position)?.get("commentary") as? String)?.let { tts?.speak(it) }
         }
         root.addView(
             Button(this).apply {
@@ -330,12 +257,12 @@ class LabReferenceMatchActivity : Activity() {
         checkpointStore = MatchCheckpointStore(this)
         // Resume on the main thread, before any new native session can be created.
         val requestedResumeId = intent.getStringExtra("resume_checkpoint_match_id")
-        if (engineVersion == LabEngineVersion.V4 && !requestedResumeId.isNullOrBlank()) {
+        if (!requestedResumeId.isNullOrBlank()) {
             if (!tryResumeActiveV4Checkpoint(requestedResumeId)) {
                 state.text = "Không thể khôi phục trận đã lưu. Dữ liệu cũ vẫn được giữ lại."
             }
         } else {
-            val saved = if (engineVersion == LabEngineVersion.V4) checkpointStore?.listActiveCheckpoints()?.firstOrNull() else null
+            val saved = checkpointStore?.listActiveCheckpoints()?.firstOrNull()
             if (saved != null) {
                 AlertDialog.Builder(this)
                     .setTitle("Có trận đấu đang lưu")
@@ -343,58 +270,35 @@ class LabReferenceMatchActivity : Activity() {
                     .setPositiveButton("Tiếp tục") { _, _ ->
                         if (!tryResumeActiveV4Checkpoint(saved.matchId)) state.text = "Không thể khôi phục bản lưu."
                     }
-                    .setNegativeButton("Trận mới") { _, _ -> executor.execute { startMatch() } }
+                    .setNegativeButton("Trận mới") { _, _ -> launchMatch() }
                     .setCancelable(false).show()
-            } else executor.execute { startMatch() }
+            } else launchMatch()
         }
     }
 
     private fun togglePlayPause() {
-        if (engineVersion == LabEngineVersion.V4) {
-            val ctrl = playbackController ?: return
-            if (ctrl.isPaused()) {
-                continuePeriodButton.visibility = View.GONE
-                paused = false
-                playButton.text = "Tạm dừng"
-                audio?.resumeAll()
-                ctrl.resume()
-            } else {
-                paused = true
-                playButton.text = "Tiếp tục"
-                audio?.pauseAll()
-                ctrl.pause()
-            }
-            return
-        }
-        paused = !paused
-        playButton.text = if (paused) "Tiếp tục" else "Tạm dừng"
-        if (paused) {
-            main.removeCallbacks(v3Tick)
-            tts?.stop()
-            audio?.pauseAll()
-        } else {
+        val ctrl = playbackController ?: return
+        if (ctrl.isPaused()) {
+            continuePeriodButton.visibility = View.GONE
+            paused = false
+            playButton.text = "Tạm dừng"
             audio?.resumeAll()
-            main.post(v3Tick)
+            ctrl.resume()
+        } else {
+            paused = true
+            playButton.text = "Tiếp tục"
+            audio?.pauseAll()
+            ctrl.pause()
         }
     }
 
     private fun cyclePlaybackSpeed() {
-        if (engineVersion == LabEngineVersion.V4) {
-            val rates = NarrationScheduler.SUPPORTED_PLAYBACK_RATES
-            desRateIndex = (desRateIndex + 1) % rates.size
-            val nextRate = rates[desRateIndex]
-            speedButton.text = "Tốc độ: ${formatRateLabel(nextRate)}"
-            playbackController?.setPlaybackRate(nextRate)
-            Toast.makeText(this, "Tốc độ DES: ${formatRateLabel(nextRate)}", Toast.LENGTH_SHORT).show()
-            return
-        }
-        manualSpeedOverride = true
-        playbackMs = when (playbackMs) {
-            320L -> 800L
-            800L -> 150L
-            else -> 320L
-        }
-        Toast.makeText(this, "Tốc độ: ${playbackMs}ms/câu", Toast.LENGTH_SHORT).show()
+        val rates = NarrationScheduler.SUPPORTED_PLAYBACK_RATES
+        desRateIndex = (desRateIndex + 1) % rates.size
+        val nextRate = rates[desRateIndex]
+        speedButton.text = "Tốc độ: ${formatRateLabel(nextRate)}"
+        playbackController?.setPlaybackRate(nextRate)
+        Toast.makeText(this, "Tốc độ DES: ${formatRateLabel(nextRate)}", Toast.LENGTH_SHORT).show()
     }
 
     private fun formatRateLabel(rate: Float): String {
@@ -403,25 +307,17 @@ class LabReferenceMatchActivity : Activity() {
 
     private fun openCommandDialog() {
         commandDialogActive = true
-        if (engineVersion == LabEngineVersion.V4) {
-            playbackController?.pause()
-        } else {
-            main.removeCallbacks(v3Tick)
-        }
+        playbackController?.pause()
     }
 
     private fun closeCommandDialog() {
         commandDialogActive = false
-        if (engineVersion == LabEngineVersion.V4) {
-            val ctrl = playbackController
-            if (!paused && ctrl != null &&
-                ctrl.currentHalfStage() == DesHalfStage.IN_HALF &&
-                !isFinishing && !isDestroyed
-            ) {
-                ctrl.resume()
-            }
-        } else if (!paused && !isFinishing && !isDestroyed) {
-            main.post(v3Tick)
+        val ctrl = playbackController
+        if (!paused && ctrl != null &&
+            ctrl.currentHalfStage() == DesHalfStage.IN_HALF &&
+            !isFinishing && !isDestroyed
+        ) {
+            ctrl.resume()
         }
     }
 
@@ -447,7 +343,7 @@ class LabReferenceMatchActivity : Activity() {
                     else -> "CHANGE_LINE_HEIGHT"
                 }
                 val value = when (which) { 0 -> 85; 1 -> 80; 2 -> 30; else -> 35 }
-                if (engineVersion == LabEngineVersion.V4) {
+                run {
                     val ctrl = playbackController
                     val live = liveRustSession
                     if (ctrl != null && live != null) {
@@ -463,7 +359,7 @@ class LabReferenceMatchActivity : Activity() {
                         }
                     } else {
                         executor.execute {
-                            val ok = session.submitTeamInstruction(liveGameSecond, "HOME", type, value)
+                            val ok = session.submitTeamInstruction(cueAdapter.liveGameSecond, "HOME", type, value)
                             main.post {
                                 if (!isDestroyed) {
                                     Toast.makeText(
@@ -476,20 +372,6 @@ class LabReferenceMatchActivity : Activity() {
                         }
                     }
                     closeCommandDialog()
-                } else {
-                    closeCommandDialog()
-                    executor.execute {
-                        val ok = session.submitTeamInstruction(liveGameSecond, "HOME", type, value)
-                        main.post {
-                            if (!isDestroyed) {
-                                Toast.makeText(
-                                    this,
-                                    if (ok) "Đã gửi chỉ đạo" else "Không gửi được chỉ đạo",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        }
-                    }
                 }
             }
             .setNegativeButton("Đóng") { _, _ -> closeCommandDialog() }
@@ -498,56 +380,7 @@ class LabReferenceMatchActivity : Activity() {
     }
 
     private fun showSubstitutionDialog() {
-        if (engineVersion == LabEngineVersion.V4) {
-            showV4BatchSubstitutionDialog()
-            return
-        }
-        val session = liveRustSession
-        if (session == null || !session.isOpen || finished) {
-            Toast.makeText(this, "Chỉ thay người trực tiếp khi trận Rust đang diễn ra.", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (homeSubsUsed >= MAX_SUBSTITUTIONS) {
-            Toast.makeText(this, "Đã dùng hết $MAX_SUBSTITUTIONS lượt thay người.", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (homeOnPitch.isEmpty() || homeBench.isEmpty()) {
-            Toast.makeText(this, "Không còn cầu thủ dự bị để thay.", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val outOptions = homeOnPitch.map { it.label }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Chọn cầu thủ ra sân (Còn ${MAX_SUBSTITUTIONS - homeSubsUsed} lượt)")
-            .setItems(outOptions) { _, outIdx ->
-                val outPlayer = homeOnPitch.getOrNull(outIdx) ?: return@setItems
-                val inOptions = homeBench.map { it.label }.toTypedArray()
-                AlertDialog.Builder(this)
-                    .setTitle("Vào thay ${outPlayer.label}")
-                    .setItems(inOptions) { _, inIdx ->
-                        val inPlayer = homeBench.getOrNull(inIdx) ?: return@setItems
-                        executor.execute {
-                            val ok = session.submitSubstitution(liveGameSecond, "HOME", outPlayer.id, inPlayer.id)
-                            main.post {
-                                if (ok) {
-                                    homeOnPitch[outIdx] = inPlayer
-                                    homeBench.removeAt(inIdx)
-                                    homeSubsUsed++
-                                    Toast.makeText(
-                                        this,
-                                        "Đã thay người: ${outPlayer.name} → ${inPlayer.name}",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                } else {
-                                    Toast.makeText(this, "Không thể gửi lệnh thay người.", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        }
-                    }
-                    .setNegativeButton("Hủy", null)
-                    .show()
-            }
-            .setNegativeButton("Đóng", null)
-            .show()
+        showV4BatchSubstitutionDialog()
     }
 
     private fun showV4BatchSubstitutionDialog() {
@@ -644,126 +477,59 @@ class LabReferenceMatchActivity : Activity() {
     }
 
     /** Never trust the app's cached XI after an AI manager has substituted. */
-    private fun syncV4HomeRoster(authoritative: JSONObject) {
-        fun getPlayers(field: String): List<RosterEntry> {
-            val ids = authoritative.optJSONArray(field) ?: return emptyList()
-            return (0 until ids.length()).mapNotNull { idx ->
-                val id = ids.optString(idx)
-                homeRosterIndex[id]
-            }
-        }
-        homeOnPitch.clear()
-        homeOnPitch.addAll(getPlayers("onPitchPlayerIds"))
-        homeBench.clear()
-        homeBench.addAll(getPlayers("availableBenchPlayerIds"))
-        homeSubsUsed = authoritative.optInt("substitutionsUsed", homeSubsUsed)
-        homeWindowsUsed = authoritative.optInt("substitutionWindowsUsed", homeWindowsUsed)
-        intervalSubstitutionAllowed = authoritative.optBoolean("intervalSubstitutionAllowed", false)
+    private fun syncV4HomeRoster(authoritative: JSONObject) = roster.syncV4HomeRoster(authoritative)
+
+    private fun populateHomeRoster(inputJson: String) = roster.populateHomeRoster(inputJson)
+
+    private fun launchMatch() {
+        val token = sessionGate.begin(v4MatchId)
+        executor.execute { startMatch(token) }
     }
 
-    private fun populateHomeRoster(inputJson: String) {
-        val homeObj = JSONObject(inputJson).optJSONObject("homeTeam") ?: return
-        val lineupArr = homeObj.optJSONArray("lineup")
-        val benchArr = homeObj.optJSONArray("bench")
-        val starters = ArrayList<RosterEntry>()
-        val subs = ArrayList<RosterEntry>()
-        if (lineupArr != null) {
-            for (i in 0 until lineupArr.length()) {
-                val p = lineupArr.getJSONObject(i)
-                starters.add(
-                    RosterEntry(
-                        p.optString("playerId"),
-                        p.optString("displayName"),
-                        p.optString("primaryPosition", "CM")
-                    )
-                )
-            }
-        }
-        if (benchArr != null) {
-            for (i in 0 until benchArr.length()) {
-                val p = benchArr.getJSONObject(i)
-                subs.add(
-                    RosterEntry(
-                        p.optString("playerId"),
-                        p.optString("displayName"),
-                        p.optString("primaryPosition", "CM")
-                    )
-                )
-            }
-        }
-        val applyRoster = Runnable {
-            homeRosterIndex.clear()
-            for (entry in starters + subs) homeRosterIndex[entry.id] = entry
-            homeOnPitch.clear()
-            homeOnPitch.addAll(starters)
-            homeBench.clear()
-            homeBench.addAll(subs)
-            homeSubsUsed = 0
-            homeWindowsUsed = 0
-            intervalSubstitutionAllowed = false
-        }
-        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) applyRoster.run() else main.post(applyRoster)
-    }
-
-    private fun startMatch() {
+    private fun startMatch(token: PresentationSessionGate.Token) {
+        if (!sessionGate.isCurrent(token)) return
         try {
             val factory = LabMatchInputFactory(this)
-            matchFactory = factory
-            runningHomeGoals = 0
-            runningAwayGoals = 0
             LabLogStore.log(
                 "MATCH",
                 "START [$engineVersion/$viewingMode] $home (${homeTactics.formation.label}/${homeTactics.style.label}) vs " +
                     "$away (${awayTactics.formation.label}/${awayTactics.style.label}) | knockout=$knockout seed=$seed"
             )
-            val inputJson = when (engineVersion) {
-                LabEngineVersion.V4 -> {
-                    if (!NativeBridge.isV4DesReady()) {
-                        throw IllegalStateException("Thư viện lõi Rust V4 DES (bridge v8 / protocol v5) chưa được đóng gói trong APK.")
-                    }
-                    factory.createRustV4InputJson(
-                        homeName = home,
-                        awayName = away,
-                        seed = seed,
-                        knockout = knockout,
-                        simulationMode = LabSimulationMode.FULL_EVENT,
-                        homeTactics = homeTactics,
-                        awayTactics = awayTactics
-                    ).also { generated ->
-                        v4InputJson = generated
-                        v4MatchId = JSONObject(generated).optString("matchId", v4MatchId)
-                    }
-                }
-                LabEngineVersion.V3 -> {
-                    if (!NativeBridge.isFullEngineReady()) {
-                        throw IllegalStateException("Thư viện lõi Rust V3 (libfootball_match_engine.so) chưa được biên dịch/đóng gói vào APK.")
-                    }
-                    factory.createRustInputJson(home, away, seed, simMinutes, knockout, homeTactics, awayTactics)
-                }
+            if (!NativeBridge.isV4DesReady()) {
+                throw IllegalStateException("Thư viện lõi Rust V4 DES (bridge v8 / protocol v5) chưa được đóng gói trong APK.")
             }
-            populateHomeRoster(inputJson)
+            val inputJson = factory.createRustV4InputJson(
+                homeName = home,
+                awayName = away,
+                seed = seed,
+                knockout = knockout,
+                simulationMode = LabSimulationMode.FULL_EVENT,
+                homeTactics = homeTactics,
+                awayTactics = awayTactics
+            )
+            val matchId = JSONObject(inputJson).optString("matchId", token.matchId)
             val session = LabRustLiveSession.open(inputJson, engineVersion)
                 ?: throw IllegalStateException("Không tạo được phiên Rust ${engineVersion.labelVi}")
-            if (isFinishing || isDestroyed) {
-                session.close()
-                return
-            }
-            liveRustSession = session
-            rustCommentary = LabCommentaryEngine(this, home, away, seed)
-
-            if (engineVersion == LabEngineVersion.V4) {
-                main.post {
-                    if (!isFinishing && !isDestroyed) {
-                        startV4DesPlayback(session)
-                    }
+            main.post {
+                if (!sessionGate.isCurrent(token) || isFinishing || isDestroyed) {
+                    session.close()
+                    return@post
                 }
-            } else {
-                simulationStepPending = true
-                stepLegacyV3Session()
+                playbackController?.release()
+                liveRustSession?.close()
+                matchFactory = factory
+                cueAdapter = MatchEventCueAdapter()
+                v4InputJson = inputJson
+                v4MatchId = matchId
+                populateHomeRoster(inputJson)
+                liveRustSession = session
+                rustCommentary = LabCommentaryEngine(this, home, away, seed)
+                startV4DesPlayback(session)
             }
         } catch (error: Exception) {
             LabLogStore.error("ERROR", "startMatch failed", error)
             main.post {
+                if (!sessionGate.isCurrent(token) || isFinishing || isDestroyed) return@post
                 finished = true
                 state.text = "Không chạy được trận đấu: ${error.javaClass.simpleName}: ${error.message}"
             }
@@ -771,22 +537,25 @@ class LabReferenceMatchActivity : Activity() {
     }
 
     private fun startV4DesPlayback(session: LabRustLiveSession, restored: PlaybackCheckpointState? = null) {
+        val token = sessionGate.begin(v4MatchId)
+        fun current() = sessionGate.isCurrent(token) && !isFinishing && !isDestroyed
         val scheduler = NarrationScheduler(
             context = this,
             ttsManager = tts,
             lookaheadWindowMs = NarrationScheduler.DEFAULT_LOOKAHEAD_MS,
             onCuePresented = { _, ev ->
-                if (isFinishing || isDestroyed) return@NarrationScheduler
+                if (!current()) return@NarrationScheduler
                 records.add(hashMapOf("time" to ev.minute, "commentary" to ev.text))
                 recordAdapter.notifyDataSetChanged()
                 list.setSelection(records.size - 1)
             },
             onHighSpeedWarning = { msg ->
-                if (!isFinishing && !isDestroyed) {
+                if (current()) {
                     Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                 }
             },
             onHealthChanged = { status, detail ->
+                if (!current()) return@NarrationScheduler
                 ttsHealthStatus = status
                 LabLogStore.log("TTS_HEALTH", "$status ($detail)")
             }
@@ -803,6 +572,7 @@ class LabReferenceMatchActivity : Activity() {
             includeTurningPointsInShort = includeTurningPointsInShort,
             checkpointStore = checkpointStore,
             workerExecutor = executor,
+            isSessionCurrent = { sessionGate.isCurrent(token) },
             listener = object : MatchPlaybackController.Listener {
                 override fun onEventsProduced(
                     stepObj: JSONObject,
@@ -810,6 +580,7 @@ class LabReferenceMatchActivity : Activity() {
                     filteredEvents: List<JSONObject>,
                     isLookahead: Boolean
                 ): List<NarrationScheduler.SimulationEvent> {
+                    if (!current()) return emptyList()
                     return convertV4StepEvents(stepObj, rawEvents, filteredEvents)
                 }
 
@@ -818,7 +589,7 @@ class LabReferenceMatchActivity : Activity() {
                     playbackRate: Float,
                     paused: Boolean
                 ) {
-                    if (isFinishing || isDestroyed) return
+                    if (!current()) return
                     val displayMin = formatDisplayMinute(
                         period = snapshot.period,
                         gameSecond = (snapshot.simTimeMs / 1000L).toInt(),
@@ -836,13 +607,13 @@ class LabReferenceMatchActivity : Activity() {
                 }
 
                 override fun onRosterUpdated(homeRoster: JSONObject) {
-                    if (!isFinishing && !isDestroyed) {
+                    if (current()) {
                         syncV4HomeRoster(homeRoster)
                     }
                 }
 
                 override fun onPeriodBreak(stage: DesHalfStage, period: Int, homeGoals: Int, awayGoals: Int) {
-                    if (isFinishing || isDestroyed) return
+                    if (!current()) return
                     paused = true
                     playButton.text = "Tiếp tục"
                     continuePeriodButton.text = if (stage == DesHalfStage.HALF_TIME_BREAK) {
@@ -856,14 +627,14 @@ class LabReferenceMatchActivity : Activity() {
                 }
 
                 override fun onFastForwardSkip(fromSimTimeMs: Long, toSimTimeMs: Long) {
-                    if (!isFinishing && !isDestroyed) {
+                    if (current()) {
                         val toMin = ((toSimTimeMs / 1000L) / 60L).coerceAtLeast(1L)
                         state.text = "Tua nhanh Highlights đến phút $toMin'..."
                     }
                 }
 
                 override fun onMatchFinished(finalResult: JSONObject) {
-                    if (isFinishing || isDestroyed) return
+                    if (!current()) return
                     finished = true
                     paused = true
                     continuePeriodButton.visibility = View.GONE
@@ -874,7 +645,7 @@ class LabReferenceMatchActivity : Activity() {
 
                 override fun onError(error: Throwable) {
                     LabLogStore.error("PLAYBACK", "DES playback error", error)
-                    if (!isFinishing && !isDestroyed) {
+                    if (current()) {
                         finished = true
                         state.text = "Lỗi phiên Rust DES: ${error.message}"
                     }
@@ -898,277 +669,12 @@ class LabReferenceMatchActivity : Activity() {
     ): List<NarrationScheduler.SimulationEvent> {
         val factory = matchFactory ?: return emptyList()
         val engine = rustCommentary ?: return emptyList()
-        val filteredSeqs = HashSet<Int>(filteredEvents.size)
-        for (fe in filteredEvents) {
-            filteredSeqs.add(fe.optInt("sequence", -1))
-        }
-        val out = ArrayList<NarrationScheduler.SimulationEvent>(filteredEvents.size)
-        for (ev in rawEvents) {
-            val kindName = ev.optString("kind", "")
-            val kind = try {
-                LabEventType.valueOf(kindName)
-            } catch (_: IllegalArgumentException) {
-                continue
-            }
-            val side = when (ev.optString("side", "")) {
-                "HOME" -> LabTeamSide.HOME
-                "AWAY" -> LabTeamSide.AWAY
-                else -> null
-            }
-            if (kind == LabEventType.GOAL || kind == LabEventType.OWN_GOAL) {
-                // In Rust V4, EventTypeV4::OwnGoal carries the beneficiary side (same as Goal).
-                if (side == LabTeamSide.HOME) runningHomeGoals++
-                else if (side == LabTeamSide.AWAY) runningAwayGoals++
-            }
-            val seq = ev.optInt("sequence", -1)
-            if (viewingMode != LabViewingMode.FULL_MATCH && seq !in filteredSeqs) {
-                continue
-            }
-            val period = ev.optInt("period", stepObj.optInt("period", 1))
-            if (period in 1..4) lastV4PlayingPeriod = period
-            val evSec = ev.optInt("gameSecond", liveGameSecond)
-            val simTimeMs = ev.optLong("simTimeMs", evSec * 1000L)
-            val periodElapsedSec = ev.optInt("periodElapsedSecond", -1).takeIf { it >= 0 }
-            val periodElapsedMs = ev.optLong("periodElapsedMs", (periodElapsedSec ?: 0) * 1000L)
-            val minuteInPeriod = if (periodElapsedSec != null) {
-                ((periodElapsedSec + 59) / 60).coerceAtLeast(0)
-            } else ((evSec + 59) / 60).coerceAtLeast(1)
-            val minute = when (period) {
-                2 -> 45 + minuteInPeriod
-                3 -> 90 + minuteInPeriod
-                4 -> 105 + minuteInPeriod
-                5, 6 -> if (lastV4PlayingPeriod >= 3) 120 else 90
-                else -> minuteInPeriod
-            }.coerceAtLeast(1)
-            val displayMin = formatDisplayMinute(period, evSec, periodElapsedSec)
-            val actorName = factory.name(ev.optString("actor", "").takeIf { it != "null" })
-            val targetName = factory.name(ev.optString("target", "").takeIf { it != "null" })
-
-            val normalized = JSONObject(ev.toString())
-            val ballPos = ev.optJSONObject("ballPos")
-            if (ballPos != null) {
-                val bx = ((ballPos.optDouble("x", 52.5) / 105.0) * 100.0).roundToInt().coerceIn(0, 100)
-                normalized.put("ballX", bx)
-            }
-            val text = engine.renderRustEvent(
-                normalized, kind, side, actorName, targetName, minute, runningHomeGoals, runningAwayGoals
-            ) ?: fallbackV4Text(kind, actorName, targetName) ?: continue
-
-            val metaObj = ev.optJSONObject("metadata")
-            val isWoodwork = metaObj?.optString("outcome")?.equals("WOODWORK", ignoreCase = true) == true
-            val isPenalty = kind == LabEventType.PENALTY_KICK || kind == LabEventType.PENALTY_AWARDED
-            val shootoutScored = if (kind == LabEventType.PENALTY_SHOOTOUT_KICK) {
-                metaObj?.optBoolean("scored", false)
-            } else null
-
-            LabLogStore.log(
-                "EVENT",
-                "${displayMin}' [V4:$kind] simTimeMs=$simTimeMs side=${side ?: "-"} actor=$actorName target=$targetName score=$runningHomeGoals-$runningAwayGoals | $text"
-            )
-            out.add(
-                NarrationScheduler.SimulationEvent(
-                    sequence = seq,
-                    simTimeMs = simTimeMs,
-                    period = period,
-                    periodElapsedMs = periodElapsedMs,
-                    minute = minute,
-                    displayMinute = displayMin,
-                    kind = kind,
-                    side = side,
-                    homeGoals = runningHomeGoals,
-                    awayGoals = runningAwayGoals,
-                    text = text,
-                    highlightTier = ev.optString("highlightTier", "NONE"),
-                    isWoodwork = isWoodwork,
-                    isPenalty = isPenalty,
-                    isShootoutScored = shootoutScored
-                )
-            )
-        }
-        runningHomeGoals = stepObj.optInt("homeGoals", runningHomeGoals)
-        runningAwayGoals = stepObj.optInt("awayGoals", runningAwayGoals)
-        liveGameSecond = stepObj.optInt("gameSecond", liveGameSecond)
-        return out
+        return cueAdapter.convertV4StepEvents(stepObj, rawEvents, filteredEvents,
+            viewingMode, factory::name, engine::renderRustEvent)
     }
 
-    private fun shouldIncludeV3Event(kind: LabEventType): Boolean {
-        return when (viewingMode) {
-            LabViewingMode.FULL_MATCH -> true
-            LabViewingMode.EXTENDED_HIGHLIGHTS -> kind in setOf(
-                LabEventType.MATCH_STARTED, LabEventType.HALF_TIME, LabEventType.FULL_TIME,
-                LabEventType.EXTRA_TIME_STARTED, LabEventType.EXTRA_TIME_HALF_TIME,
-                LabEventType.PENALTY_SHOOTOUT_STARTED, LabEventType.PENALTY_SHOOTOUT_KICK, LabEventType.PENALTY_SHOOTOUT_ENDED,
-                LabEventType.GOAL, LabEventType.OWN_GOAL, LabEventType.SHOT, LabEventType.SHOT_ON_TARGET,
-                LabEventType.SHOT_OFF_TARGET, LabEventType.HEADER, LabEventType.SAVE, LabEventType.REBOUND,
-                LabEventType.CORNER, LabEventType.FREE_KICK, LabEventType.PENALTY_AWARDED, LabEventType.PENALTY_KICK,
-                LabEventType.YELLOW_CARD, LabEventType.RED_CARD, LabEventType.INJURY, LabEventType.SUBSTITUTION,
-                LabEventType.OFFSIDE
-            )
-            LabViewingMode.SHORT_HIGHLIGHTS -> kind in setOf(
-                LabEventType.MATCH_STARTED, LabEventType.HALF_TIME, LabEventType.FULL_TIME,
-                LabEventType.EXTRA_TIME_STARTED, LabEventType.PENALTY_SHOOTOUT_STARTED,
-                LabEventType.PENALTY_SHOOTOUT_KICK, LabEventType.PENALTY_SHOOTOUT_ENDED,
-                LabEventType.GOAL, LabEventType.OWN_GOAL
-            ) || (includeTurningPointsInShort && kind in setOf(
-                LabEventType.PENALTY_AWARDED, LabEventType.PENALTY_KICK, LabEventType.RED_CARD
-            ))
-        }
-    }
-
-    private fun formatDisplayMinute(
-        period: Int,
-        gameSecond: Int,
-        periodElapsedSecond: Int? = null
-    ): String {
-        if (engineVersion == LabEngineVersion.V4 && periodElapsedSecond != null) {
-            val elapsed = periodElapsedSecond.coerceAtLeast(0)
-            val base = when (period) {
-                1 -> 0
-                2 -> 45
-                3 -> 90
-                4 -> 105
-                5 -> 120
-                6 -> if (lastV4PlayingPeriod >= 3) 120 else 90
-                else -> 0
-            }
-            val regulationLength = if (period == 3 || period == 4) 15 else 45
-            val minuteInPeriod = if (period >= 5) 0
-            else ((elapsed + 59) / 60).coerceAtLeast(if (elapsed == 0) 0 else 1)
-            val minute = base + minuteInPeriod
-            return if (period in 1..4 && minuteInPeriod > regulationLength) {
-                "${base + regulationLength}+${minuteInPeriod - regulationLength}"
-            } else {
-                minute.toString()
-            }
-        }
-        val minute = ((gameSecond + 59) / 60).coerceAtLeast(1)
-        return when {
-            period == 1 && minute > 45 -> "45+${minute - 45}"
-            period == 2 && minute > 90 -> "90+${minute - 90}"
-            period == 3 && minute > 105 -> "105+${minute - 105}"
-            period == 4 && minute > 120 -> "120+${minute - 120}"
-            else -> minute.toString()
-        }
-    }
-
-    private fun fallbackV4Text(kind: LabEventType, actor: String, target: String): String? {
-        return when (kind) {
-            LabEventType.GOAL -> "VÀO! $actor ghi bàn${if (target.isNotEmpty()) " sau đường kiến tạo của $target" else ""}!"
-            LabEventType.OWN_GOAL -> "PHẢN LƯỚI NHÀ! $actor vô tình đưa bóng về lưới nhà."
-            LabEventType.SHOT_ON_TARGET -> "$actor tung cú dứt điểm trúng đích!"
-            LabEventType.SHOT_OFF_TARGET -> "$actor dứt điểm chệch khung thành."
-            LabEventType.SAVE -> "Thủ môn $actor cản phá xuất sắc!"
-            LabEventType.OFFSIDE -> "Trọng tài phất cờ báo việt vị với $actor."
-            LabEventType.THROW_IN -> "Bóng đi hết đường biên dọc, $actor thực hiện quả ném biên."
-            LabEventType.CORNER -> "$actor chuẩn bị đá phạt góc."
-            LabEventType.FREE_KICK -> "$actor thực hiện quả đá phạt."
-            LabEventType.PENALTY_AWARDED -> "PHẠT ĐỀN! Trọng tài chỉ tay vào chấm 11m."
-            LabEventType.PENALTY_KICK -> "$actor bước lên thực hiện quả phạt đền."
-            LabEventType.FOUL -> "$actor phạm lỗi${if (target.isNotEmpty()) " với $target" else ""}."
-            LabEventType.ADVANTAGE_PLAYED -> "Trọng tài cho hưởng phép lợi thế!"
-            LabEventType.YELLOW_CARD -> "Thẻ vàng dành cho $actor."
-            LabEventType.RED_CARD -> "THẺ ĐỎ! $actor bị truất quyền thi đấu!"
-            LabEventType.INJURY -> "$actor gặp chấn thương và cần chăm sóc y tế."
-            LabEventType.SUBSTITUTION -> "Thay người: $actor vào sân thay $target."
-            LabEventType.HALF_TIME -> "Kết thúc hiệp một."
-            LabEventType.EXTRA_TIME_STARTED -> "Bắt đầu hiệp phụ!"
-            LabEventType.EXTRA_TIME_HALF_TIME -> "Kết thúc hiệp phụ thứ nhất."
-            LabEventType.PENALTY_SHOOTOUT_STARTED -> "Hai đội bước vào loạt sút luân lưu cân não!"
-            LabEventType.PENALTY_SHOOTOUT_ENDED -> "Loạt sút luân lưu đã khép lại!"
-            LabEventType.FULL_TIME -> "Trọng tài thổi còi kết thúc trận đấu!"
-            else -> null
-        }
-    }
-
-    private fun stepLegacyV3Session() {
-        val session = liveRustSession ?: return
-        val factory = matchFactory ?: return
-        val engine = rustCommentary ?: return
-        try {
-            val added = ArrayList<LabNarration>()
-            var guard = 0
-            while (added.isEmpty() && !finished && guard++ < 80) {
-                val stepObj = session.advance(maxSteps = 8)
-                if (!stepObj.optBoolean("ok", false)) {
-                    throw IllegalStateException(stepObj.optString("error", "Rust V3 step failed"))
-                }
-                liveGameSecond = stepObj.optInt("gameSecond", liveGameSecond)
-                val eventsArr = stepObj.optJSONArray("events")
-                if (eventsArr != null) {
-                    for (i in 0 until eventsArr.length()) {
-                        val ev = eventsArr.getJSONObject(i)
-                        val kind = try {
-                            LabEventType.valueOf(ev.getString("type"))
-                        } catch (_: IllegalArgumentException) {
-                            continue
-                        }
-                        if (!shouldIncludeV3Event(kind)) continue
-                        val side = when (ev.optString("side", "")) {
-                            "HOME" -> LabTeamSide.HOME
-                            "AWAY" -> LabTeamSide.AWAY
-                            else -> null
-                        }
-                        val evSec = ev.optInt("gameSecond", liveGameSecond)
-                        val minute = ev.optInt("minute", (evSec + 59) / 60).coerceAtLeast(1)
-                        val displayMin = ev.optString("displayMinute", minute.toString())
-                        val hg = ev.optInt("homeGoals", 0)
-                        val ag = ev.optInt("awayGoals", 0)
-                        val actorName = factory.name(ev.optString("actor", "").takeIf { it != "null" })
-                        val targetName = factory.name(ev.optString("target", "").takeIf { it != "null" })
-                        val text = engine.renderRustEvent(ev, kind, side, actorName, targetName, minute, hg, ag)
-                            ?: continue
-                        val metaObj = ev.optJSONObject("metadata")
-                        val isWoodwork = metaObj?.optString("woodwork") == "true" ||
-                            metaObj?.optString("outcome")?.equals("WOODWORK", ignoreCase = true) == true
-                        val isPenalty = metaObj?.optString("source")?.equals("PENALTY", ignoreCase = true) == true ||
-                            kind == LabEventType.PENALTY_KICK
-                        val shootoutScored = if (kind == LabEventType.PENALTY_SHOOTOUT_KICK) {
-                            metaObj?.optString("scored") == "true" ||
-                                metaObj?.optString("outcome")?.equals("SCORED", ignoreCase = true) == true
-                        } else null
-                        LabLogStore.log("EVENT", "${displayMin}' [V3:$kind] side=${side ?: "-"} actor=$actorName target=$targetName score=$hg-$ag | $text")
-                        added.add(
-                            LabNarration(
-                                minute = minute,
-                                displayMinute = displayMin,
-                                homeGoals = hg,
-                                awayGoals = ag,
-                                text = text,
-                                kind = kind,
-                                side = side,
-                                isWoodwork = isWoodwork,
-                                isPenalty = isPenalty,
-                                isShootoutScored = shootoutScored,
-                                gameSecond = evSec,
-                                simTimeMs = evSec * 1000L
-                            )
-                        )
-                    }
-                }
-                if (stepObj.optBoolean("fullTime", false)) {
-                    val finalObj = session.finish()
-                    updateStatsFromRustJson(finalObj)
-                    session.close()
-                    finished = true
-                    break
-                }
-            }
-            main.post {
-                simulationStepPending = false
-                if (isFinishing || isDestroyed) return@post
-                narration.addAll(added)
-                if (added.isNotEmpty() || finished) main.post(v3Tick)
-                else main.postDelayed(v3Tick, currentV3StepDelayMs())
-            }
-        } catch (error: Exception) {
-            LabLogStore.error("ERROR", "stepLegacyV3Session failed", error)
-            main.post {
-                simulationStepPending = false
-                finished = true
-                state.text = "Lỗi phiên Rust: ${error.message}"
-            }
-        }
-    }
+    private fun formatDisplayMinute(period: Int, gameSecond: Int, periodElapsedSecond: Int? = null): String =
+        cueAdapter.formatDisplayMinute(period, gameSecond, periodElapsedSecond)
 
     private fun saveV4SeedReplay(finalObj: JSONObject) {
         if (!finalObj.optBoolean("ok", false) || v4InputJson.isBlank()) return
@@ -1191,82 +697,8 @@ class LabReferenceMatchActivity : Activity() {
     }
 
     private fun updateStatsFromV4Json(root: JSONObject) {
-        val summary = root.optJSONObject("summary")
-        val hs = summary?.optJSONObject("home")
-        val asObj = summary?.optJSONObject("away")
-        val factory = matchFactory
-        statsSummaryText = buildString {
-            appendLine("Động cơ: Rust Engine 4.1 DES (${viewingMode.labelVi}) | Seed: $seed")
-            if (hs != null && asObj != null) {
-                appendLine("Tỷ số chung cuộc: $home ${hs.optInt("goals")} – ${asObj.optInt("goals")} $away")
-                if (summary.optBoolean("wentToShootout", false)) {
-                    appendLine("Luân lưu: ${summary.optInt("shootoutHomeGoals")} – ${summary.optInt("shootoutAwayGoals")}")
-                }
-                appendLine("Kiểm soát bóng: ${"%.1f".format(hs.optDouble("possessionPct"))}% – ${"%.1f".format(asObj.optDouble("possessionPct"))}%")
-                appendLine("Sút (trúng đích): ${hs.optInt("shots")} (${hs.optInt("shotsOnTarget")}) – ${asObj.optInt("shots")} (${asObj.optInt("shotsOnTarget")})")
-                appendLine("Sút chệch/bị chặn: ${hs.optInt("shotsOffTarget")}/${hs.optInt("shotsBlocked")} – ${asObj.optInt("shotsOffTarget")}/${asObj.optInt("shotsBlocked")}")
-                appendLine("Cứu thua: ${hs.optInt("saves")} – ${asObj.optInt("saves")} | Phản lưới nhà: ${hs.optInt("ownGoalsConceded")} – ${asObj.optInt("ownGoalsConceded")}")
-                appendLine("xG: ${"%.2f".format(hs.optDouble("xg"))} – ${"%.2f".format(asObj.optDouble("xg"))}")
-                appendLine("Chuyền thành công: ${hs.optInt("passesCompleted")}/${hs.optInt("passesAttempted")} – ${asObj.optInt("passesCompleted")}/${asObj.optInt("passesAttempted")}")
-                appendLine("Phạt góc: ${hs.optInt("corners")} – ${asObj.optInt("corners")} | Việt vị: ${hs.optInt("offsides")} – ${asObj.optInt("offsides")}")
-                appendLine("Ném biên: ${hs.optInt("throwIns")} – ${asObj.optInt("throwIns")} | Phạm lỗi: ${hs.optInt("fouls")} – ${asObj.optInt("fouls")}")
-                appendLine("Thẻ vàng/đỏ: ${hs.optInt("yellowCards")}/${hs.optInt("redCards")} – ${asObj.optInt("yellowCards")}/${asObj.optInt("redCards")}")
-            }
-            val players = summary?.optJSONArray("players")
-            if (players != null && players.length() > 0) {
-                val sorted = (0 until players.length())
-                    .map { players.getJSONObject(it) }
-                    .sortedByDescending { it.optDouble("rating", 6.0) }
-                appendLine("\nChấm điểm nổi bật:")
-                for (p in sorted.take(6)) {
-                    val pName = factory?.name(p.optString("playerId")) ?: p.optString("playerId")
-                    val teamTag = if (p.optString("side") == "HOME") "Nhà" else "Khách"
-                    val rStr = "%.1f".format(p.optDouble("rating", 6.0))
-                    val distKm = "%.1f".format(p.optDouble("distanceM", 0.0) / 1000.0)
-                    val ownGoalTag = if (p.optInt("ownGoals") > 0) ", ${p.optInt("ownGoals")} phản lưới" else ""
-                    appendLine("  • $pName ($teamTag): $rStr (${p.optInt("goals")}B/${p.optInt("assists")}KT$ownGoalTag • ${distKm}km)")
-                }
-            }
-            appendLine("\nTổng sự kiện: ${root.optInt("eventCount")} | FP: ${root.optString("eventTimelineFingerprint")}")
-        }
+        statsSummaryText = MatchStatsProjection.render(root, home, away, viewingMode, seed, matchFactory?.let { it::name })
         LabLogStore.log("MATCH", "FINAL V4 STATS:\n$statsSummaryText")
-    }
-
-    private fun updateStatsFromRustJson(root: JSONObject) {
-        val stats = root.optJSONObject("statistics")
-        val hs = stats?.optJSONObject("home")
-        val asObj = stats?.optJSONObject("away")
-        statsSummaryText = buildString {
-            appendLine("Động cơ: Rust Engine 3.0 (${viewingMode.labelVi}) | Seed: $seed")
-            appendLine("Tỷ số chung cuộc: $home ${root.optInt("homeGoals")} – ${root.optInt("awayGoals")} $away")
-            if (hs != null && asObj != null) {
-                appendLine("Kiểm soát bóng: ${hs.optDouble("possessionPercent")}% – ${asObj.optDouble("possessionPercent")}%")
-                appendLine("Sút (trúng đích): ${hs.optInt("shots")} (${hs.optInt("shotsOnTarget")}) – ${asObj.optInt("shots")} (${asObj.optInt("shotsOnTarget")})")
-                appendLine("Sút chệch/bị chặn: ${hs.optInt("shotsOffTarget")}/${hs.optInt("shotsBlocked")} – ${asObj.optInt("shotsOffTarget")}/${asObj.optInt("shotsBlocked")}")
-                appendLine("Cứu thua: ${hs.optInt("saves")} – ${asObj.optInt("saves")} | Phản lưới nhà: ${hs.optInt("ownGoalsConceded")} – ${asObj.optInt("ownGoalsConceded")}")
-                appendLine("xG: ${"%.2f".format(hs.optInt("expectedGoalsMilli") / 1000.0)} – ${"%.2f".format(asObj.optInt("expectedGoalsMilli") / 1000.0)}")
-                appendLine("Chuyền thành công: ${hs.optInt("passesCompleted")}/${hs.optInt("passesAttempted")} – ${asObj.optInt("passesCompleted")}/${asObj.optInt("passesAttempted")}")
-                appendLine("Phạt góc: ${hs.optInt("corners")} – ${asObj.optInt("corners")} | Phạm lỗi: ${hs.optInt("fouls")} – ${asObj.optInt("fouls")}")
-                appendLine("Thẻ vàng/đỏ: ${hs.optInt("yellowCards")}/${hs.optInt("redCards")} – ${asObj.optInt("yellowCards")}/${asObj.optInt("redCards")}")
-            }
-            val mom = root.optJSONObject("manOfTheMatch")
-            if (mom != null) {
-                val rStr = "%.1f".format(mom.optInt("ratingTenths", 62) / 10.0)
-                appendLine("Cầu thủ xuất sắc nhất: ${mom.optString("displayName")} ($rStr) — ${mom.optInt("goals")} bàn, ${mom.optInt("assists")} kiến tạo")
-            }
-            val ratings = root.optJSONArray("playerRatings")
-            if (ratings != null && ratings.length() > 0) {
-                appendLine("\nChấm điểm nổi bật:")
-                for (i in 0 until minOf(6, ratings.length())) {
-                    val pr = ratings.getJSONObject(i)
-                    val rStr = "%.1f".format(pr.optInt("ratingTenths", 62) / 10.0)
-                    val teamTag = if (pr.optString("side") == "HOME") "Nhà" else "Khách"
-                    appendLine("  • ${pr.optString("displayName")} ($teamTag, ${pr.optString("primaryPosition")}): $rStr (${pr.optInt("goals")}B/${pr.optInt("assists")}KT)")
-                }
-            }
-            appendLine("\nTổng sự kiện: ${root.optInt("eventCount")} | FP: ${root.optLong("fingerprint")}")
-        }
-        LabLogStore.log("MATCH", "FINAL V3 STATS:\n$statsSummaryText")
     }
 
     private fun estimateStadiumCapacity(clubName: String): Int {
@@ -1285,7 +717,7 @@ class LabReferenceMatchActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
-        if (engineVersion == LabEngineVersion.V4 && !finished) {
+        if (!finished) {
             playbackController?.onHostPaused()
             paused = true
             playButton.text = "Tiếp tục"
@@ -1295,14 +727,14 @@ class LabReferenceMatchActivity : Activity() {
 
     override fun onStop() {
         super.onStop()
-        if (engineVersion == LabEngineVersion.V4 && !finished) {
+        if (!finished) {
             playbackController?.onHostPaused()
         }
     }
 
     override fun onDestroy() {
+        sessionGate.invalidate()
         commandDialogActive = false
-        main.removeCallbacks(v3Tick)
         playbackController?.release()
         narrationScheduler?.release()
         executor.shutdownNow()
@@ -1320,11 +752,12 @@ class LabReferenceMatchActivity : Activity() {
      * the exact saved `playbackSimTimeMs`.
      */
     private fun tryResumeActiveV4Checkpoint(matchIdToResume: String? = null): Boolean {
-        if (engineVersion != LabEngineVersion.V4 || !NativeBridge.isV4DesReady()) return false
+        if (!NativeBridge.isV4DesReady()) return false
         val store = checkpointStore ?: MatchCheckpointStore(this).also { checkpointStore = it }
         val targetId = matchIdToResume ?: store.listActiveCheckpoints().firstOrNull()?.matchId ?: return false
         val envelope = store.loadVerified(targetId) ?: return false
         val restoredSession = LabRustLiveSession.importFromCheckpoint(envelope.rustCheckpointJson) ?: return false
+        sessionGate.invalidate()
         playbackController?.release()
         liveRustSession?.close()
         liveRustSession = restoredSession
@@ -1341,8 +774,9 @@ class LabReferenceMatchActivity : Activity() {
         populateHomeRoster(v4InputJson)
         rustCommentary = LabCommentaryEngine(this, home, away, seed)
         val rustState = payload.getJSONObject("state")
-        runningHomeGoals = rustState.getJSONObject("home").optInt("goals", 0)
-        runningAwayGoals = rustState.getJSONObject("away").optInt("goals", 0)
+        cueAdapter = MatchEventCueAdapter().also { it.initializeScore(
+            rustState.getJSONObject("home").optInt("goals", 0),
+            rustState.getJSONObject("away").optInt("goals", 0)) }
         viewingMode = runCatching { LabViewingMode.valueOf(envelope.androidPlayback.viewingMode) }
             .getOrDefault(LabViewingMode.FULL_MATCH)
         includeTurningPointsInShort = envelope.androidPlayback.includeTurningPointsInShort

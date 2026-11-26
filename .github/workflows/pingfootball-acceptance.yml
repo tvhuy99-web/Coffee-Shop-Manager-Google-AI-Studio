@@ -1,0 +1,425 @@
+name: PingFootball L0-L4 acceptance
+on:
+  push:
+    branches: [main, 'refactor/football-simulation-4', 'refactor/a0-consolidated', 'refactor/a1-a2-contracts', 'refactor/a3-a5-engine-workspace', 'refactor/a6-presentation', 'refactor/a6-final-packages']
+  pull_request:
+    branches: [main, 'refactor/football-simulation-4']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pingfootball-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  LOCK_SHA: 41d521b51131a20781790cb9ee4c62c967f34003866d50d97df2a3354eae9099
+  BASELINE: c2c392d8b3ccc57985e87337e8994fd7033328ee
+jobs:
+  l0_static:
+    name: L0 Static and contracts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify static contracts and exact baseline lock
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          (
+            bash tools/test_a8_device_harness.sh
+            for script in verify_lab_v2 verify_england_v2 verify_parity_fixtures verify_v4_p0_p1_patch verify_v4_p1_234 verify_v4_p2 verify_v4_des_contract verify_phase_a_boundaries; do python3 "tools/$script.py"; done
+            python3 tools/verify_workspace_lock.py docs/evidence/a-1/frozen-Cargo.lock rust/Cargo.lock
+          ) 2>&1 | tee evidence/static.log
+          (
+            cd rust/football_match_engine
+            rustup show
+            rustc -Vv
+            cargo metadata --locked --format-version 1 > ../../evidence/cargo-metadata.json
+            cargo clippy --workspace --locked --all-targets 2>&1 | tee ../../evidence/clippy.log
+            # Report pre-existing formatting debt explicitly; A0 is a test/CI
+            # change, not a mass formatting rewrite. Required strict format
+            # gate starts on new crates in A1/A2, before architecture merge.
+            rc=0
+            cargo fmt --all -- --check > ../../evidence/rustfmt.log 2>&1 || rc=$?
+            printf '%s\n' "$rc" > ../../evidence/rustfmt-exit.txt
+            if [ "$rc" != 0 ]; then echo '::warning::Existing Rust format debt; see rustfmt.log. Not a strict format PASS.'; fi
+          )
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          m=json.loads(Path('evidence/cargo-metadata.json').read_text())
+          local=[p for p in m['packages'] if p['source'] is None]
+          assert {p['name'] for p in local}=={'match_engine','football_match_engine_jni','match_contracts','player_intelligence','coach_intelligence','match_physics','player_condition','match_tactics','match_rules','match_telemetry'}
+          assert {p['id'] for p in local}==set(m['workspace_members'])
+          contracts=next(p for p in local if p['name']=='match_contracts')
+          assert all(d['source'] is not None for d in contracts['dependencies']), 'contracts must remain leaf'
+          engine=next(p for p in local if p['name']=='match_engine')
+          assert {d['name'] for d in engine['dependencies'] if d['source'] is None}=={'match_contracts','player_intelligence','coach_intelligence','match_physics','player_condition','match_tactics','match_rules','match_telemetry'}
+          jni=next(p for p in local if p['name']=='football_match_engine_jni')
+          assert {d['name'] for d in jni['dependencies'] if d['source'] is None}=={'match_engine','match_contracts'}
+          assert not any(d['name']=='jni' for d in engine['dependencies'])
+          assert any(t['name']=='football_match_engine' and 'cdylib' in t['crate_types'] for t in jni['targets'])
+          for name in ('player_intelligence','coach_intelligence','match_physics','player_condition','match_tactics','match_rules','match_telemetry'):
+              p=next(p for p in local if p['name']==name)
+              assert {d['name'] for d in p['dependencies'] if d['source'] is None}=={'match_contracts'}
+          PY
+          python3 tools/verify_a1_boundary.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: l0-static
+          path: evidence/
+          if-no-files-found: error
+  l1_rust:
+    name: L1 Rust all targets and mechanisms
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Locked compile and tests
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          (
+            cd rust/football_match_engine
+            rustup show
+            cargo check --workspace --locked --all-targets
+            cargo test --workspace --locked --all-targets -- --nocapture
+            cargo test --release --locked --lib pi_attribute_isolated_ -- --nocapture
+            cargo test --release --locked --lib pi_psychology_ -- --nocapture
+            /usr/bin/time -v -o "$GITHUB_WORKSPACE/evidence/a4-host-process-resources.txt" env A4_PERF_REPORT_PATH="$GITHUB_WORKSPACE/evidence/a4-performance.json" cargo test --release --locked --lib a4_transaction_performance_report -- --ignored --nocapture
+          ) 2>&1 | tee evidence/rust.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: l1-rust
+          path: evidence/
+          if-no-files-found: error
+  l2_parity:
+    name: L2 exact golden (${{ matrix.scenario }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - {scenario: baseline, count: 1000}
+          - {scenario: balanced, count: 128}
+          - {scenario: high_press, count: 64}
+          - {scenario: low_block, count: 64}
+          - {scenario: strong_home, count: 64}
+          - {scenario: strong_away, count: 64}
+          - {scenario: full_event, count: 12}
+          - {scenario: checkpoint_markers, count: 0}
+    env:
+      A1_SCENARIO: ${{ matrix.scenario }}
+      A1_COUNT: ${{ matrix.count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: d070818e74d4c08530af42ff87e7600952258175
+          path: archive
+          sparse-checkout: docs/evidence/a-1/verified-run-45604679705
+          persist-credentials: false
+      - name: Validate durable golden reference and checked-in candidate tests
+        run: |
+          set -euo pipefail
+          mkdir -p reference evidence
+          python3 - <<'PY'
+          import hashlib,json,os,zipfile
+          from pathlib import Path
+          root=Path('archive/docs/evidence/a-1/verified-run-45604679705')
+          manifest=json.loads((root/'verified-manifest.json').read_text())
+          assert manifest['baseline_sha']==os.environ['BASELINE']
+          assert manifest['lock_sha256']==os.environ['LOCK_SHA']
+          name='a1-deep-'+os.environ['A1_SCENARIO']
+          row=next(x for x in manifest['artifacts'] if x['name']==name)
+          p=root/(name+'.zip')
+          assert p.stat().st_size==row['size']
+          assert hashlib.sha256(p.read_bytes()).hexdigest()==row['sha256']
+          with zipfile.ZipFile(p) as z:
+              assert z.testzip() is None
+              for member in ('first.jsonl','Cargo.lock','rustc.txt','commit.txt'):
+                  data=z.read(member)
+                  assert hashlib.sha256(data).hexdigest()==row['member_sha256'][member]
+                  (Path('reference')/member).write_bytes(data)
+          PY
+          test "$(cat reference/commit.txt)" = "$BASELINE"
+          python3 candidate/tools/verify_workspace_lock.py reference/Cargo.lock candidate/rust/Cargo.lock
+          crate=candidate/rust/football_match_engine
+          test -f candidate/tests/a1/deep_golden_fixture.rs
+          git -C candidate diff --exit-code
+          (cd "$crate" && rustup show && rustc -Vv) > evidence/toolchain.log
+          (cd "$crate" && rustc -Vv) | diff - reference/rustc.txt
+      - name: Compare candidate to immutable reference, including restore
+        run: |
+          set -euo pipefail
+          root="$PWD"
+          test_name=a1_deep_terminal_golden
+          if [ "$A1_SCENARIO" = checkpoint_markers ]; then test_name=a1_deep_checkpoint_markers; fi
+          (
+            cd candidate/rust/football_match_engine
+            export A1_OUTPUT="$root/evidence/candidate.jsonl"
+            if [ "$A1_SCENARIO" != full_event ] && [ "$A1_SCENARIO" != checkpoint_markers ]; then
+              export A7_CROSS_MODE_OUTPUT="$root/evidence/cross-mode.json"
+            fi
+            cargo test --locked --release --lib "v4::tests::$test_name" -- --ignored --exact --nocapture
+          ) 2>&1 | tee evidence/candidate.log
+          grep -Fq "test v4::tests::$test_name ... ok" evidence/candidate.log
+          python3 candidate/tests/a1/compare_deep_golden.py reference/first.jsonl evidence/candidate.jsonl --scenario "$A1_SCENARIO" --expected "$A1_COUNT" | tee evidence/parity.log
+          if [ "$A1_SCENARIO" != full_event ] && [ "$A1_SCENARIO" != checkpoint_markers ]; then
+            python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          rows=json.loads(Path('evidence/cross-mode.json').read_text())
+          assert len(rows)==int(os.environ['A1_COUNT'])
+          assert len({r['seed'] for r in rows})==len(rows)
+          assert all(r['scenario']==os.environ['A1_SCENARIO'] and r['result']=='PASS' and r['terminalPayload']=='PASS' and r['eventCount']>0 for r in rows)
+          print('PASS A7 population cross-mode:',len(rows),'matches')
+          PY
+          fi
+          git -C candidate rev-parse HEAD > evidence/commit.txt
+          (cd evidence && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: l2-${{ matrix.scenario }}
+          path: evidence/
+          if-no-files-found: error
+  l3_audit:
+    name: L3 paired 54-attribute audit (${{ matrix.group }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        group: [technical, mental, physical, goalkeeping, hidden]
+    env:
+      PI_AUDIT_GROUP: ${{ matrix.group }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Actual paired audit on candidate
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          (
+            cd rust/football_match_engine
+            cargo test --locked --lib v4::tests::pi_attribute_audit_changes_only_the_named_field_and_role -- --exact
+            PI_AUDIT_REPORT_PATH="$GITHUB_WORKSPACE/evidence/attribute-audit.json" cargo test --locked --release --lib v4::tests::pi_attribute_audit_population -- --ignored --exact --nocapture
+          ) 2>&1 | tee evidence/attribute-audit.log
+          python3 tools/summarize_pi_attribute_audit.py evidence/attribute-audit.json evidence/attribute-summary.json
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          report=json.loads(Path('evidence/attribute-audit.json').read_text())
+          counts={'technical':13,'mental':14,'physical':8,'goalkeeping':9,'hidden':10}
+          group=os.environ['PI_AUDIT_GROUP']
+          assert report['group']==group and report['piVersion']=='4.0.28'
+          assert report['simulations']==8+16*counts[group] and len(report['pairs'])==8*counts[group]
+          PY
+          git rev-parse HEAD > evidence/commit.txt
+          (cd evidence && sha256sum *.json *.log commit.txt > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: l3-audit-${{ matrix.group }}
+          path: evidence/
+          if-no-files-found: error
+  l3_diagnostics:
+    name: L3 legacy diagnostic coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preserve 50 probes, Monte Carlo 128/1000 and attacking diagnostics
+        run: |
+          set -euo pipefail
+          mkdir -p build-evidence
+          cd rust/football_match_engine
+          V4_IMPACT_SEEDS=12 V4_IMPACT_REPORT_PATH=../../build-evidence/v4_attribute_impact.json cargo test --locked --release --lib v4::attribute_impact_tests::exhaustive_50_attribute_counterfactual_report -- --ignored --nocapture
+          V4_REALISM_MATCHES=128 V4_REALISM_REPORT_PATH=../../build-evidence/v4_realism_baseline.json cargo test --locked --release --lib v4::attribute_impact_tests::monte_carlo_realism_baseline_report -- --ignored --nocapture
+          V4_REALISM_MATCHES=1000 V4_REALISM_REPORT_PATH=../../build-evidence/realism_1000.json cargo test --locked --release --lib v4::attribute_impact_tests::monte_carlo_realism_baseline_report -- --ignored --nocapture
+          V4_DIAGNOSTICS_REPORT_PATH=../../build-evidence/v4_attacking_diagnostics.json cargo test --locked --release --lib v4::diagnostics::tests::export_attacking_diagnostics_sample -- --ignored --nocapture
+          cd ../..
+          python3 tools/verify_v4_impact_report.py build-evidence/v4_attribute_impact.json build-evidence/v4_realism_baseline.json build-evidence/v4_attacking_diagnostics.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: l3-diagnostics
+          path: build-evidence/
+          if-no-files-found: error
+  l4_jvm:
+    name: L4 Kotlin JVM integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Kotlin compiler
+        run: |
+          curl -fsSL https://github.com/JetBrains/kotlin/releases/download/v1.9.25/kotlin-compiler-1.9.25.zip -o /tmp/kotlin.zip
+          unzip -q /tmp/kotlin.zip -d /tmp/kotlin
+          echo '/tmp/kotlin/kotlinc/bin' >> "$GITHUB_PATH"
+      - name: Actual Kotlin behavior, commentary and missing-tool controls
+        run: |
+          set -euo pipefail
+          rustup show
+          bash tools/run_v4_p1_jvm_smoke.sh
+          bash tools/run_des_playback_jvm.sh
+          bash tools/run_commentary_regression.sh
+          temp="$(mktemp -d)"
+          trap 'rm -rf "$temp" "$temp.out"' EXIT
+          for missing in cargo kotlinc java python3; do
+            rm -f "$temp"/*
+            for present in cargo kotlinc java python3; do
+              if [ "$present" != "$missing" ]; then ln -s "$(command -v "$present")" "$temp/$present"; fi
+            done
+            rc=0
+            PATH="$temp" /bin/bash tools/validate_v4_p1_full.sh >"$temp.out" 2>&1 || rc=$?
+            test "$rc" -eq 2
+            grep -Fq "ERROR: required tool missing: $missing" "$temp.out"
+          done
+  l4_android:
+    name: L4 Android ARM64 signed Debug APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install SDK, build tools and NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.1" "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/27.2.12479018" >> "${GITHUB_ENV}"
+
+      - name: Install pinned Rust and Android target from toolchain manifest
+        run: |
+          cd rust
+          rustup show
+          rustc -Vv
+          rustup target list --installed | grep -Fx aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cd rust && cargo install cargo-ndk --version 4.1.2 --locked
+
+      - name: Compile optimized Rust ARM64 library
+        env:
+          RUST_ANDROID_ABIS: arm64-v8a
+        run: bash tools/build_lab_rust_android.sh
+
+      - name: Build stable-key Debug APK
+        run: bash gradlew :app:validateCommentaryTokens :app:assembleDebug --no-daemon --console plain
+
+      - name: Verify APK signature, package, version and native engine
+        env:
+          EXPECTED_CERT_SHA256: d3ee2af5ec69b6b29fff105118bc66200070681fa9ee6124a5972761d7db45f1
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$apk"
+          mkdir -p build-evidence
+          python3 - <<'PY'
+          import zipfile
+          apk = 'app/build/outputs/apk/debug/app-debug.apk'
+          with zipfile.ZipFile(apk) as archive:
+              corrupt = archive.testzip()
+              if corrupt:
+                  raise SystemExit('Corrupted APK entry: ' + corrupt)
+              so = 'lib/arm64-v8a/libfootball_match_engine.so'
+              if so not in archive.namelist():
+                  raise SystemExit('Missing optimized Rust native library: ' + so)
+              if not archive.read(so).startswith(b'\x7fELF'):
+                  raise SystemExit('Rust native library is not ELF')
+          PY
+          "$ANDROID_HOME/build-tools/35.0.1/apksigner" verify --verbose --print-certs "$apk" | tee build-evidence/signature.txt
+          badging="$("$ANDROID_HOME/build-tools/35.0.1/aapt" dump badging "$apk")"
+          printf '%s\n' "$badging" | head -n 1 | tee build-evidence/package.txt
+          printf '%s\n' "$badging" | grep -q "name='pl.mkrstudio.truefootball3.debug' versionCode='1' versionName='1.0-debug'"
+          actual_cert="$(awk -F': ' '/certificate SHA-256 digest:/ {gsub(/:/, "", $NF); print tolower($NF); exit}' build-evidence/signature.txt)"
+          test "$actual_cert" = "$EXPECTED_CERT_SHA256"
+          sha256sum "$apk" | tee build-evidence/apk.sha256
+          git rev-parse HEAD | tee build-evidence/commit.txt
+
+      - name: Verify packaged ARM64 JNI ABI against frozen V4 export set
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,re,subprocess,tempfile,zipfile
+          from pathlib import Path
+          expected=set(json.loads(r'''["Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeAdvanceV4Session","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeAdvanceV4SessionUntilMs","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeBridgeVersion","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeCreateV4Session","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeDestroyV4Session","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeEngineProtocolVersion","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeExportV4Checkpoint","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeFinishV4Session","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeGetVersionManifestJson","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeImportV4Checkpoint","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeReplayV4Json","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeSimulateBatchV4Json","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeSimulateMatchV4Json","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeStartNextPeriod","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeSubmitV4Command","Java_pl_mkrstudio_truefootball3_lab_NativeBridge_nativeSubmitV4CommandJson"]'''))
+          with tempfile.TemporaryDirectory() as temp:
+              p=Path(temp)/'libfootball_match_engine.so'
+              with zipfile.ZipFile('app/build/outputs/apk/debug/app-debug.apk') as z:
+                  p.write_bytes(z.read('lib/arm64-v8a/libfootball_match_engine.so'))
+              header=subprocess.check_output(['readelf','-h',str(p)],text=True)
+              assert 'AArch64' in header,header
+              symbols=subprocess.check_output(['readelf','--dyn-syms','--wide',str(p)],text=True)
+              actual=set(re.findall(r'Java_pl_mkrstudio_truefootball3_lab_NativeBridge_\w+',symbols))
+              assert actual==expected,{'missing':sorted(expected-actual),'unexpected':sorted(actual-expected)}
+              Path('build-evidence/jni-abi.json').write_text(json.dumps({'architecture':'AArch64','exports':sorted(actual),'count':len(actual)},indent=2)+'\n')
+              print(f'PASS: {len(actual)} JNI exports, frozen V4 set plus manifest, no legacy exports')
+          PY
+
+      - name: Upload verified APK and build evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: football-match-lab-v1.0-stable-debug
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            build-evidence/*
+          if-no-files-found: error
+          retention-days: 30
+
+  acceptance:
+    name: Required L0-L4 aggregate
+    if: always()
+    needs: [l0_static, l1_rust, l2_parity, l3_audit, l3_diagnostics, l4_jvm, l4_android]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reject any missing, cancelled or failing required layer
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json,os
+          results=json.loads(os.environ['RESULTS'])
+          assert len(results)==7 and all(v['result']=='success' for v in results.values()), results
+          from pathlib import Path
+          report={'schema':1,'commit':os.environ['GITHUB_SHA'],'runId':os.environ['GITHUB_RUN_ID'],
+                  'automatedAcceptance':'PASS','layers':{k:v['result'] for k,v in results.items()},
+                  'scope':'A-1 through A8 only; B1-B6 excluded',
+                  'deviceAcceptance':'BLOCKED_PENDING_REAL_DEVICE_AND_ADR_009',
+                  'releaseApproved':False}
+          Path('acceptance-evidence').mkdir(exist_ok=True)
+          Path('acceptance-evidence/acceptance.json').write_text(json.dumps(report,indent=2)+'\n')
+          print('All L0-L4 automated layers passed; A8 device acceptance and formal review remain separate.')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase-a-automated-acceptance
+          path: acceptance-evidence/
+          if-no-files-found: error

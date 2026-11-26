@@ -10,22 +10,30 @@ pub mod goalkeeper;
 pub mod input;
 pub mod interaction;
 pub mod movement;
+pub mod coach_adapter;
+pub mod observation;
 pub mod own_goal;
 pub mod perception;
 pub mod psychology;
 pub mod rules;
 pub mod scheduler;
 pub mod session;
+pub mod session_commands;
+pub mod session_replay;
 pub mod set_pieces;
 pub mod shooting;
 pub mod spatial;
 pub mod state;
 pub mod stats;
+pub mod substitution;
 pub mod tactics;
+pub mod transition;
 
 #[cfg(test)]
+#[path = "../../../tests/engine/v4_tests.rs"]
 mod tests;
 #[cfg(test)]
+#[path = "../../../tests/engine/attribute_impact_tests.rs"]
 mod attribute_impact_tests;
 
 pub const ENGINE_VERSION_V4: &str = "v4.1.1-des";
@@ -69,7 +77,7 @@ pub use interaction::{
     find_earliest_ball_interaction, BallTrajectory, BoundaryKind, DefenderCandidate,
     EarlyInteractionHit, InteractionKind,
 };
-pub use perception::{PassKindV4, PlannedActionV4};
+pub use crate::player_intelligence::{PassKindV4, PlannedActionV4};
 pub use rules::{
     check_ruleset_compatibility, estimate_ball_flight_ms, estimate_dead_ball_phase_ms,
     estimate_reaction_decision_ms, initial_dead_ball_phase, next_dead_ball_phase, BallFlightKind,

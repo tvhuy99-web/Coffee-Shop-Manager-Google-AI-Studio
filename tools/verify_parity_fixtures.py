@@ -14,7 +14,7 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-GOLDEN = ROOT / "tests/parity"
+GOLDEN = ROOT / "docs/archive/legacy/tests/parity"
 
 
 def fail(reason):

@@ -60,98 +60,9 @@ pub struct SlotAnchorPair {
     pub out_poss_pos: Vec2,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TwoPoolFatigueState {
-    pub aerobic: f32,
-    pub anaerobic: f32,
-    pub distance_m: f32,
-    pub sprint_count: u32,
-    pub high_intensity_actions: u32,
-}
+pub use player_condition::TwoPoolFatigueState;
 
-impl TwoPoolFatigueState {
-    pub fn from_condition(condition: u8) -> Self {
-        Self {
-            aerobic: (condition as f32).clamp(10.0, 100.0),
-            anaerobic: 100.0,
-            distance_m: 0.0,
-            sprint_count: 0,
-            high_intensity_actions: 0,
-        }
-    }
-
-    /// Continuous-time two-pool fatigue integration over an arbitrary DES interval `dt_sec`
-    /// and actual distance covered `distance_m`.
-    ///
-    /// Strictly step-length invariant: no fixed per-call penalty constants (`4.8` / `0.08`).
-    /// During `is_dead_ball == true` or low-intensity movement, anaerobic reserves recover
-    /// proportionally to `dt_sec` and `natural_fitness`.
-    pub fn apply_interval(
-        &mut self,
-        dt_sec: f32,
-        distance_m: f32,
-        is_high_intensity: bool,
-        is_dead_ball: bool,
-        stamina: u8,
-        natural_fitness: u8,
-    ) {
-        let dt = dt_sec.max(0.0);
-        let dist = distance_m.max(0.0);
-        if dt <= 0.0 && dist <= 0.0 {
-            return;
-        }
-
-        let stam = normalize_attr(stamina);
-        let nat = normalize_attr(natural_fitness);
-        let aerobic_efficiency = 1.24 - (stam * 0.52);
-
-        if is_dead_ball {
-            let idle_aerobic_drain = (dist * 0.0011 + dt * 0.0007) * aerobic_efficiency;
-            self.aerobic = (self.aerobic - idle_aerobic_drain).clamp(5.0, 100.0);
-
-            let recovery = dt * (0.42 + nat * 0.52);
-            self.anaerobic = (self.anaerobic + recovery).clamp(0.0, 100.0);
-            self.distance_m += dist;
-            return;
-        }
-
-        let base_aerobic_drain = (dist * 0.0021 + dt * 0.0038) * aerobic_efficiency;
-        let intensity_aerobic_drain = if is_high_intensity {
-            (dt * 0.011 + dist * 0.0014) * aerobic_efficiency
-        } else {
-            0.0
-        };
-        self.aerobic =
-            (self.aerobic - base_aerobic_drain - intensity_aerobic_drain).clamp(5.0, 100.0);
-
-        if is_high_intensity {
-            let ana_drain = (dt * 0.85 + dist * 0.16) * (1.20 - stam * 0.35);
-            self.anaerobic = (self.anaerobic - ana_drain).clamp(0.0, 100.0);
-            if dist >= 1.5 || dt >= 0.4 {
-                self.sprint_count = self.sprint_count.saturating_add(1);
-                self.high_intensity_actions = self.high_intensity_actions.saturating_add(1);
-            }
-        } else {
-            let recovery = dt * (0.24 + nat * 0.38);
-            self.anaerobic = (self.anaerobic + recovery).clamp(0.0, 100.0);
-        }
-        self.distance_m += dist;
-    }
-
-    pub fn apply_half_time_recovery(&mut self, natural_fitness: u8) {
-        let nat = normalize_attr(natural_fitness);
-        self.aerobic = (self.aerobic + 5.0 + nat * 7.0).clamp(5.0, 100.0);
-        self.anaerobic = (self.anaerobic + 45.0 + nat * 35.0).clamp(0.0, 100.0);
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum InjuryKind {
-    Impact,
-    MuscleNonContact,
-}
+pub use match_contracts::event_types::InjuryKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -189,14 +100,7 @@ impl PlayerPsychologyState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum TacticalPhaseV4 {
-    InPossession,
-    AttackingTransition,
-    DefensiveTransition,
-    OutOfPossession,
-}
+pub use match_contracts::tactical_phase::TacticalPhaseV4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

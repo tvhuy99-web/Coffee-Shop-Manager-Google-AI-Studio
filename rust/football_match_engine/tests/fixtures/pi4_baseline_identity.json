@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "refactor_baseline": "c2c392d8b3ccc57985e87337e8994fd7033328ee",
+  "pi_extraction_baseline": "964e56a355637ef9753cdf89cc58a696ad064ca0",
+  "pi_module_version": "4.0.28",
+  "pi_policy_id": "pi4.0-second-ball-state-value",
+  "engine_version": "v4.1.1-des",
+  "jni_bridge_version": 8,
+  "protocol_version": 5,
+  "event_schema_version": 5,
+  "checkpoint_schema_version": 2
+}
