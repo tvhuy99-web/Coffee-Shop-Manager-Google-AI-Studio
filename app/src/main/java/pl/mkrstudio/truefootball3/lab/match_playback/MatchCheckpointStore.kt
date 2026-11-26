@@ -161,6 +161,22 @@ class MatchCheckpointStore(context: Context) {
         return File(dir, "$FILE_PREFIX$hash$FILE_SUFFIX")
     }
 
+    private fun previousFile(file: File): File = File(file.path + ".previous")
+
+    private fun writeAtomic(file: File, bytes: ByteArray) {
+        val atomic = AtomicFile(file)
+        val stream = atomic.startWrite()
+        try {
+            stream.write(bytes)
+            stream.flush()
+            stream.fd.sync()
+            atomic.finishWrite(stream)
+        } catch (error: Exception) {
+            atomic.failWrite(stream)
+            throw error
+        }
+    }
+
     private fun validateEnvelope(envelope: MatchCheckpointEnvelope) {
         require(envelope.checkpointSchemaVersion == CHECKPOINT_SCHEMA_VERSION) {
             "Unsupported checkpointSchemaVersion=${envelope.checkpointSchemaVersion}"
@@ -219,17 +235,12 @@ class MatchCheckpointStore(context: Context) {
         val destination = checkpointFile(envelope.matchId)
         val bytes = root.toString().toByteArray(Charsets.UTF_8)
         synchronized(fileLock) {
-            val atomic = AtomicFile(destination)
-            val stream = atomic.startWrite()
-            try {
-                stream.write(bytes)
-                stream.flush()
-                stream.fd.sync()
-                atomic.finishWrite(stream)
-            } catch (error: Exception) {
-                atomic.failWrite(stream)
-                throw error
+            // Keep the last fully verified generation. Never replace a good
+            // previous generation with a corrupt primary file.
+            if (readVerifiedFile(destination) != null) {
+                writeAtomic(previousFile(destination), AtomicFile(destination).readFully())
             }
+            writeAtomic(destination, bytes)
         }
     }
 
@@ -288,7 +299,8 @@ class MatchCheckpointStore(context: Context) {
                 androidPlayback = playbackState
             )
             validateEnvelope(envelope)
-            if (file.name != checkpointFile(envelope.matchId).name) return null
+            val expectedFile = checkpointFile(envelope.matchId)
+            if (file.name != expectedFile.name && file.name != previousFile(expectedFile).name) return null
 
             val canonicalPlayback = serializePlaybackState(playbackState)
             val expectedCrc = crc32Value(canonicalPayloadBytes(envelope.rustCheckpointJson, canonicalPlayback))
@@ -310,8 +322,7 @@ class MatchCheckpointStore(context: Context) {
     fun loadVerified(matchId: String): MatchCheckpointEnvelope? = synchronized(fileLock) {
         if (matchId.isBlank()) return@synchronized null
         val file = checkpointFile(matchId)
-        if (!file.exists()) return@synchronized null
-        readVerifiedFile(file)?.takeIf { it.matchId == matchId }
+        (readVerifiedFile(file) ?: readVerifiedFile(previousFile(file)))?.takeIf { it.matchId == matchId }
     }
 
     /**
@@ -319,8 +330,10 @@ class MatchCheckpointStore(context: Context) {
      */
     fun listActiveCheckpoints(): List<MatchCheckpointEnvelope> = synchronized(fileLock) {
         dir.listFiles()?.asSequence()
-            ?.filter { it.name.startsWith(FILE_PREFIX) && it.name.endsWith(FILE_SUFFIX) }
-            ?.mapNotNull { readVerifiedFile(it) }
+            ?.filter { it.name.startsWith(FILE_PREFIX) && (it.name.endsWith(FILE_SUFFIX) || it.name.endsWith("$FILE_SUFFIX.previous")) }
+            ?.map { File(dir, it.name.removeSuffix(".previous")) }
+            ?.distinctBy { it.name }
+            ?.mapNotNull { readVerifiedFile(it) ?: readVerifiedFile(previousFile(it)) }
             ?.sortedBy { it.matchId }
             ?.toList()
             .orEmpty()
@@ -332,8 +345,10 @@ class MatchCheckpointStore(context: Context) {
     fun deleteCheckpoint(matchId: String): Boolean = synchronized(fileLock) {
         if (matchId.isBlank()) return@synchronized false
         val file = checkpointFile(matchId)
-        val existed = file.exists()
+        val previous = previousFile(file)
+        val existed = file.exists() || previous.exists()
         AtomicFile(file).delete()
-        existed && !file.exists()
+        AtomicFile(previous).delete()
+        existed && !file.exists() && !previous.exists()
     }
 }

@@ -3,7 +3,7 @@
 set -euo pipefail
 usage(){ echo "usage: $0 SERIAL APK OUTPUT_DIR [PACKAGE]"; exit 2; }
 [[ $# -ge 3 && $# -le 4 ]] || usage
-serial="$1"; apk="$2"; out="$3"; pkg="${4:-pl.mkrstudio.truefootball3}"
+serial="$1"; apk="$2"; out="$3"; pkg="${4:-pl.mkrstudio.truefootball3.debug}"
 command -v adb >/dev/null || { echo "BLOCKED: adb unavailable" >&2; exit 3; }
 [[ -f "$apk" ]] || { echo "BLOCKED: APK missing" >&2; exit 3; }
 [[ ! -e "$out" ]] || { echo "Refusing to overwrite evidence: $out" >&2; exit 2; }

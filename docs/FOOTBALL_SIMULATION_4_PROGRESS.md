@@ -76,3 +76,11 @@ Nhánh tích hợp: `refactor/football-simulation-4`. Main tại thời điểm 
 3. Hoàn thành A0 bằng commit độc lập T/I có test thực; không nới gate để làm xanh.
 4. Thử patch trên nhánh thử nghiệm từ baseline, chỉ lấy từng phần theo A1–A6; không áp toàn khối lên main. Ghi rõ phần giữ, sửa, bỏ và lý do; từng PR có gate, rollback và bằng chứng.
 5. Main chỉ nhận thay đổi đã nghiệm thu đúng cổng; chưa tăng PI 4.0.29. Bắt đầu B sau A7 và áp dụng A8 theo đặc tả.
+
+## Phạm vi cập nhật 2026-11-26 — chỉ Gói 1–4
+Yêu cầu chủ dự án: kết thúc tại A8, không triển khai B1–B6 (Gói 5–6). Các mục lịch sử bên trên được giữ nguyên để đối chiếu, không còn là trạng thái hiện tại.
+- Gói 1 và 2: đã tích hợp; các cổng tự động đã đạt. ADR chính thức/ruleset bảo vệ ref chưa xác nhận.
+- Gói 3: `22b2a0bc0c4ebc7632b65e48ec34901a3dcaa72d`, [CI 45734421981](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45734421981) 19/19 PASS; đã fast-forward nhánh tích hợp. 10 crate, atomic DES + API, golden và benchmark. Các ngoại lệ compatibility observation, integration harness và mức bao phủ đầy đủ từng invariant vẫn phải rà soát; không tuyên bố A3–A5 đạt mọi tiểu mục chỉ từ CI.
+- A6: [CI 45734493128](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45734493128) 19/19 PASS ở `7b7e2db`; ba nhóm trình diễn, interface, session generation. Candidate hợp nhất `06e1008` cộng adapter event-to-cue và backup checkpoint; chờ CI chung. Namespace Kotlin còn tương thích, Activity còn UI/dialog/restore orchestration.
+- A7: chạy lại L0–L4 trên ứng viên chung; không được coi các CI nhánh riêng là kết quả nghiệm thu bản hợp nhất.
+- A8: [CI 45734547385](https://github.com/tvhuy99-web/Coffee-Shop-Manager-Google-AI-Studio/actions/runs/45734547385) fake-adb PASS. Debug APK applicationId pl.mkrstudio.truefootball3.debug; SHA-256 cài đặt phải khớp. Thiết bị thật/ADR-009 chưa xác nhận; L5 BLOCKED, không tuyên bố release. Phải giữ nguyên mốc gameplay PI 4.0.28.
