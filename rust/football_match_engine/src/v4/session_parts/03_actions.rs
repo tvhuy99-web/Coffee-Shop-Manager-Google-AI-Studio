@@ -518,7 +518,7 @@ impl MatchSessionV4 {
         if cause=="TACKLE_CONTACT_LOOSE" {
             self.diagnostics.record_tackle_loose_recovery(side==origin_side);
         }
-        if matches!(cause,"TACKLE_CONTACT_LOOSE"|"SHOT_REBOUND_LOOSE") && side!=origin_side {
+        if matches!(cause,"TACKLE_CONTACT_LOOSE"|"SHOT_REBOUND_LOOSE"|"CLEARANCE_RECOVERY"|"PENALTY_REBOUND_LOOSE") && side!=origin_side {
             let avg_wr=self.team_avg_work_rate(side);
             let ball=self.state.ball.pos;
             let phase_events=update_tactical_phases(&mut self.state,origin_side,side,ball,0,avg_wr);

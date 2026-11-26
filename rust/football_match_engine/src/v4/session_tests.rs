@@ -1106,6 +1106,67 @@ mod locomotion_full_match_experiment {
     }
 
     #[test]
+    fn b12_batch2_clearance_is_timed_then_contested_and_restorable() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            let input=make_v4_input(12053,SimulationMode::FastBatch,RulesModeV4::Standard);
+            let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+            session.step_one_des_event(true).unwrap();
+            session.scheduler.invalidate_live_play();
+            let idx=session.kickoff_carrier_index(side);
+            let pos=Vec2::new(if side==TeamSideV4::Home{40.0}else{65.0},34.0);
+            session.state.players[idx].pos=pos;
+            session.state.players[idx].vel=Vec2::default();
+            session.carrier_idx=idx;
+            session.possession_side=side;
+            session.state.ball.pos=Vec3::ground(pos.x,pos.y);
+            session.state.ball.control=BallControlState::Controlled;
+            session.state.ball.owner_side=Some(side);
+            session.state.ball.owner_player_id=Some(session.state.players[idx].player_id.clone());
+            let launch=session.sim_time_ms();
+            let before:Vec<_>=session.state.players.iter().map(|p|(p.pos,p.vel)).collect();
+            let result=session.step_live_action_des(idx,DecisionPlanV4{
+                action:PlannedActionV4::Clearance,decision_delay_ms:1,is_one_touch:false,carry:None,
+            }).unwrap();
+            assert_eq!(result,(side,idx,false,0));
+            assert_eq!(session.state.ball.pos.xy(),pos);
+            assert_eq!(session.state.ball.control,BallControlState::Loose);
+            assert!(session.state.ball.owner_player_id.is_none() && session.state.ball.owner_side.is_none());
+            assert_eq!(before,session.state.players.iter().map(|p|(p.pos,p.vel)).collect::<Vec<_>>());
+            let f=session.pending_flight.as_ref().unwrap();
+            assert!(matches!(&f.action,FlightActionV4::LooseRecovery{cause,..} if cause=="CLEARANCE_AIRBORNE"));
+            assert!(f.resolves_at_ms>launch && f.early_interaction.is_none());
+            let at=f.resolves_at_ms;
+            let landing=f.trajectory.position_at_ms(at).clamp_to_pitch();
+            let ck=session.export_checkpoint().unwrap();
+            let mut restored=MatchSessionV4::from_checkpoint(ck).unwrap();
+            for s in [&mut session,&mut restored] {
+                for _ in 0..100 {
+                    if s.sim_time_ms()>=at {break;}
+                    s.step_one_des_event(true).unwrap();
+                }
+                assert_eq!(s.sim_time_ms(),at);
+                assert_eq!(s.state.ball.pos,landing);
+                assert_eq!(s.state.ball.control,BallControlState::Loose);
+                let recovery=s.pending_flight.as_ref().expect("separate recovery");
+                assert!(matches!(&recovery.action,FlightActionV4::LooseRecovery{cause,..} if cause=="CLEARANCE_RECOVERY"));
+                assert_eq!(recovery.trajectory.start_time_ms,at);
+                assert_eq!(recovery.trajectory.start_pos,landing);
+                assert!(recovery.resolves_at_ms>at);
+                assert!(recovery.early_interaction.is_some() || recovery.pass_contact_motion.is_some());
+                let end=recovery.resolves_at_ms;
+                for _ in 0..100 {
+                    if s.sim_time_ms()>=end {break;}
+                    s.step_one_des_event(true).unwrap();
+                }
+                assert_eq!(s.sim_time_ms(),end);
+                assert!(s.pending_flight.is_none());
+                assert!(matches!(s.state.ball.control,BallControlState::Controlled|BallControlState::DeadBall));
+            }
+            assert_eq!(session.export_checkpoint().unwrap().checksum_hex,restored.export_checkpoint().unwrap().checksum_hex);
+        }
+    }
+
+    #[test]
     fn b12_batch2_restart_waits_for_actual_taker_and_no_post_goal_reset() {
         for side in [TeamSideV4::Home,TeamSideV4::Away] {
             let input=make_v4_input(12051,SimulationMode::FastBatch,RulesModeV4::Standard);
