@@ -5,3 +5,6 @@ The collector now rejects emulators, split installations and an installed base A
 
 ## Handoff
 Download `football-match-lab-v1.0-stable-debug` from a successful final L0-L4 run; it includes APK, SHA-256, commit, package, signature, JNI exports. Install only the verified debug APK (`pl.mkrstudio.truefootball3.debug`); keep existing release app/data separate. Host reports are in `l1-rust` and the automated acceptance record in `phase-a-automated-acceptance`. Neither artifact approves release or establishes hardware performance. The `/usr/bin/time -v` host result measures the entire cargo test command including build if any, not the Android app or isolated native peak RSS.
+
+## Frozen phone-test candidate
+Use [Vietnamese phone checklist](PHONE_CHECKLIST_VI.md), commit e540c51, run 45747583976, APK artifact 15083733591. Actual APK hash matches f84c13f. Manual feedback is explicitly separate from L5; a single successful match or fake-adb is not sufficient.

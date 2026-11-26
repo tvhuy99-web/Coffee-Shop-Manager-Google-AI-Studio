@@ -14,3 +14,6 @@ Source: Revision 3, section 14.3. These are proposed decisions and actual implem
 - Repository rulesets endpoint returned an empty list when checked. Tags are named refs, not inherently immutable; owner should protect baseline tags against update/deletion and main against direct pushes using GitHub rulesets. Do not modify owner security settings implicitly.
 - ADR-004–007 and 009–011 remain open at their relevant stage; no policy change or gameplay version bump.
 - Do not close A-1 until full event trace archive and evidence completeness are verified. Preserve production behavior and do not merge A0 before A-1 acceptance.
+
+## Updated verified facts (e540c51)
+All 61 original evidence ZIPs archived on evidence/a1-historical at d070818e; run 45615334394 PASS. L0–L4 run 45747583976 PASS 19/19, same gameplay baseline. User narrowed implementation to A-1 through A8; B1–B6 excluded. No inference of approval for ADR-001/002/003/008/009 or device thresholds. Target SDK 29 remains unchanged.
