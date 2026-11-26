@@ -323,6 +323,7 @@ impl MatchSessionV4 {
         crate::v4::transition::verify_roster_profiles(&candidate.state,&candidate.input)?;
         crate::v4::transition::verify_uncontrolled_ball(&candidate.state)?;
         crate::v4::transition::verify_clock_accounting(&candidate.state,candidate.home_possession_ms,candidate.away_possession_ms)?;
+        crate::v4::transition::verify_scheduler_clock(&candidate.state, &candidate.scheduler)?;
         crate::v4::transition::verify_command_journal(&candidate.command_timeline,candidate.next_command_id,candidate.sim_time_ms())?;
         crate::v4::transition::verify_event_journal(&candidate.events,candidate.event_count,candidate.last_delivered_event_index,
             candidate.retain_events,candidate.finished,candidate.sim_time_ms())?;
@@ -1108,6 +1109,7 @@ impl MatchSessionV4 {
         audit.verify(before,&self.state)?;
         crate::v4::transition::verify_commit_progress(before_ms,self.sim_time_ms(),before_events,self.event_count,before_steps,self.completed_beats)?;
         crate::v4::transition::verify_clock_accounting(&self.state,self.home_possession_ms,self.away_possession_ms)?;
+        crate::v4::transition::verify_scheduler_clock(&self.state, &self.scheduler)?;
         crate::v4::transition::verify_uncontrolled_ball(&self.state)?;
         Ok(())
     }

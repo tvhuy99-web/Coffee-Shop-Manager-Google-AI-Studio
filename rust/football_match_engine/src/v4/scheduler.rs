@@ -307,6 +307,14 @@ impl EventScheduler {
             if event.insertion_sequence==0 || event.insertion_sequence>=self.next_sequence || !seen.insert(event.insertion_sequence){
                 return Err("invalid or duplicate scheduler insertion sequence");
             }
+            let generation_valid = match event.scope {
+                CancellationScope::LivePlayOnly => event.state_generation > 0 && event.state_generation <= self.live_play_generation,
+                CancellationScope::PeriodScoped => event.state_generation > 0 && event.state_generation <= self.period_generation,
+                CancellationScope::Persistent => event.state_generation == 0,
+            };
+            if !generation_valid || event.event_time_ms < 0 {
+                return Err("invalid scheduler event generation or timestamp");
+            }
             if self.is_event_valid(event) && event.event_time_ms<self.current_time_ms {
                 return Err("valid scheduler event precedes cursor");
             }
@@ -405,6 +413,19 @@ mod tests {
         assert_eq!(sched.total_popped(), 1);
         assert_eq!(sched.current_time_ms(), 250);
         assert_eq!(sched.zero_dt_streak(), 0);
+    }
+
+    #[test]
+    fn b11_scheduler_snapshot_rejects_future_generation_but_accepts_cancelled_past() {
+        let mut sched = EventScheduler::new();
+        sched.schedule(0, EventPriority::ActionDecision, CancellationScope::LivePlayOnly, b11_probe_payload(1)).unwrap();
+        sched.invalidate_live_play();
+        sched.advance_cursor_to(1).unwrap();
+        assert!(sched.validate_snapshot().is_ok());
+        let mut entry = sched.queue.pop().unwrap();
+        entry.0.state_generation = sched.live_play_generation + 1;
+        sched.queue.push(entry);
+        assert!(sched.validate_snapshot().is_err());
     }
 
     #[test]

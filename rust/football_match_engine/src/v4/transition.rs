@@ -52,6 +52,14 @@ pub struct InvariantViolation {
 pub fn verify_authoritative_invariants(state: &MatchStateV4) -> Result<(), Vec<InvariantViolation>> {
     let mut violations = Vec::new();
 
+    if verify_uncontrolled_ball(state).is_err() {
+        violations.push(InvariantViolation {
+            code: "INV-01",
+            detail: "uncontrolled ball has a control owner".into(),
+        });
+    }
+    let mut ids = std::collections::HashSet::new();
+
     // INV-01 & INV-04: Controlled ball must have a valid, on-pitch, non-sent-off owner of matching side.
     if state.ball.control == BallControlState::Controlled {
         match state.ball.owner_player_id.as_deref() {
@@ -91,7 +99,14 @@ pub fn verify_authoritative_invariants(state: &MatchStateV4) -> Result<(), Vec<I
         });
     }
     for p in &state.players {
-        if !is_finite_vec2(p.pos) || !is_finite_vec2(p.vel) || !is_finite_vec2(p.target_pos) {
+        if !ids.insert(p.player_id.as_str()) || p.profile_idx >= state.player_profiles.len() {
+            violations.push(InvariantViolation {
+                code: "INV-08",
+                detail: format!("duplicate player ID or invalid profile: {}", p.player_id),
+            });
+        }
+        if !is_finite_vec2(p.pos) || !is_finite_vec2(p.vel) || !is_finite_vec2(p.target_pos)
+            || !p.facing_rad.is_finite() {
             violations.push(InvariantViolation {
                 code: "INV-02",
                 detail: format!("player {} has non-finite kinematics", p.player_id),
@@ -101,9 +116,11 @@ pub fn verify_authoritative_invariants(state: &MatchStateV4) -> Result<(), Vec<I
         if !p.fatigue.aerobic.is_finite()
             || !p.fatigue.anaerobic.is_finite()
             || p.fatigue.aerobic < 0.0
-            || p.fatigue.aerobic > 100.5
+            || p.fatigue.aerobic > 100.0
             || p.fatigue.anaerobic < 0.0
-            || p.fatigue.anaerobic > 100.5
+            || p.fatigue.anaerobic > 100.0
+            || !p.fatigue.distance_m.is_finite()
+            || p.fatigue.distance_m < 0.0
         {
             violations.push(InvariantViolation {
                 code: "INV-07",
@@ -116,10 +133,10 @@ pub fn verify_authoritative_invariants(state: &MatchStateV4) -> Result<(), Vec<I
     }
 
     // INV-03: DES simulation clock must be non-negative.
-    if state.des_clock.sim_time_ms < 0 {
+    if verify_period_clock(&state.des_clock).is_err() {
         violations.push(InvariantViolation {
             code: "INV-03",
-            detail: format!("negative sim_time_ms: {}", state.des_clock.sim_time_ms),
+            detail: "inconsistent period clock or added-time counters".into(),
         });
     }
 
@@ -144,10 +161,34 @@ mod tests {
     }
 }
 
+/// Validate the authoritative period clock without correcting state.
+fn verify_period_clock(c: &crate::clock::DesClockState) -> Result<(), V4Error> {
+    if c.sim_time_ms < 0 || c.period_started_at_ms < 0 || c.period_elapsed_ms < 0
+        || c.period_regulation_ms < 0 || c.compensable_lost_ms < 0
+        || c.announced_added_ms < 0 || c.additional_added_ms < 0
+        || c.period_started_at_ms.checked_add(c.period_elapsed_ms) != Some(c.sim_time_ms)
+        || c.announced_added_ms.checked_add(c.additional_added_ms)
+            .and_then(|added| c.period_regulation_ms.checked_add(added)).is_none()
+        || (c.watchdog_max_period_ms > 0 && c.period_elapsed_ms > c.watchdog_max_period_ms)
+    {
+        return Err(V4Error::InvalidClock("INV-03: inconsistent period clock".into()));
+    }
+    Ok(())
+}
+
+/// Scheduler cursor and authoritative clock agree at a committed boundary.
+pub(crate) fn verify_scheduler_clock(state: &MatchStateV4, scheduler: &crate::v4::scheduler::EventScheduler) -> Result<(), V4Error> {
+    if scheduler.current_time_ms() != state.des_clock.sim_time_ms {
+        return Err(V4Error::InvalidClock("INV-03: scheduler cursor differs from authoritative clock".into()));
+    }
+    Ok(())
+}
+
 /// Shared commit/restore checks for cumulative match accounting (INV-03, INV-10).
 /// Use checked arithmetic; a malformed restored counter must not overflow.
 pub(crate) fn verify_clock_accounting(state:&MatchStateV4,home_ms:i64,away_ms:i64)->Result<(),V4Error>{
     let c=&state.des_clock;
+    verify_period_clock(c)?;
     if c.sim_time_ms<0 || c.ball_in_play_ms<0 || c.ball_out_of_play_ms<0 ||
         c.ball_in_play_ms.checked_add(c.ball_out_of_play_ms)!=Some(c.sim_time_ms) {
         return Err(V4Error::InvalidClock("INV-10: live/dead duration differs from match clock".into()));

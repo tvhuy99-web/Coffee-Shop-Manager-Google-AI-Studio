@@ -643,6 +643,68 @@ mod a4_atomic_api_tests {
     }
 
     #[test]
+    fn b11_checkpoint_rejects_period_and_scheduler_corruption() {
+        let mut s = new_session();
+        s.start_next_period().unwrap();
+        s.advance_steps(20).unwrap();
+        let original = s.export_checkpoint().unwrap();
+        assert!(MatchSessionV4::from_checkpoint(original.clone()).is_ok());
+        for mode in 0..5 {
+            let mut bad = original.clone();
+            match mode {
+                0 => bad.payload.state.des_clock.period_started_at_ms += 1,
+                1 => bad.payload.state.des_clock.period_elapsed_ms += 1,
+                2 => bad.payload.state.des_clock.announced_added_ms = -1,
+                3 => bad.payload.state.des_clock.additional_added_ms = i64::MAX,
+                _ => bad.payload.scheduler.advance_cursor_to(bad.sim_time_ms + 1).unwrap(),
+            }
+            bad.checksum_hex = compute_checkpoint_checksum(&serde_json::to_string(&bad.payload).unwrap());
+            assert!(MatchSessionV4::from_checkpoint(bad).is_err(), "corruption mode {mode}");
+        }
+    }
+
+    #[test]
+    fn b11_rejected_period_commit_preserves_session_and_rng() {
+        let mut s = new_session();
+        s.start_next_period().unwrap();
+        let before = snapshot(&s);
+        let result = s.transact(|candidate| {
+            candidate.state.des_clock.period_elapsed_ms += 1;
+            candidate.rng.next_double();
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(snapshot(&s), before);
+        let result = s.transact(|candidate| {
+            candidate.scheduler.advance_cursor_to(candidate.sim_time_ms() + 1)
+                .map_err(|e| V4Error::InvalidClock(e.into()))?;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(snapshot(&s), before);
+    }
+
+    #[test]
+    fn b11_read_only_invariants_detect_invalid_world_without_repair() {
+        use crate::v4::transition::verify_authoritative_invariants;
+        let mut s = new_session();
+        s.start_next_period().unwrap();
+        assert!(verify_authoritative_invariants(&s.state).is_ok());
+        s.state.players[0].fatigue.aerobic = 100.25;
+        s.state.players[0].fatigue.distance_m = -1.0;
+        s.state.ball.control = BallControlState::Loose;
+        assert!(s.state.ball.owner_player_id.is_some());
+        let before = serde_json::to_string(&s.state).unwrap();
+        let errors = verify_authoritative_invariants(&s.state).unwrap_err();
+        assert!(errors.iter().any(|e| e.code == "INV-01"));
+        assert!(errors.iter().any(|e| e.code == "INV-07"));
+        assert_eq!(serde_json::to_string(&s.state).unwrap(), before);
+        s.state.players[0].facing_rad = f32::NAN;
+        let errors = verify_authoritative_invariants(&s.state).unwrap_err();
+        assert!(errors.iter().any(|e| e.code == "INV-02"));
+    }
+
+    #[test]
     fn a4_result_closes_once_and_rejects_post_match_commands(){
         let mut s=new_session();
         let result=s.run_to_full_time().unwrap();
