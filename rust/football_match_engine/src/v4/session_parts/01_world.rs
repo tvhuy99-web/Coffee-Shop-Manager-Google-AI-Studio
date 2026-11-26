@@ -24,6 +24,8 @@ impl MatchSessionV4 {
 
         update_in_match_psychology(&mut self.state, &self.input, game_sec, dt_sec);
         let experimental = self.uses_locomotion_experiment();
+        let now_ms = self.state.des_clock.sim_time_ms;
+        let before_ms = now_ms - dt_ms;
 
         if is_ball_in_play {
             let prev_positions: Vec<Vec2> = self.state.players.iter().map(|p| p.pos).collect();
@@ -41,8 +43,9 @@ impl MatchSessionV4 {
                     || self.pending_carry.as_ref().is_some_and(|c|
                         c.motion.candidate.player_id == p.player_id ||
                         c.challenger.as_ref().is_some_and(|m| m.candidate.player_id == p.player_id))
-                    || self.pending_decision.as_ref().and_then(|d| d.challenger.as_ref())
-                        .is_some_and(|m| m.candidate.player_id == p.player_id)
+                    || self.pending_decision.as_ref().is_some_and(|d|
+                        d.challenger.as_ref().is_some_and(|m| m.candidate.player_id == p.player_id)
+                        || d.preparation_motion.as_ref().is_some_and(|m| m.candidate.player_id == p.player_id))
                 }).collect()
             } else { vec![] };
             let defense = if experimental {
@@ -59,14 +62,18 @@ impl MatchSessionV4 {
                 let now = self.state.des_clock.sim_time_ms;
                 if let Some((idx, p)) = self.state.players.iter_mut().enumerate()
                     .find(|(_, p)| p.player_id == motion.candidate.player_id && p.on_pitch && !p.sent_off) {
-                    let old = prev_positions[idx];
-                    let next = motion.position_at(now);
-                    budgets[idx]=motion.candidate.speed_mps.max(0.0)*dt_sec;
-                    p.pos = next;
-                    p.target_pos = motion.target;
-                    p.vel = Vec2::new((next.x - old.x) / dt_sec, (next.y - old.y) / dt_sec);
-                    if old.distance(next) > 0.05 {
-                        p.facing_rad = (next.y - old.y).atan2(next.x - old.x);
+                    if experimental {
+                        budgets[idx]=crate::v4::movement::commit_experimental_contact(p,motion,before_ms,now)?;
+                    } else {
+                        let old = prev_positions[idx];
+                        let next = motion.position_at(now);
+                        budgets[idx]=motion.candidate.speed_mps.max(0.0)*dt_sec;
+                        p.pos = next;
+                        p.target_pos = motion.target;
+                        p.vel = Vec2::new((next.x - old.x) / dt_sec, (next.y - old.y) / dt_sec);
+                        if old.distance(next) > 0.05 {
+                            p.facing_rad = (next.y - old.y).atan2(next.x - old.x);
+                        }
                     }
                 }
             }
@@ -77,28 +84,36 @@ impl MatchSessionV4 {
                 let idx = carry.carrier_idx;
                 let p = &mut self.state.players[idx];
                 if p.on_pitch && !p.sent_off && p.player_id == carry.motion.candidate.player_id {
-                    let old = prev_positions[idx];
-                    let next = carry.motion.position_at(self.state.des_clock.sim_time_ms.min(carry.resolves_at_ms));
-                    budgets[idx]=carry.motion.candidate.speed_mps.max(0.0)*dt_sec;
-                    p.pos = next;
-                    p.target_pos = carry.motion.target;
-                    p.vel = Vec2::new((next.x-old.x)/dt_sec, (next.y-old.y)/dt_sec);
-                    if old.distance(next)>0.05 { p.facing_rad=(next.y-old.y).atan2(next.x-old.x); }
-                    self.state.ball.pos=Vec3::ground(next.x,next.y);
+                    if experimental {
+                        budgets[idx]=crate::v4::movement::commit_experimental_contact(p,&carry.motion,before_ms,now_ms.min(carry.resolves_at_ms))?;
+                    } else {
+                        let old = prev_positions[idx];
+                        let next = carry.motion.position_at(self.state.des_clock.sim_time_ms.min(carry.resolves_at_ms));
+                        budgets[idx]=carry.motion.candidate.speed_mps.max(0.0)*dt_sec;
+                        p.pos = next;
+                        p.target_pos = carry.motion.target;
+                        p.vel = Vec2::new((next.x-old.x)/dt_sec, (next.y-old.y)/dt_sec);
+                        if old.distance(next)>0.05 { p.facing_rad=(next.y-old.y).atan2(next.x-old.x); }
+                    }
+                    self.state.ball.pos=Vec3::ground(p.pos.x,p.pos.y);
                     self.state.ball.vel=Vec3::new(p.vel.x,p.vel.y,0.0);
                 }
                 if let Some(chase)=carry.challenger.as_ref() {
                     if let Some((di,def))=self.state.players.iter_mut().enumerate().find(|(_,p)|
                         p.player_id==chase.candidate.player_id && p.on_pitch && !p.sent_off) {
-                        let old=prev_positions[di];
-                        let next=chase.position_at(self.state.des_clock.sim_time_ms.min(carry.resolves_at_ms));
-                        budgets[di]=chase.candidate.speed_mps.max(0.0)*dt_sec;
-                        def.pos=next; def.target_pos=chase.target;
-                        def.vel=Vec2::new((next.x-old.x)/dt_sec,(next.y-old.y)/dt_sec);
-                        if old.distance(next)>0.05 {def.facing_rad=(next.y-old.y).atan2(next.x-old.x);}
+                        if experimental {
+                            budgets[di]=crate::v4::movement::commit_experimental_contact(def,chase,before_ms,now_ms.min(carry.resolves_at_ms))?;
+                        } else {
+                            let old=prev_positions[di];
+                            let next=chase.position_at(self.state.des_clock.sim_time_ms.min(carry.resolves_at_ms));
+                            budgets[di]=chase.candidate.speed_mps.max(0.0)*dt_sec;
+                            def.pos=next; def.target_pos=chase.target;
+                            def.vel=Vec2::new((next.x-old.x)/dt_sec,(next.y-old.y)/dt_sec);
+                            if old.distance(next)>0.05 {def.facing_rad=(next.y-old.y).atan2(next.x-old.x);}
+                        }
                     }
                 }
-                if carry.shielding {
+                if carry.shielding && !experimental {
                     // Face away from the actual challenger so the body can
                     // protect the ball; do not change the ball position here.
                     if let Some(chase)=carry.challenger.as_ref() {
@@ -110,25 +125,43 @@ impl MatchSessionV4 {
                     }
                 }
             }
+            // In the experiment the preparing actor brakes along the same
+            // reserved path used by the contest prediction.
+            if experimental {
+                if let Some(path)=self.pending_decision.as_ref().and_then(|d|d.preparation_motion.as_ref()) {
+                    if let Some((idx,p))=self.state.players.iter_mut().enumerate().find(|(_,p)|
+                        p.player_id==path.candidate.player_id && p.on_pitch && !p.sent_off) {
+                        budgets[idx]=crate::v4::movement::commit_experimental_contact(p,path,before_ms,now_ms)?;
+                        self.state.ball.pos=Vec3::ground(p.pos.x,p.pos.y);
+                        self.state.ball.vel=Vec3::new(p.vel.x,p.vel.y,0.0);
+                    }
+                }
+            }
             // Preparation contests use the same committed contact path
             // as carries. No extra movement or fatigue at resolution.
             if let Some(chase)=self.pending_decision.as_ref().and_then(|p|p.challenger.as_ref()) {
                 if let Some((di,def))=self.state.players.iter_mut().enumerate()
                     .find(|(_,p)|p.player_id==chase.candidate.player_id && p.on_pitch && !p.sent_off) {
-                    let old=prev_positions[di];
-                    let next=chase.position_at(self.state.des_clock.sim_time_ms);
-                    budgets[di]=chase.candidate.speed_mps.max(0.0)*dt_sec;
-                    def.pos=next;
-                    def.target_pos=chase.target;
-                    def.vel=Vec2::new((next.x-old.x)/dt_sec,(next.y-old.y)/dt_sec);
-                    if old.distance(next)>0.05 {def.facing_rad=(next.y-old.y).atan2(next.x-old.x);}
+                    if experimental {
+                        budgets[di]=crate::v4::movement::commit_experimental_contact(def,chase,before_ms,now_ms)?;
+                    } else {
+                        let old=prev_positions[di];
+                        let next=chase.position_at(self.state.des_clock.sim_time_ms);
+                        budgets[di]=chase.candidate.speed_mps.max(0.0)*dt_sec;
+                        def.pos=next;
+                        def.target_pos=chase.target;
+                        def.vel=Vec2::new((next.x-old.x)/dt_sec,(next.y-old.y)/dt_sec);
+                        if old.distance(next)>0.05 {def.facing_rad=(next.y-old.y).atan2(next.x-old.x);}
+                    }
                 }
             }
             for (idx, p) in self.state.players.iter_mut().enumerate() {
                 if let Some(prev) = prev_positions.get(idx) {
                     crate::v4::transition::verify_motion_budget(*prev,p.pos,budgets[idx],&p.player_id)?;
-                    if !experimental || reserved[idx] {
+                    if !experimental {
                         p.last_moved_m = prev.distance(p.pos);
+                    } else if !p.on_pitch || p.sent_off {
+                        p.last_moved_m = 0.0;
                     }
                 }
             }

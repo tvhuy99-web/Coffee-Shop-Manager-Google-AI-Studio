@@ -398,6 +398,41 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
             _=>{}
         }
     }
+    let experimental = p.locomotion_experiment_id.is_some();
+    let mut contact_paths = Vec::new();
+    if let Some(f)=&p.pending_flight {
+        contact_paths.extend(f.pass_contact_motion.iter());
+    }
+    if let Some(c)=&p.pending_carry {
+        contact_paths.push(&c.motion);
+        contact_paths.extend(c.challenger.iter());
+    }
+    if let Some(d)=&p.pending_decision {
+        if d.preparation_motion.is_some()!=experimental {
+            return Err(bad("preparation path identity mismatch"));
+        }
+        if d.preparation_motion.as_ref().is_some_and(|m|m.candidate.player_id!=d.player_id) {
+            return Err(bad("preparation path actor mismatch"));
+        }
+        contact_paths.extend(d.preparation_motion.iter());
+        contact_paths.extend(d.challenger.iter());
+    }
+    for path in contact_paths {
+        if path.candidate.locomotion.is_some()!=experimental {
+            return Err(bad("contact path identity mismatch"));
+        }
+        if experimental {
+            let plan=path.experimental_plan().map_err(|_|bad("invalid experimental contact path"))?
+                .ok_or_else(||bad("missing experimental path"))?;
+            let elapsed=ckpt.sim_time_ms.checked_sub(path.started_at_ms).ok_or_else(||bad("contact path time overflow"))?;
+            let sampled=plan.sample_at(elapsed).map_err(|_|bad("invalid contact path time"))?;
+            let actor=p.state.players.iter().find(|a|a.player_id==path.candidate.player_id && a.side==path.candidate.side)
+                .ok_or_else(||bad("unknown contact actor"))?;
+            if sampled.state.position!=actor.pos || sampled.state.velocity!=actor.vel || sampled.state.facing_rad!=actor.facing_rad {
+                return Err(bad("contact path differs from authoritative state"));
+            }
+        }
+    }
     crate::v4::transition::verify_clock_accounting(&p.state,p.stats.home_possession_ms,p.stats.away_possession_ms)?;
     crate::v4::transition::verify_command_journal(&p.applied_commands,p.stats.next_command_id,ckpt.sim_time_ms)?;
     crate::v4::transition::verify_event_journal(&p.stats.retained_events,p.stats.event_count,p.stats.last_delivered_event_index,

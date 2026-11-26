@@ -290,6 +290,45 @@ pub(crate) fn integrate_experimental_actor(
     Ok(budget)
 }
 
+/// Commit the exact solver path selected by the authoritative contact race.
+/// No replan, clipping, velocity snap, or extra condition charge.
+pub(crate) fn commit_experimental_contact(
+    player: &mut PlayerRuntimeStateV4,
+    path: &match_physics::PassContactMotion,
+    before_ms: i64,
+    now_ms: i64,
+) -> Result<f32, V4Error> {
+    if player.player_id != path.candidate.player_id || player.side != path.candidate.side
+        || before_ms < path.started_at_ms || now_ms < before_ms
+    {
+        return Err(candidate_motion_error("invalid committed contact actor or time"));
+    }
+    let plan = path.experimental_plan().map_err(candidate_motion_error)?
+        .ok_or_else(|| candidate_motion_error("missing contact locomotion"))?;
+    let start = plan.sample_at(before_ms-path.started_at_ms).map_err(candidate_motion_error)?;
+    let end = plan.sample_at(now_ms-path.started_at_ms).map_err(candidate_motion_error)?;
+    let current = MotionState { position: player.pos, velocity: player.vel, facing_rad: player.facing_rad };
+    if current != start.state {
+        return Err(V4Error::InvalidInput(format!(
+            "INV-02: committed contact origin mismatch for {} at {}: current {:?}, path {:?}",
+            player.player_id,before_ms,current,start.state)));
+    }
+    let distance = end.distance_m-start.distance_m;
+    let bound = plan.maximum_path_speed_mps()*match_contracts::units::ms_to_seconds_f32(now_ms-before_ms);
+    let eps = 32.0*f32::EPSILON*PITCH_LENGTH_M.max(PITCH_WIDTH_M) + 4.0*f32::EPSILON*end.distance_m;
+    if !distance.is_finite() || distance < 0.0 || distance > bound+eps
+        || start.state.position.distance(end.state.position)>distance+eps {
+        return Err(candidate_motion_error("committed contact path budget"));
+    }
+    crate::v4::transition::verify_motion_budget(player.pos,end.state.position,bound,&player.player_id)?;
+    player.pos=end.state.position;
+    player.vel=end.state.velocity;
+    player.facing_rad=end.state.facing_rad;
+    player.target_pos=path.target;
+    player.last_moved_m=distance;
+    Ok(bound)
+}
+
 /// Select intentions from one immutable world snapshot; shared with the isolated
 /// B1.2 candidate adapter. Legacy integration and RNG draw order are unchanged.
 fn select_movement_targets(
