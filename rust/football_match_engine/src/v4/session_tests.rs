@@ -808,4 +808,27 @@ mod a4_atomic_api_tests {
         if let Ok(path)=std::env::var("A4_PERF_REPORT_PATH"){std::fs::write(path,json).unwrap();}
     }
 
+    #[test]
+    fn a4_single_des_step_is_atomic_on_scheduler_failure(){
+        let mut s=new_session();
+        s.start_next_period().unwrap();
+        let now=s.sim_time_ms();
+        s.scheduler=EventScheduler::new();
+        s.scheduler.advance_cursor_to(now).unwrap();
+        for _ in 0..65 {
+            s.scheduler.schedule(now,EventPriority::TacticalAndCommand,CancellationScope::Persistent,
+                DesEventPayload::TacticalCommandEffective{command_index:u32::MAX,side:TeamSideV4::Home}).unwrap();
+        }
+        let mut failure_seen=false;
+        for _ in 0..65 {
+            let before=snapshot(&s);
+            if s.step_one_des_event(false).is_err(){
+                assert_eq!(snapshot(&s),before);
+                failure_seen=true;
+                break;
+            }
+        }
+        assert!(failure_seen,"scheduler watchdog must fail");
+    }
+
 }
