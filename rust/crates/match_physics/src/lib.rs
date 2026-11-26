@@ -508,7 +508,8 @@ impl PassReachCandidate {
         })
     }
 
-    fn contact_position_toward(&self, target: Vec2, elapsed_ms: i64) -> Option<Vec2> {
+    /// Sample the selected locomotion model; invalid plans return None.
+    pub fn contact_position_toward(&self, target: Vec2, elapsed_ms: i64) -> Option<Vec2> {
         match self.motion_plan(target).ok()? {
             Some(plan) => Some(plan.sample_at(elapsed_ms).ok()?.state.position),
             None => Some(self.position_toward(target, elapsed_ms)),
