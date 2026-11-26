@@ -752,13 +752,51 @@ pub fn goalkeeper_hand_contact_allowed(side:TeamSideV4,ball:Vec3)->bool {
 pub fn find_locomotion_goalkeeper_contact(
     traj:&BallTrajectory, keeper:&PassReachCandidate, now_ms:i64, goal_ms:i64,
 )->Option<GoalkeeperContact> {
-    if !traj.is_shot || keeper.locomotion.is_none() {return None;}
-    match find_pass_contact_with_motion(traj,std::slice::from_ref(keeper),None,now_ms,goal_ms,
-        |p,ball,elapsed|elapsed>=p.reaction_ms && goalkeeper_hand_contact_allowed(p.side,ball)) {
-        Some((PassContact::Other(hit),Some(motion))) if hit.kind==InteractionKind::PassInterception=>
-            Some(GoalkeeperContact{time_ms:hit.time_ms,ball_pos:hit.ball_pos,motion}),
-        _=>None,
+    if !traj.is_shot || keeper.locomotion.is_none() || keeper.reaction_ms < 0
+        || !keeper.reach_m.is_finite() || keeper.reach_m < 0.0 {
+        return None;
     }
+    let horizon = goal_ms.checked_sub(now_ms)?;
+    if !(1..=movement::MAX_MOTION_HORIZON_MS).contains(&horizon) { return None; }
+    // Boundary remains exclusive, exactly as in the pass-contact race.
+    let end = find_earliest_ball_interaction(traj, &[], now_ms, goal_ms)
+        .map_or(goal_ms, |hit| hit.time_ms.saturating_sub(1));
+    let mut first = now_ms.checked_add(keeper.reaction_ms.max(1))?;
+    // A short contact window can fall entirely between coarse samples.
+    // Skip only windows proved unreachable by the horizontal displacement
+    // envelope. Within each remaining window, check every integer ms.
+    // This is a local one-actor query, not an added world tick.
+    while first <= end {
+        let last = first.saturating_add(24).min(end);
+        let a = traj.position_at_ms(first).xy();
+        let b = traj.position_at_ms(last).xy();
+        let elapsed = last - now_ms;
+        let speed_bound = keeper.motion_speed_bound_mps() as f64 * elapsed as f64 / 1000.0;
+        let bound = keeper.acceleration_displacement_bound_m(elapsed)
+            .map_or(speed_bound, |accel| accel.min(speed_bound));
+        // The current trajectory has a straight horizontal projection.
+        // Allow the existing 1 cm broad-phase numerical margin.
+        let possible = match_contracts::spatial::point_to_segment_distance_m(keeper.pos, a, b)
+            as f64 <= bound + keeper.reach_m as f64 + 0.01;
+        if possible {
+            for time in first..=last {
+                let ball = traj.position_at_ms(time);
+                if goalkeeper_hand_contact_allowed(keeper.side, ball)
+                    && keeper.contact_distance(ball, time - now_ms).is_some() {
+                    return Some(GoalkeeperContact {
+                        time_ms: time,
+                        ball_pos: ball,
+                        motion: PassContactMotion {
+                            candidate: keeper.clone(), target: ball.xy(), started_at_ms: now_ms,
+                        },
+                    });
+                }
+            }
+        }
+        if last == end { break; }
+        first = last.checked_add(1)?;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1263,6 +1301,55 @@ mod b12_contact_locomotion_tests {
                             let expected=(direct<=p.reach_m).then_some(direct);
                             assert_eq!(p.contact_distance(ball,elapsed),expected,
                                 "velocity={velocity:?} reaction={reaction_ms} elapsed={elapsed} ball={ball:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn b12_exp10_keeper_contact_short_window_and_integer_oracle() {
+        for side in [TeamSideV4::Home, TeamSideV4::Away] {
+            let mirror = |x: f32| if side == TeamSideV4::Away { x } else { 105.0-x };
+            let sign = if side == TeamSideV4::Away { 1.0 } else { -1.0 };
+            let shot = BallTrajectory {
+                start_time_ms: 100, start_pos: Vec3::new(mirror(90.0), 34.0, 1.1),
+                initial_vel: Vec3::new(sign*30.0, 0.0, 0.0), gravity_z: 0.0,
+                drag: 0.0, is_shot: true, is_carrier_dribble: false,
+            };
+            let mut p = candidate(mirror(90.36), 0.0);
+            p.side = side;
+            p.reaction_ms = 0;
+            p.reach_m = 0.1; // synthetic narrow-window fixture, not a keeper prior
+            p.playable_height_m = 2.6;
+            let hit = find_locomotion_goalkeeper_contact(&shot, &p, 100, 600).unwrap();
+            assert!(hit.time_ms > 100 && hit.time_ms < 125);
+            assert!(p.contact_distance(shot.position_at_ms(125), 25).is_none());
+            assert!(hit.motion.experimental_plan().unwrap().unwrap()
+                .sample_at(hit.time_ms-100).unwrap().state.position.distance(hit.ball_pos.xy()) <= p.reach_m);
+            for x in [90.36, 93.0, 102.0] {
+                for y in [34.0, 35.0, 39.0] {
+                    for reaction in [0, 150, 350] {
+                        for vx in [0.0, -2.0*sign, 2.0*sign] {
+                            p.pos = Vec2::new(mirror(x), y);
+                            p.velocity = Vec2::new(vx, 0.0);
+                            p.reaction_ms = reaction;
+                            p.reach_m = 1.5;
+                            let end = find_earliest_ball_interaction(&shot,&[],100,600)
+                                .map_or(600, |h| h.time_ms-1);
+                            // Independent exhaustive reference: no coarse or
+                            // acceleration/speed broad-phase filter.
+                            let expected = (101..=end).find(|&time| {
+                                let ball = shot.position_at_ms(time);
+                                time-100 >= p.reaction_ms && ball.z <= p.playable_height_m
+                                    && goalkeeper_hand_contact_allowed(side,ball)
+                                    && p.contact_position_toward(ball.xy(),time-100)
+                                        .is_some_and(|pos| pos.distance(ball.xy()) <= p.reach_m)
+                            });
+                            assert_eq!(find_locomotion_goalkeeper_contact(&shot,&p,100,600)
+                                .map(|h|h.time_ms),expected,
+                                "side={side:?} x={x} y={y} reaction={reaction} vx={vx}");
                         }
                     }
                 }

@@ -629,9 +629,10 @@ fn candidate_motion_error(detail: impl std::fmt::Debug) -> V4Error {
     V4Error::InvalidInput(format!("B1.2 candidate locomotion: {detail:?}"))
 }
 
-/// Build candidate plans for the live target policy from the same pre-event
-/// state. The caller provides explicit committed contact/carry paths. RNG and
-/// world state are committed only if the entire interval validates.
+/// Isolated solver comparison using the legacy target policy and draw order.
+/// This adapter measures locomotion independently of changes to intentions.
+/// The DES experiment uses advance_experimental_tactical_motion instead.
+/// RNG and world state are committed only if the entire interval validates.
 pub fn advance_candidate_live_motion(
     state: &mut MatchStateV4,
     input: &MatchInputV4,
@@ -647,7 +648,7 @@ pub fn advance_candidate_live_motion(
     crate::v4::transition::verify_commit_structure(state)?;
     let mut next_rng = rng.clone();
     let dt = match_contracts::units::ms_to_seconds_f32(duration_ms);
-    let (targets, defense) = select_movement_targets(state, input, possession_side, carrier_idx, dt, &mut next_rng, true);
+    let (targets, defense) = select_movement_targets(state, input, possession_side, carrier_idx, dt, &mut next_rng, false);
     let intents: Vec<_> = targets.into_iter().map(|target| target.map(|target|
         MovementIntent { target, intensity: 1.0, desired_facing_rad: None, reaction_ms: 0 }
     )).collect();
