@@ -117,13 +117,7 @@ impl Vec2 {
     pub fn from_normalized_slot(side: TeamSideV4, norm_width: f32, norm_depth: f32) -> Self {
         let w = (norm_width.clamp(0.0, 100.0) / 100.0) * PITCH_WIDTH_M;
         let d = (norm_depth.clamp(0.0, 100.0) / 100.0) * PITCH_LENGTH_M;
-        match side {
-            TeamSideV4::Home => Self { x: d, y: w },
-            TeamSideV4::Away => Self {
-                x: PITCH_LENGTH_M - d,
-                y: PITCH_WIDTH_M - w,
-            },
-        }
+        attacking_to_world_frame(side, Self { x: d, y: w })
     }
 }
 
@@ -184,6 +178,74 @@ impl Vec3 {
 #[inline]
 pub fn quantize_mm(meters: f32) -> i32 {
     (meters * 1000.0).round() as i32
+}
+
+/// Transform a world point into the team's attacking frame (no clamping).
+/// Home is identity; Away is a half-turn around the pitch center.
+#[inline]
+pub fn world_to_attacking_frame(side: TeamSideV4, point: Vec2) -> Vec2 {
+    match side {
+        TeamSideV4::Home => point,
+        TeamSideV4::Away => Vec2::new(PITCH_LENGTH_M - point.x, PITCH_WIDTH_M - point.y),
+    }
+}
+
+/// The same half-turn is the inverse point transformation.
+#[inline]
+pub fn attacking_to_world_frame(side: TeamSideV4, point: Vec2) -> Vec2 {
+    world_to_attacking_frame(side, point)
+}
+
+/// Transform a direction or velocity: rotate without translating.
+#[inline]
+pub fn world_to_attacking_vector(side: TeamSideV4, vector: Vec2) -> Vec2 {
+    match side {
+        TeamSideV4::Home => vector,
+        TeamSideV4::Away => Vec2::new(-vector.x, -vector.y),
+    }
+}
+
+/// Inverse of the direction/velocity transformation.
+#[inline]
+pub fn attacking_to_world_vector(side: TeamSideV4, vector: Vec2) -> Vec2 {
+    world_to_attacking_vector(side, vector)
+}
+
+/// Whole-sphere crossing fact for a plane at the outer edge of a pitch line.
+/// A tangent sphere is not fully beyond the line. Invalid geometry is None.
+/// Uses physical sphere center, not the point-ball ground-height convention.
+/// This is a geometric predicate, not a live resolver or a legal ruling.
+pub fn ball_fully_crossed_boundary(
+    center: Vec2,
+    radius_m: f32,
+    boundary: PitchBoundarySide,
+) -> Option<bool> {
+    if !center.x.is_finite() || !center.y.is_finite()
+        || !radius_m.is_finite() || radius_m <= 0.0 {
+        return None;
+    }
+    let (x, y, r) = (center.x as f64, center.y as f64, radius_m as f64);
+    Some(match boundary {
+        PitchBoundarySide::HomeGoalLine => x + r < 0.0,
+        PitchBoundarySide::AwayGoalLine => x - r > PITCH_LENGTH_M as f64,
+        PitchBoundarySide::LeftTouchline => y + r < 0.0,
+        PitchBoundarySide::RightTouchline => y - r > PITCH_WIDTH_M as f64,
+    })
+}
+
+/// Whether a physical sphere fits inside the goal opening in the Y/Z plane.
+/// Equality permits tangency; actual post/bar collisions and crossing order
+/// must be resolved by the trajectory solver. Does not establish a goal.
+pub fn ball_fits_goal_opening(center_y: f32, center_z: f32, radius_m: f32) -> Option<bool> {
+    if !center_y.is_finite() || !center_z.is_finite()
+        || !radius_m.is_finite() || radius_m <= 0.0 {
+        return None;
+    }
+    let (y, z, r) = (center_y as f64, center_z as f64, radius_m as f64);
+    Some(y - r >= GOAL_LEFT_POST_Y as f64
+        && y + r <= GOAL_RIGHT_POST_Y as f64
+        && z - r >= 0.0
+        && z + r <= GOAL_HEIGHT_M as f64)
 }
 
 /// Attacking progress along pitch length in meters (`0.0` own goal line -> `105.0` opponent goal line).
@@ -263,7 +325,7 @@ pub fn point_to_segment_distance_m(point: Vec2, a: Vec2, b: Vec2) -> f32 {
     point.distance(proj)
 }
 
-/// Pure analytic ray-vs-pitch-boundary intersection for DES continuous interaction.
+/// Point-ray intersection used by the current DES resolver (not whole-ball crossing).
 ///
 /// Computes the earliest time `t` in `[0.0, max_t]` when `p(t) = p0 + v * t` hits or
 /// exits across `x = 0.0` (`HomeGoalLine`), `x = 105.0` (`AwayGoalLine`),
@@ -320,7 +382,7 @@ pub fn ray_pitch_boundary_hit_time(
     best
 }
 
-/// Returns `true` if `(y, z)` lies within the FIFA goal mouth opening:
+/// Point-only goal opening check for the current resolver; not whole-ball legality:
 /// `y` in `[GOAL_LEFT_POST_Y, GOAL_RIGHT_POST_Y]` and `0.0 <= z <= GOAL_HEIGHT_M`.
 #[inline]
 pub fn is_in_goal_mouth(y: f32, z: f32) -> bool {
@@ -362,6 +424,60 @@ pub fn closest_approach_time(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn b11_attacking_frame_round_trip_and_vectors() {
+        for point in [Vec2::new(0.0, 0.0), Vec2::center_spot(),
+                      Vec2::new(105.0, 68.0), Vec2::new(-2.0, 70.0)] {
+            let home = world_to_attacking_frame(TeamSideV4::Home, point);
+            let away = world_to_attacking_frame(TeamSideV4::Away, point);
+            assert_eq!(home, point);
+            assert_eq!(attacking_to_world_frame(TeamSideV4::Away, away), point);
+            assert_eq!(away, Vec2::new(105.0 - point.x, 68.0 - point.y));
+        }
+        let v = Vec2::new(3.0, -4.0);
+        assert_eq!(world_to_attacking_vector(TeamSideV4::Away, v), Vec2::new(-3.0, 4.0));
+        assert_eq!(attacking_to_world_vector(TeamSideV4::Away,
+            world_to_attacking_vector(TeamSideV4::Away, v)), v);
+        for (w, d) in [(0.0, 0.0), (25.0, 50.0), (100.0, 100.0), (-1.0, 101.0)] {
+            let h = Vec2::from_normalized_slot(TeamSideV4::Home, w, d);
+            let a = Vec2::from_normalized_slot(TeamSideV4::Away, w, d);
+            assert_eq!(a, attacking_to_world_frame(TeamSideV4::Away, h));
+            assert_eq!(attacking_progress_m(TeamSideV4::Home, h),
+                       attacking_progress_m(TeamSideV4::Away, a));
+        }
+        assert_eq!(penalty_spot(TeamSideV4::Away),
+            world_to_attacking_frame(TeamSideV4::Away, penalty_spot(TeamSideV4::Home)));
+    }
+
+    #[test]
+    fn b11_whole_ball_crossing_all_boundaries() {
+        use PitchBoundarySide::*;
+        let r = 0.125; // exactly representable test radius, not a gameplay parameter
+        for (side, touching, partial, beyond) in [
+            (HomeGoalLine, Vec2::new(-r, 34.0), Vec2::new(-r/2.0, 34.0), Vec2::new(-0.25, 34.0)),
+            (AwayGoalLine, Vec2::new(105.0+r, 34.0), Vec2::new(105.0+r/2.0, 34.0), Vec2::new(105.25, 34.0)),
+            (LeftTouchline, Vec2::new(52.5, -r), Vec2::new(52.5, -r/2.0), Vec2::new(52.5, -0.25)),
+            (RightTouchline, Vec2::new(52.5, 68.0+r), Vec2::new(52.5, 68.0+r/2.0), Vec2::new(52.5, 68.25)),
+        ] {
+            assert_eq!(ball_fully_crossed_boundary(touching, r, side), Some(false));
+            assert_eq!(ball_fully_crossed_boundary(partial, r, side), Some(false));
+            assert_eq!(ball_fully_crossed_boundary(beyond, r, side), Some(true));
+        }
+        assert_eq!(ball_fully_crossed_boundary(Vec2::center_spot(), 0.0, HomeGoalLine), None);
+        assert_eq!(ball_fully_crossed_boundary(Vec2::new(f32::NAN, 0.0), r, HomeGoalLine), None);
+    }
+
+    #[test]
+    fn b11_sphere_goal_aperture() {
+        let r = 0.125;
+        assert_eq!(ball_fits_goal_opening(34.0, r, r), Some(true));
+        assert_eq!(ball_fits_goal_opening(GOAL_LEFT_POST_Y, 1.0, r), Some(false));
+        assert_eq!(ball_fits_goal_opening(GOAL_RIGHT_POST_Y, 1.0, r), Some(false));
+        assert_eq!(ball_fits_goal_opening(34.0, GOAL_HEIGHT_M, r), Some(false));
+        assert_eq!(ball_fits_goal_opening(34.0, 0.0, r), Some(false));
+        assert_eq!(ball_fits_goal_opening(34.0, f32::INFINITY, r), None);
+    }
 
     #[test]
     fn ray_pitch_boundary_hits_earliest_side() {
