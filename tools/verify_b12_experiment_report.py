@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
 
-BEHAVIOR = "b1.2-batch1-intent-lifetime"
+BEHAVIOR = "b1.2-batch2-restart-motion"
 COHORTS = ["reference", "balanced", "strong_away", "high_press"]
 FIELDS = ["home_goals", "away_goals", "shots", "passes", "completed_passes",
           "fouls", "live_ms", "dead_ms", "events", "wall_ms",
@@ -122,7 +122,7 @@ def main(directory, pairs_per_shard=250):
         "cohort_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in cohorts.items()},
         "role_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in roles.items()},
         "production_acceptance": "BLOCKED: remaining execution paths, rule boundaries, non-pass perception, sprint episode definition, performance and tracking calibration incomplete",
-        "notes": ["Batch1 shares complete integer-ms contact windows and orders nominal shot-block and keeper opportunities before commitment. Shot, block and save probability formulas and reach priors are unchanged; experimental RNG draw order changes. Off-ball targets persist across clock-only events; live action/tactical changes invalidate the epoch. Probe counts are experimental open-play scheduled shot launches only; legacy probe fields are zero/not measured.",
+        "notes": ["Batch1 shares complete integer-ms contact windows and orders nominal shot-block and keeper opportunities before commitment. Shot, block and save probability formulas and reach priors are unchanged; experimental RNG draw order changes. Off-ball targets persist across clock-only events. Batch2 physically approaches ordinary restart/kickoff positions, schedules clearance flight and penalty loose recovery. Specialist set-piece flight/contact remains incomplete. Probe counts are experimental open-play scheduled shot launches only; legacy probe fields are zero/not measured.",
                   "Keeper segment/depth/speed fields are sums over probe launches, divide by total probe count; diagnostic probe time is excluded from wall_ms. Scheduled shots may be cancelled before commit, so probe counts are not a subset of committed shot totals.",
                   "Pooled rates are descriptive. Goals and saves may include restarts/own goals; ratios are not a disjoint shot-outcome partition.",
                   "Distributions are conditional on successful pairs; failures are retained.",

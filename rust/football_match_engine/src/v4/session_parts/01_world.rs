@@ -195,6 +195,9 @@ impl MatchSessionV4 {
             // NHIỆM VỤ 6: Simulate purposeful low-intensity dead-ball movement (celebration,
             // returning to own half for kickoff, entering box for corner/FK, forming wall).
             let db_ctx = self.state.dead_ball.as_ref().map(|db| (db.kind, db.phase, db.restart_side, db.restart_spot));
+            let restart_targets=if experimental {
+                self.state.dead_ball.as_ref().map(|db|self.experimental_restart_targets(db))
+            }else{None};
             let profiles = &self.state.player_profiles;
             for (idx,p) in self.state.players.iter_mut().enumerate() {
                 if !p.on_pitch || p.sent_off {
@@ -239,6 +242,8 @@ impl MatchSessionV4 {
                             crate::v4::movement::experimental_keeper_restart_target(
                                 p.side, kind, restart_side, spot.xy()))
                     } else { target };
+                    let (target,walk_speed_mps)=restart_targets.as_ref()
+                        .and_then(|rows|rows[idx]).unwrap_or((target,walk_speed_mps));
                     let (_,load)=crate::v4::movement::integrate_experimental_actor(p, attrs, target,
                         Some(walk_speed_mps), dt_ms)?;
                     crate::v4::movement::record_experimental_motion(&mut motion_loads[idx],load)?;

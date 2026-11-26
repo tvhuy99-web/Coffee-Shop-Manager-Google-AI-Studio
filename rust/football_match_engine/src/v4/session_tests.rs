@@ -1106,6 +1106,73 @@ mod locomotion_full_match_experiment {
     }
 
     #[test]
+    fn b12_batch2_restart_waits_for_actual_taker_and_no_post_goal_reset() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            let input=make_v4_input(12051,SimulationMode::FastBatch,RulesModeV4::Standard);
+            let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+            session.step_one_des_event(true).unwrap();
+            let taker=session.kickoff_carrier_index(side);
+            let center=Vec3::center_spot();
+            session.state.players[taker].pos=Vec2::new(if side==TeamSideV4::Home{30.0}else{75.0},34.0);
+            session.state.players[taker].vel=Vec2::default();
+            let opponent=session.state.players.iter().position(|p|p.side==side.opposite()&&!p.is_goalkeeper&&p.on_pitch).unwrap();
+            session.state.players[opponent].pos=Vec2::new(if side==TeamSideV4::Home{51.0}else{54.0},34.0);
+            session.state.players[opponent].vel=Vec2::default();
+            session.open_dead_ball(DeadBallKind::Kickoff,side,center,false,false).unwrap();
+            let db=session.state.dead_ball.clone().unwrap();
+            assert!(!session.experimental_restart_ready(&db).unwrap());
+            // Real DES integrates every approach; the final kickoff does
+            // not overwrite the positions or erase measured momentum.
+            let mut before_restart=None;
+            for _ in 0..30 {
+                let before=session.state.players[taker].pos;
+                let clock=session.sim_time_ms();
+                let db=session.state.dead_ball.clone().unwrap();
+                session.step_one_des_event(true).unwrap();
+                assert!(session.state.players[taker].pos.distance(before)
+                    <= 10.0*(session.sim_time_ms()-clock) as f32/1000.0+0.01);
+                if session.state.dead_ball.is_none(){
+                    assert_eq!(session.carrier_idx,taker);
+                    assert!(session.experimental_restart_ready(&db).unwrap());
+                    let positions:Vec<_>=session.state.players.iter().map(|p|(p.pos,p.vel)).collect();
+                    // Calling the kickoff publisher again must not reset
+                    // player positions (test-only observation of the helper).
+                    session.restart_after_goal_kickoff(side);
+                    assert_eq!(positions,session.state.players.iter().map(|p|(p.pos,p.vel)).collect::<Vec<_>>());
+                    before_restart=Some(before);
+                    break;
+                }
+            }
+            assert!(before_restart.is_some(),"kickoff did not complete");
+            assert!(session.state.players[taker].pos.distance(center.xy())<=0.75);
+        }
+    }
+
+    #[test]
+    fn b12_batch2_ordinary_restart_does_not_assign_remote_taker() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            let input=make_v4_input(12052,SimulationMode::FastBatch,RulesModeV4::Standard);
+            let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+            session.step_one_des_event(true).unwrap();
+            let spot=Vec3::ground(52.0,0.0);
+            for p in &mut session.state.players {
+                if p.side==side && !p.is_goalkeeper {p.pos=Vec2::new(52.0,20.0);p.vel=Vec2::default();}
+            }
+            session.open_dead_ball(DeadBallKind::ThrowIn,side,spot,false,false).unwrap();
+            assert!(!session.experimental_restart_ready(session.state.dead_ball.as_ref().unwrap()).unwrap());
+            for _ in 0..30 {
+                session.step_one_des_event(true).unwrap();
+                if session.state.dead_ball.is_none(){break;}
+            }
+            assert!(session.state.dead_ball.is_none());
+            let p=&session.state.players[session.carrier_idx];
+            assert_eq!(p.side,side);
+            assert!(p.pos.distance(spot.xy())<=0.75);
+            assert_eq!(session.state.ball.owner_player_id.as_deref(),Some(p.player_id.as_str()));
+        }
+    }
+
+    #[test]
     fn b12_batch1_intents_survive_clock_probe_and_checkpoint() {
         let input=make_v4_input(12051,SimulationMode::FastBatch,RulesModeV4::Standard);
         let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();

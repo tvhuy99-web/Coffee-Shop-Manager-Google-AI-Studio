@@ -375,6 +375,11 @@ impl MatchSessionV4 {
             if let Some(hit) = flight.early_interaction.as_ref() {
                 return self.finish_loose_ball_boundary(origin_side, &cause, hit);
             }
+            if cause=="CLEARANCE_AIRBORNE" {
+                // A flight with no selected receiver is not a completed
+                // pass. Start recovery from the actually integrated landing.
+                return self.start_pass_recovery(origin_side,flight.offside_at_launch,"CLEARANCE_RECOVERY");
+            }
             let idx = flight.outcome.next_carrier_idx;
             if !self.state.players[idx].on_pitch || self.state.players[idx].sent_off {
                 return self.start_pass_recovery(origin_side, flight.offside_at_launch, &cause);
@@ -861,6 +866,42 @@ impl MatchSessionV4 {
                     self.input.match_environment.pitch_quality,
                     &mut self.rng,
                 );
+                if self.uses_locomotion_experiment(){
+                    let now=self.state.des_clock.sim_time_ms;
+                    let trajectory=crate::v4::ball_play::build_pass_trajectory(
+                        PassKindV4::Long,carrier_pos,clear_pos.xy(),now,flight_ms.max(1));
+                    let arrival=now.saturating_add(flight_ms.max(1));
+                    let boundary=match_physics::find_earliest_ball_interaction(&trajectory,&[],now,arrival);
+                    let at=boundary.as_ref().map_or(arrival,|h|h.time_ms.max(now+1));
+                    let offside_at_launch=self.state.players.iter().enumerate()
+                        .filter(|(i,p)|*i!=carrier_idx && p.on_pitch && !p.sent_off && p.side==att_side
+                            && is_receiver_offside(&self.state,att_side,carrier_pos,p.pos))
+                        .map(|(_,p)|p.player_id.clone()).collect();
+                    self.state.ball.pos=trajectory.start_pos;
+                    self.state.ball.vel=trajectory.initial_vel;
+                    self.state.ball.control=BallControlState::Loose;
+                    self.state.ball.owner_side=None;
+                    self.state.ball.owner_player_id=None;
+                    self.state.ball.last_touch_side=Some(att_side);
+                    self.state.ball.last_touch_player_id=Some(carrier_id.clone());
+                    let flight=PendingFlightSnapshotV4{
+                        trajectory,planned_arrival_ms:arrival,resolves_at_ms:at,
+                        action:FlightActionV4::LooseRecovery{origin_side:att_side,cause:"CLEARANCE_AIRBORNE".into()},
+                        outcome:crate::v4::ball_play::BallPlayOutcome{next_side:att_side,next_carrier_idx:carrier_idx,
+                            stoppage_seconds:0,events:Vec::new()},
+                        ball_after:self.state.ball.clone(),
+                        counter_delta:FlightCounterDeltaV4::between(&self.state,&self.state),
+                        won_corner:false,early_interaction:boundary,pass_contact_motion:None,offside_at_launch,
+                    };
+                    self.scheduler.schedule(at,EventPriority::PhysicsAndBoundary,CancellationScope::LivePlayOnly,
+                        DesEventPayload::EarlyInteractionResolved{interaction_tag:"CLEARANCE_AIRBORNE".into(),actor_id:None})
+                        .map_err(|e|V4Error::InvalidClock(e.into()))?;
+                    self.pending_flight=Some(flight);
+                    self.emit(EventTypeV4::Clearance,HighlightTier::None,None,Some(att_side),Some(carrier_id),None,
+                        EventMetadataV4{pressure:Some(carrier_ctx.pressure.round() as u8),
+                            ..EventMetadataV4::default()});
+                    return Ok((att_side,carrier_idx,false,0));
+                }
                 self.state.ball.pos = clear_pos;
                 let g_sec = self.state.des_clock.game_second();
                 let mut meta = EventMetadataV4 {
