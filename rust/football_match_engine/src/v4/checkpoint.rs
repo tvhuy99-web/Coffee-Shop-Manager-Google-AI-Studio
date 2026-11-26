@@ -193,6 +193,8 @@ pub struct PendingDecisionV4 {
     pub final_aim_committed: bool,
     #[serde(default)]
     pub challenger: Option<crate::v4::interaction::PassContactMotion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation_motion: Option<crate::v4::interaction::PassContactMotion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -246,7 +248,7 @@ pub struct MatchSessionSnapshotV4 {
     pub locomotion_experiment_id: Option<String>,
 }
 
-pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-hybrid-tactical-locomotion-exp1";
+pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-contact-locomotion-exp2";
 
 /// Self-verifying versioned DES v1.4 match checkpoint envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]

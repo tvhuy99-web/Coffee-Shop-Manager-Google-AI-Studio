@@ -36,19 +36,24 @@ impl MatchSessionV4 {
         } else { 0 };
         let now = self.state.des_clock.sim_time_ms;
         let release_at_ms = now.saturating_add(plan.decision_delay_ms.max(1)).saturating_add(settle);
+        let preparation_motion = self.uses_locomotion_experiment().then(|| self.preparation_motion(idx));
         let (at,challenger)=self.preparation_contest(idx,release_at_ms);
         self.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
             DesEventPayload::ActionExecute{player_id:id.clone(),side})
             .map_err(|e|V4Error::InvalidClock(e.into()))?;
         let observed_pass_risk=crate::player_intelligence::observe_pass_risk(&self.state,&self.input,idx,ctx,plan.action);
         self.pending_decision=Some(PendingDecisionV4{player_id:id,side,started_at_ms:now,executes_at_ms:at,
-            plan,release_at_ms,challenger,observed_pass_risk,final_aim_committed:false});
+            plan,release_at_ms,challenger,observed_pass_risk,final_aim_committed:false,preparation_motion});
         Ok(())
     }
 
     /// A defender finishing a tackle must recover before committing to
     /// another tackle. This does not prevent movement, screening or
     /// pass interception; it is a separate action readiness clock.
+    fn contact_candidate(&self, idx: usize, aerial: bool) -> crate::v4::interaction::PassReachCandidate {
+        pass_reach_candidate_for_motion(&self.state,idx,aerial,self.uses_locomotion_experiment())
+    }
+
     fn tackle_candidates(&self,side:TeamSideV4,end:i64)->Vec<crate::v4::interaction::PassReachCandidate> {
         let now=self.state.des_clock.sim_time_ms;
         self.state.players.iter().enumerate().filter(|(_,p)|p.on_pitch && !p.sent_off
@@ -56,7 +61,7 @@ impl MatchSessionV4 {
             .filter_map(|(i,p)|{
                 let ready=self.tackle_ready_at.get(&p.player_id).copied().unwrap_or(now);
                 let remaining=ready.saturating_sub(now).max(0);
-                let mut candidate=pass_reach_candidate(&self.state,i,false);
+                let mut candidate=self.contact_candidate(i,false);
                 // A recovering player cannot actively chase/attempt a
                 // second tackle until recovery plus the new reaction.
                 candidate.reaction_ms=candidate.reaction_ms.saturating_add(remaining);
@@ -99,14 +104,18 @@ impl MatchSessionV4 {
         best
     }
 
-    fn preparation_contest(&mut self,idx:usize,release:i64)->(i64,Option<PassContactMotion>) {
+    fn preparation_motion(&self, idx: usize) -> PassContactMotion {
         let now=self.state.des_clock.sim_time_ms;
-        let mut carrier=pass_reach_candidate(&self.state,idx,false);
+        let mut carrier=self.contact_candidate(idx,false);
         carrier.speed_mps=0.0;
         carrier.reaction_ms=0;
-        carrier.velocity=Vec2::default();
+        if !self.uses_locomotion_experiment() { carrier.velocity=Vec2::default(); }
         let pos=carrier.pos;
-        let motion=PassContactMotion{candidate:carrier,target:pos,started_at_ms:now};
+        PassContactMotion{candidate:carrier,target:pos,started_at_ms:now}
+    }
+
+    fn preparation_contest(&mut self,idx:usize,release:i64)->(i64,Option<PassContactMotion>) {
+        let motion=self.preparation_motion(idx);
         match self.choose_committed_tackle(idx,&motion,release) {
             // Exact tie goes to the already prepared release.
             Some((_,at,chase)) if at<release=>(at,Some(chase)),
@@ -221,13 +230,14 @@ impl MatchSessionV4 {
                 self.diagnostics.record_reaim_choice(reaim.delay_ms,release_risk,updated_risk);
                 plan.action=reaim.action;
                 let release_at_ms=now_ms.saturating_add(reaim.delay_ms);
+                let preparation_motion = self.uses_locomotion_experiment().then(|| self.preparation_motion(idx));
                 let (at,challenger)=self.preparation_contest(idx,release_at_ms);
                 self.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
                     DesEventPayload::ActionExecute{player_id:player_id.into(),side})
                     .map_err(|e|V4Error::InvalidClock(e.into()))?;
                 self.pending_decision=Some(PendingDecisionV4{
                     player_id:player_id.into(),side,started_at_ms:now_ms,executes_at_ms:at,
-                    plan,release_at_ms,challenger,observed_pass_risk:updated_risk,final_aim_committed:true,
+                    plan,release_at_ms,challenger,observed_pass_risk:updated_risk,final_aim_committed:true,preparation_motion,
                 });
                 return Ok(());
             }
@@ -309,7 +319,7 @@ impl MatchSessionV4 {
             let idx = flight.outcome.next_carrier_idx;
             let p = &self.state.players[idx];
             let attrs = *lookup_attrs(&self.input, p);
-            let profile = pass_reach_candidate(&self.state, idx, h.ball_pos.z > 0.8);
+            let profile = self.contact_candidate(idx,h.ball_pos.z > 0.8);
             let incoming = flight.trajectory.velocity_at_ms(now_ms);
             let speed = (incoming.x * incoming.x + incoming.y * incoming.y + incoming.z * incoming.z).sqrt();
             let skill = normalize_attr(attrs.technical.first_touch) * 0.45
@@ -419,7 +429,7 @@ impl MatchSessionV4 {
         let now = self.state.des_clock.sim_time_ms;
         let indices: Vec<_> = self.state.players.iter().enumerate()
             .filter(|(_,p)| p.on_pitch && !p.sent_off).map(|(i,_)| i).collect();
-        let candidates: Vec<_> = indices.iter().map(|&i| pass_reach_candidate(&self.state,i,true)).collect();
+        let candidates: Vec<_> = indices.iter().map(|&i| self.contact_candidate(i,true)).collect();
         let trajectory = BallTrajectory { start_time_ms:now, start_pos:self.state.ball.pos,
             initial_vel:self.state.ball.vel, gravity_z:9.81, drag:1.6, is_shot:false,is_carrier_dribble:false };
         let resolution = find_moving_ball_recovery(&trajectory,&candidates)
@@ -675,9 +685,10 @@ impl MatchSessionV4 {
                 let is_one_touch = plan.is_one_touch;
                 if is_one_touch { self.diagnostics.record_one_touch_pass(); }
                 let mut resolved = self.state.clone();
-                let pass = execute_pass_and_first_touch_des(&mut resolved, &self.input, &self.input.timing_model,
+                let experimental = self.uses_locomotion_experiment();
+                let pass = execute_pass_and_first_touch_des_with_motion(&mut resolved, &self.input, &self.input.timing_model,
                     carrier_idx, target_idx, kind, distance_m, progress_gain_m, lane_risk, interceptor_idx,
-                    carrier_ctx, is_one_touch, &mut self.rng);
+                    carrier_ctx, is_one_touch, experimental, &mut self.rng);
                 let delta = FlightCounterDeltaV4::between(&self.state, &resolved);
                 self.state.next_highlight_sequence_id = resolved.next_highlight_sequence_id;
                 let trajectory = pass.trajectory.ok_or_else(|| V4Error::InvalidClock("missing pass trajectory".into()))?;
@@ -691,7 +702,7 @@ impl MatchSessionV4 {
                     Some(target_idx)
                 } else { None };
                 let pass_contact_motion = contact_idx.map(|idx| PassContactMotion {
-                    candidate: pass_reach_candidate(&self.state, idx, kind.is_aerial()),
+                    candidate: self.contact_candidate(idx,kind.is_aerial()),
                     target: trajectory.position_at_ms(now.saturating_add(pass.elapsed_ms.max(1))).xy(),
                     started_at_ms: now,
                 });
@@ -789,7 +800,7 @@ impl MatchSessionV4 {
 
     fn start_carry_intent(&mut self,idx:usize,intent:CarryIntentV4,is_hold:bool)->Result<(),V4Error>{
         let now=self.state.des_clock.sim_time_ms;
-        let mut candidate=pass_reach_candidate(&self.state,idx,false);
+        let mut candidate=self.contact_candidate(idx,false);
         candidate.speed_mps*=if intent.shielding{0.42}else{0.88};
         candidate.reaction_ms=0;
         let target=carry_target(candidate.pos,candidate.speed_mps,intent);

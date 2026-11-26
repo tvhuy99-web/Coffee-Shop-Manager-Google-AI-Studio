@@ -255,7 +255,7 @@ mod pi_defense_commitment_tests {
         let ctx=evaluate_local_context(&s.state,&s.input,side,s.state.players[car].pos);
         let plan=perceive_evaluate_and_decide_des(&s.state,&s.input,&s.input.timing_model,car,ctx,&mut s.rng);
         s.pending_decision=Some(PendingDecisionV4{player_id:id.clone(),side,started_at_ms:now,
-            executes_at_ms:at,plan,release_at_ms:release,challenger:chase,observed_pass_risk:None,final_aim_committed:false});
+            executes_at_ms:at,plan,release_at_ms:release,challenger:chase,observed_pass_risk:None,final_aim_committed:false,preparation_motion:None});
         s.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
             DesEventPayload::ActionExecute{player_id:id.clone(),side}).unwrap();
         let ck=s.export_checkpoint().unwrap();

@@ -6,7 +6,7 @@ use crate::rng::DeterministicRng;
 use crate::v4::coach_adapter::evaluate_ai_managers;
 use crate::v4::substitution::apply_manual_substitution_group;
 use crate::v4::attributes::normalize_attr;
-use crate::v4::ball_play::{resolve_carry_contact, execute_pass_and_first_touch_des, is_receiver_offside, pass_reach_candidate, EmittedPlayEvent};
+use crate::v4::ball_play::{resolve_carry_contact, execute_pass_and_first_touch_des_with_motion, is_receiver_offside, pass_reach_candidate, pass_reach_candidate_for_motion, EmittedPlayEvent};
 use crate::v4::checkpoint::{
     PendingFlightSnapshotV4, FlightActionV4, FlightCounterDeltaV4, PendingDecisionV4, PendingCarryV4,
     compute_checkpoint_checksum, verify_checkpoint, MatchCheckpointV4, MatchSessionSnapshotV4,
