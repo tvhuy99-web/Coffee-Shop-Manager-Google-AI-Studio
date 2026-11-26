@@ -928,3 +928,142 @@ mod a4_atomic_api_tests {
     }
 
 }
+
+
+#[cfg(test)]
+mod locomotion_calibration_tests {
+    use super::*;
+    use crate::v4::input::{RulesModeV4, SimulationMode};
+    use crate::v4::movement::{advance_candidate_live_motion, advance_off_ball_movement_with_report};
+    use crate::v4::tests::{make_v4_input_teams, make_v4_team};
+    use serde_json::{json, Value};
+    use std::time::Instant;
+
+    // Compare the isolated live-motion adapters, not two full-match engines.
+    // Run the unchanged reference session to full time; sample its world once
+    // per seed. The candidate copy never feeds back into that match.
+    fn shadow_pair(index: usize) -> Value {
+        let seed = 104729_i64 + index as i64 * 7907;
+        let (name, hl, al, press) = match index % 4 {
+            0 => ("reference", 14, 12, None),
+            1 => ("balanced", 14, 14, None),
+            2 => ("strong_away", 12, 14, None),
+            _ => ("high_press", 14, 12, Some(85)),
+        };
+        let mut home = make_v4_team("H", "HOME_V4", hl);
+        let mut away = make_v4_team("A", "AWAY_V4", al);
+        if let Some(press) = press {
+            home.team_instructions.pressing_intensity = press;
+            away.team_instructions.pressing_intensity = press;
+        }
+        let input = make_v4_input_teams(seed, SimulationMode::FastBatch, RulesModeV4::Standard, home, away);
+        let mut session = MatchSessionV4::new(input).unwrap();
+        let requested_ms = ((index / 4) % 6) as i64 * 900_000;
+        let interval_ms = [250_i64, 500, 1000, 2000][(index / 24) % 4];
+        let began = Instant::now();
+        // Only choose a live controlled snapshot. No real pending contact
+        // path is supplied: this report measures tactical locomotion alone.
+        let mut steps = 0;
+        loop {
+            if session.sim_time_ms() >= requested_ms
+                && matches!(session.stage, HalfStageV4::InHalf { .. })
+                && session.state.dead_ball.is_none()
+                && session.state.ball.control == BallControlState::Controlled
+            {
+                break;
+            }
+            assert!(!session.is_full_time(), "no live sample for seed {seed}");
+            assert!(steps < 100_000, "snapshot watchdog for seed {seed}");
+            session.step_one_des_event(true).unwrap();
+            session.completed_beats += 1;
+            steps += 1;
+        }
+        let before = session.state.clone();
+        let now = session.sim_time_ms();
+        let original_rng = session.rng.state();
+        let mut legacy = before.clone();
+        let mut candidate = before.clone();
+        let mut legacy_rng = session.rng.clone();
+        let mut candidate_rng = session.rng.clone();
+        let dt = match_contracts::units::ms_to_seconds_f32(interval_ms);
+        let start = Instant::now();
+        advance_off_ball_movement_with_report(&mut legacy, &session.input, session.possession_side,
+            session.carrier_idx, dt, &mut legacy_rng);
+        let legacy_us = start.elapsed().as_secs_f64() * 1e6;
+        let start = Instant::now();
+        let attempt = advance_candidate_live_motion(&mut candidate, &session.input, session.possession_side,
+            session.carrier_idx, interval_ms, &mut candidate_rng, &[]);
+        let candidate_us = start.elapsed().as_secs_f64() * 1e6;
+        let mut players = Vec::new();
+        let mut failure = None;
+        match attempt {
+            Ok((rows, _)) => {
+                assert_eq!(legacy_rng.state(), candidate_rng.state(), "RNG mismatch seed {seed}");
+                assert_eq!(rows.len(), before.players.iter().filter(|p| p.on_pitch && !p.sent_off).count());
+                for row in rows {
+                    let p = &before.players[row.player_idx];
+                    let a = &legacy.players[row.player_idx];
+                    let b = &candidate.players[row.player_idx];
+                    assert_eq!(a.target_pos, b.target_pos, "target mismatch seed {seed}");
+                    let speed = |v: Vec2| v.x.hypot(v.y);
+                    players.push(json!({
+                        "id": p.player_id, "side": p.side, "slot": p.slot_id, "goalkeeper": p.is_goalkeeper,
+                        "initial_speed_mps": speed(p.vel), "aerobic": p.fatigue.aerobic,
+                        "anaerobic": p.fatigue.anaerobic, "legacy_distance_m": a.last_moved_m,
+                        "candidate_distance_m": row.distance_m(), "legacy_terminal_speed_proxy_mps": speed(a.vel),
+                        "candidate_terminal_speed_mps": speed(b.vel), "acceleration_load_mps": row.acceleration_load_mps(),
+                        "candidate_aerobic_delta": b.fatigue.aerobic-p.fatigue.aerobic,
+                        "candidate_anaerobic_delta": b.fatigue.anaerobic-p.fatigue.anaerobic,
+                        "candidate_outside_pitch": b.pos.x<0.0 || b.pos.x>PITCH_LENGTH_M
+                            || b.pos.y<0.0 || b.pos.y>match_contracts::spatial::PITCH_WIDTH_M
+                    }));
+                }
+            }
+            Err(err) => failure = Some(format!("{err:?}")),
+        }
+        // Observational harness must not mutate the baseline session.
+        assert_eq!(session.rng.state(), original_rng);
+        assert_eq!(session.sim_time_ms(), now);
+        assert_eq!(session.state, before);
+        let result = session.run_to_full_time().unwrap();
+        let baseline_players: Vec<_> = session.state.players.iter().map(|p| json!({
+            "id": p.player_id, "side": p.side, "slot": p.slot_id, "goalkeeper": p.is_goalkeeper,
+            "distance_m": p.fatigue.distance_m, "legacy_sprint_counter": p.fatigue.sprint_count,
+            "aerobic": p.fatigue.aerobic, "anaerobic": p.fatigue.anaerobic,
+        })).collect();
+        json!({
+            "seed": seed, "cohort": name, "requested_ms": requested_ms, "sample_ms": now,
+            "interval_ms": interval_ms, "legacy_adapter_us": legacy_us, "candidate_adapter_us": candidate_us,
+            "baseline_session_wall_ms_including_probe": began.elapsed().as_secs_f64()*1e3,
+            "baseline_timeline_fingerprint": result.event_timeline_fingerprint,
+            "failure": failure, "players": players, "baseline_players": baseline_players
+        })
+    }
+
+    #[test]
+    fn b12_shadow_report_smoke() {
+        let row = shadow_pair(0);
+        assert!(row["failure"].is_null());
+        assert_eq!(row["players"].as_array().unwrap().len(), 22);
+        assert_eq!(row["baseline_players"].as_array().unwrap().len(), 22);
+    }
+
+    #[test]
+    #[ignore = "release-mode paired interval evidence; run explicitly in L1"]
+    fn b12_shadow_locomotion_report() {
+        let n = std::env::var("B12_SHADOW_SEEDS").ok().map(|s| s.parse::<usize>().unwrap()).unwrap_or(1000);
+        assert!((1..=10_000).contains(&n));
+        let rows: Vec<_> = (0..n).map(shadow_pair).collect();
+        let failures = rows.iter().filter(|r| !r["failure"].is_null()).count();
+        let report = json!({
+            "schema": 1, "scope": "reference_full_matches_plus_paired_live_intervals",
+            "candidate_full_matches": 0, "paired_intervals": n, "reference_full_matches": n,
+            "failures": failures, "rows": rows
+        });
+        if let Ok(path) = std::env::var("B12_SHADOW_REPORT_PATH") {
+            std::fs::write(path, serde_json::to_vec(&report).unwrap()).unwrap();
+        }
+        println!("B12_SHADOW_SUMMARY seeds={n} failures={failures} candidate_full_matches=0");
+        assert_eq!(failures, 0, "inspect report for candidate failures");
+    }
+}

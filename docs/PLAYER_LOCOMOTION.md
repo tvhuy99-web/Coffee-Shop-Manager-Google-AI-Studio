@@ -57,3 +57,16 @@ MotionResult trả vị trí, terminal velocity, facing và tích lũy path leng
 | B1.2.8 | Audit 54, cross-mode, checkpoint, CI L0–L4, reviewed behavior/reference change |
 
 B1.2.1–3 không gọi solver mới từ production. Exact parity bắt buộc; không thay golden/fixtures hoặc workflow. Chưa tuyên bố solver calibrated. B1.2.4–8 mới tạo behavior change khi wire runtime, cần evidence và behavior ID phù hợp. Giữ 54 thuộc tính, không quota thống kê. Rollback từng commit, không force push.
+
+
+## B1.2.7 — Kiểm chuẩn bước đầu và nguồn tham chiếu
+
+Nghiên cứu tham chiếu (không phải dữ liệu huấn luyện hay tham số đã fit):
+
+- [Acceleration and sprint profiles of professional male football players in relation to playing position (2020)](https://pmc.ncbi.nlm.nih.gov/articles/PMC7410317/): phân nhóm vị trí, xét vận tốc bắt đầu và gia tốc/giảm tốc.
+- [Peak match sprinting speed during soccer matches (2025)](https://pubmed.ncbi.nlm.nih.gov/39758165/): peak match speed thường xuất phát khi đã chạy, không chỉ từ đứng yên.
+- [When and How Do Soccer Players From a Semi-Professional Club Sprint in Match Play?](https://doi.org/10.5114/jhk/159964): trong mẫu bán chuyên, quãng sprint trung bình khoảng 17.55 m, tốc độ đầu 10.34 km/h, đỉnh 26.74 km/h, gia tốc tối đa trung bình 2.73 m/s², giảm tốc 3.61 m/s². Không dùng trung bình mẫu này làm giới hạn vật lý hoặc map trực tiếp vào thuộc tính elite.
+- [High-speed running and sprinting in professional adult soccer: systematic review](https://pmc.ncbi.nlm.nih.gov/articles/PMC9968809/): ngưỡng sprint/HSR không đồng nhất giữa nghiên cứu; cần ghi định nghĩa đo, phân nhóm, exposure.
+- Nguồn tracking để kiểm chuẩn tiếp theo: [Metrica sample data](https://github.com/metrica-sports/sample-data), [SkillCorner open data](https://github.com/SkillCorner/opendata). Kiểm tra license, metadata, đơn vị, missing frames và smoothing trước khi dùng; chưa tải/xử lý raw tracking trong bước này.
+
+Công cụ test shadow chạy 1.000 seed, bốn cohort (reference/balanced/strong_away/high_press), sáu mốc thời gian và bốn duration; lấy một snapshot controlled live từ mỗi trận production cũ, chạy hai adapter trên cùng state/RNG/target policy, so sánh distance, speed, acceleration load, energy delta, boundary excursions và thời gian tính. Tiếp tục **trận baseline** đến full time để lưu distance/sprint counter từng cầu thủ và fingerprint. Đây là 1.000 trận baseline + 1.000 interval pair, không phải 1.000 cặp trận candidate. Đối chứng full-match cũ có counter sprint theo interval, không so sánh trực tiếp với sprint episode trong tracking; legacy velocity là proxy trung bình khoảng, không phải terminal velocity thực. Report lưu raw per-player, seed, slot và cohort. Không dùng shadow sample để ngoại suy km/trận hoặc chỉnh gameplay quota. Không đổi coefficient trước khi có nguồn và kết quả kiểm chứng.
