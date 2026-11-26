@@ -736,4 +736,30 @@ mod a4_atomic_api_tests {
         assert!(verify_action_actor(&s.state,usize::MAX).is_err());
     }
 
+    #[test]
+    fn a4_movement_budget_rejects_teleport_and_inactive_displacement(){
+        use crate::v4::transition::verify_motion_budget;
+        let p=Vec2::new(50.0,34.0);
+        assert!(verify_motion_budget(p,Vec2::new(50.008,34.0),0.008,"p").is_ok());
+        assert!(verify_motion_budget(p,Vec2::new(51.0,34.0),0.008,"p").is_err());
+        assert!(verify_motion_budget(p,p,0.0,"inactive").is_ok());
+        assert!(verify_motion_budget(p,Vec2::new(50.01,34.0),0.0,"inactive").is_err());
+        assert!(verify_motion_budget(p,Vec2::new(f32::NAN,34.0),1.0,"p").is_err());
+    }
+    #[test]
+    fn a4_controlled_actor_checks_identity_side_and_eligibility(){
+        use crate::v4::transition::verify_controlled_actor;
+        let mut s=new_session();
+        let p=&s.state.players[0];
+        s.state.ball.control=BallControlState::Controlled;
+        s.state.ball.owner_side=Some(p.side);
+        s.state.ball.owner_player_id=Some(p.player_id.clone());
+        assert!(verify_controlled_actor(&s.state,0).is_ok());
+        s.state.ball.owner_side=Some(p.side.opposite());
+        assert!(verify_controlled_actor(&s.state,0).is_err());
+        s.state.ball.owner_side=Some(p.side);
+        s.state.players[0].sent_off=true;
+        assert!(verify_controlled_actor(&s.state,0).is_err());
+    }
+
 }

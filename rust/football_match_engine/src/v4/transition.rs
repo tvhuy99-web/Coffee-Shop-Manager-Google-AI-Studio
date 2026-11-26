@@ -270,3 +270,32 @@ pub(crate) fn verify_action_actor(state:&MatchStateV4,idx:usize)->Result<(),V4Er
     }
     Ok(())
 }
+
+/// INV-02/04: validate movement against the budget chosen before integration.
+/// Rounding allowance is derived from binary32 pitch-coordinate arithmetic,
+/// not a gameplay distance tolerance. Neither positions nor counters are altered.
+pub(crate) fn verify_motion_budget(
+    before:crate::v4::spatial::Vec2,after:crate::v4::spatial::Vec2,
+    budget_m:f32,player_id:&str,
+)->Result<(),V4Error>{
+    use crate::v4::spatial::{PITCH_LENGTH_M,PITCH_WIDTH_M};
+    let roundoff_m=32.0*f32::EPSILON*PITCH_LENGTH_M.max(PITCH_WIDTH_M);
+    let distance=before.distance(after);
+    if !is_finite_vec2(before)||!is_finite_vec2(after)||!budget_m.is_finite()||budget_m<0.0||
+        !distance.is_finite()||distance>budget_m+roundoff_m {
+        return Err(V4Error::InvalidInput(format!("INV-02: movement budget exceeded for {player_id}: {distance}m > {budget_m}m")));
+    }
+    Ok(())
+}
+
+/// When a controlled action is committed, the designated carrier must be
+/// the unique active owner, not merely a last-touch reference.
+pub(crate) fn verify_controlled_actor(state:&MatchStateV4,idx:usize)->Result<(),V4Error>{
+    verify_action_actor(state,idx)?;
+    let p=&state.players[idx];
+    if state.ball.control!=BallControlState::Controlled || state.ball.owner_side!=Some(p.side) ||
+        state.ball.owner_player_id.as_deref()!=Some(p.player_id.as_str()) {
+        return Err(V4Error::InvalidInput(format!("INV-01: controlled action owner mismatch for {}",p.player_id)));
+    }
+    Ok(())
+}

@@ -1249,6 +1249,11 @@ impl MatchSessionV4 {
 
         if is_ball_in_play {
             let prev_positions: Vec<Vec2> = self.state.players.iter().map(|p| p.pos).collect();
+            let mut budgets:Vec<f32>=self.state.players.iter().map(|p| {
+                if p.on_pitch&&!p.sent_off {
+                    crate::v4::movement::player_max_speed_mps(crate::v4::movement::player_attrs(&self.state,p),p)*dt_sec
+                } else {0.0}
+            }).collect();
             let defense=advance_off_ball_movement_with_report(
                 &mut self.state,
                 &self.input,
@@ -1265,6 +1270,7 @@ impl MatchSessionV4 {
                     .find(|(_, p)| p.player_id == motion.candidate.player_id && p.on_pitch && !p.sent_off) {
                     let old = prev_positions[idx];
                     let next = motion.position_at(now);
+                    budgets[idx]=motion.candidate.speed_mps.max(0.0)*dt_sec;
                     p.pos = next;
                     p.target_pos = motion.target;
                     p.vel = Vec2::new((next.x - old.x) / dt_sec, (next.y - old.y) / dt_sec);
@@ -1282,6 +1288,7 @@ impl MatchSessionV4 {
                 if p.on_pitch && !p.sent_off && p.player_id == carry.motion.candidate.player_id {
                     let old = prev_positions[idx];
                     let next = carry.motion.position_at(self.state.des_clock.sim_time_ms.min(carry.resolves_at_ms));
+                    budgets[idx]=carry.motion.candidate.speed_mps.max(0.0)*dt_sec;
                     p.pos = next;
                     p.target_pos = carry.motion.target;
                     p.vel = Vec2::new((next.x-old.x)/dt_sec, (next.y-old.y)/dt_sec);
@@ -1294,6 +1301,7 @@ impl MatchSessionV4 {
                         p.player_id==chase.candidate.player_id && p.on_pitch && !p.sent_off) {
                         let old=prev_positions[di];
                         let next=chase.position_at(self.state.des_clock.sim_time_ms.min(carry.resolves_at_ms));
+                        budgets[di]=chase.candidate.speed_mps.max(0.0)*dt_sec;
                         def.pos=next; def.target_pos=chase.target;
                         def.vel=Vec2::new((next.x-old.x)/dt_sec,(next.y-old.y)/dt_sec);
                         if old.distance(next)>0.05 {def.facing_rad=(next.y-old.y).atan2(next.x-old.x);}
@@ -1318,6 +1326,7 @@ impl MatchSessionV4 {
                     .find(|(_,p)|p.player_id==chase.candidate.player_id && p.on_pitch && !p.sent_off) {
                     let old=prev_positions[di];
                     let next=chase.position_at(self.state.des_clock.sim_time_ms);
+                    budgets[di]=chase.candidate.speed_mps.max(0.0)*dt_sec;
                     def.pos=next;
                     def.target_pos=chase.target;
                     def.vel=Vec2::new((next.x-old.x)/dt_sec,(next.y-old.y)/dt_sec);
@@ -1326,6 +1335,7 @@ impl MatchSessionV4 {
             }
             for (idx, p) in self.state.players.iter_mut().enumerate() {
                 if let Some(prev) = prev_positions.get(idx) {
+                    crate::v4::transition::verify_motion_budget(*prev,p.pos,budgets[idx],&p.player_id)?;
                     p.last_moved_m = prev.distance(p.pos);
                 }
             }
@@ -1994,6 +2004,7 @@ impl MatchSessionV4 {
         self.state.ball.control = BallControlState::Controlled;
         self.state.ball.owner_side = Some(side);
         self.state.ball.owner_player_id = Some(id.clone());
+        crate::v4::transition::verify_controlled_actor(&self.state,idx)?;
         self.possession_side = side;
         self.diagnostics.observe_controlled_ball(side,pos);
         let observed:Vec<_>=self.state.players.iter().enumerate().filter(|(_,p)|p.on_pitch && !p.sent_off)
