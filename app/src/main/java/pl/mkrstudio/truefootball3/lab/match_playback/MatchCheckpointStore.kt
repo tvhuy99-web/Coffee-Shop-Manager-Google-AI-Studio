@@ -163,14 +163,19 @@ class MatchCheckpointStore(context: Context) {
 
     private fun previousFile(file: File): File = File(file.path + ".previous")
 
-    private fun writeAtomic(file: File, bytes: ByteArray) {
+    private fun writeAtomic(file: File, bytes: ByteArray, isCurrent: () -> Boolean = { true }): Boolean {
         val atomic = AtomicFile(file)
         val stream = atomic.startWrite()
         try {
             stream.write(bytes)
             stream.flush()
             stream.fd.sync()
+            if (!isCurrent()) {
+                atomic.failWrite(stream)
+                return false
+            }
             atomic.finishWrite(stream)
+            return true
         } catch (error: Exception) {
             atomic.failWrite(stream)
             throw error
@@ -212,6 +217,12 @@ class MatchCheckpointStore(context: Context) {
      * and dual-layer checksums (`integritySha256` + `payloadCrc32`).
      */
     fun saveAtomic(envelope: MatchCheckpointEnvelope) {
+        check(saveAtomicIfCurrent(envelope) { true })
+    }
+
+    /** Reject a stale worker before writing and again before publishing the primary file. */
+    fun saveAtomicIfCurrent(envelope: MatchCheckpointEnvelope, isCurrent: () -> Boolean): Boolean {
+        if (!isCurrent()) return false
         validateEnvelope(envelope)
         val playbackJson = serializePlaybackState(envelope.androidPlayback)
         val payloadCrc32 = crc32Value(canonicalPayloadBytes(envelope.rustCheckpointJson, playbackJson))
@@ -234,13 +245,14 @@ class MatchCheckpointStore(context: Context) {
 
         val destination = checkpointFile(envelope.matchId)
         val bytes = root.toString().toByteArray(Charsets.UTF_8)
-        synchronized(fileLock) {
+        return synchronized(fileLock) {
+            if (!isCurrent()) return@synchronized false
             // Keep the last fully verified generation. Never replace a good
             // previous generation with a corrupt primary file.
             if (readVerifiedFile(destination) != null) {
                 writeAtomic(previousFile(destination), AtomicFile(destination).readFully())
             }
-            writeAtomic(destination, bytes)
+            writeAtomic(destination, bytes, isCurrent)
         }
     }
 
@@ -342,8 +354,10 @@ class MatchCheckpointStore(context: Context) {
     /**
      * Deletes the active checkpoint for [matchId] (must be called when the match reaches `FULL_TIME`).
      */
-    fun deleteCheckpoint(matchId: String): Boolean = synchronized(fileLock) {
-        if (matchId.isBlank()) return@synchronized false
+    fun deleteCheckpoint(matchId: String): Boolean = deleteCheckpointIfCurrent(matchId) { true }
+
+    fun deleteCheckpointIfCurrent(matchId: String, isCurrent: () -> Boolean): Boolean = synchronized(fileLock) {
+        if (!isCurrent() || matchId.isBlank()) return@synchronized false
         val file = checkpointFile(matchId)
         val previous = previousFile(file)
         val existed = file.exists() || previous.exists()

@@ -35,6 +35,7 @@ events=get(R/'contracts/events.rs')+'\n'+get(ROOT/'rust/crates/match_contracts/s
 mod=get(R/'v4/mod.rs')
 bridge=get(K/'NativeBridge.kt')
 activity=get(K/'LabReferenceMatchActivity.kt')
+cue_adapter=get(K/'match_commentary/MatchEventCueAdapter.kt')
 store=get(K/'match_playback/LabGlobalSeedReplayStore.kt')
 wrapper=get(K/'match_playback/LabRustLiveSession.kt')
 chk('P0-1 offside snapshot + receiver involvement',
@@ -90,8 +91,9 @@ chk('P1-1 period elapsed passed from Rust to Kotlin',
     'pub period_elapsed_second: i32' in events and
     ordered(sess, 'let p_sec = self.state.des_clock.period_elapsed_second();',
             'period_elapsed_second: p_sec,') and
-    'ev.optInt("periodElapsedSecond"' in activity and
-    'formatDisplayMinute(period, evSec, periodElapsedSec)' in activity)
+    'cueAdapter.convertV4StepEvents(stepObj, rawEvents, filteredEvents,' in activity and
+    'ev.optInt("periodElapsedSecond"' in cue_adapter and
+    'formatDisplayMinute(period, evSec, periodElapsedSec)' in cue_adapter)
 version = re.search(r'JNI_BRIDGE_VERSION:\s*i32\s*=\s*(\d+)', mod)
 chk('JNI bridge supports replay and DES protocol',
     version is not None and int(version.group(1)) >= 8 and

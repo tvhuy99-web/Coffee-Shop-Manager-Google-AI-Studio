@@ -3854,3 +3854,6 @@ fn pi_defense_tackle_loose_kinematics_uses_contact_point_and_moving_frame() {
     assert_eq!(comoving,Vec3::new(incoming.x,incoming.y,0.0));
     println!("PI_TACKLE_KINEMATICS_FIXTURE front={front:?} rear={rear:?} stationary={stationary:?} moving={displaced:?}");
 }
+
+// Immutable A-1 fixture is part of the test build; CI does not modify source.
+include!("../../../../tests/a1/deep_golden_fixture.rs");

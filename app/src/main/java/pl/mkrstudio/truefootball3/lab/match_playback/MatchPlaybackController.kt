@@ -371,6 +371,7 @@ class MatchPlaybackController(
 
         workerExecutor.execute {
             try {
+                if (!callbackCurrent()) return@execute
                 val raw = session.startNextPeriod()
                 val stepObj = JSONObject(raw)
                 mainHandler.post {
@@ -411,6 +412,7 @@ class MatchPlaybackController(
         commandsInFlight++
         workerExecutor.execute {
             try {
+                if (!callbackCurrent()) return@execute
                 val resp = session.submitCommandJson(commandJson)
                 val parsed = try { JSONObject(resp) } catch (_: Exception) { null }
                 val ok = parsed?.optBoolean("ok", true) ?: true
@@ -445,6 +447,7 @@ class MatchPlaybackController(
 
         workerExecutor.execute {
             try {
+                if (!callbackCurrent()) return@execute
                 val raw = session.advanceUntilMs(targetSimTimeMs, MAX_STEPS_GUARD)
                 val stepObj = JSONObject(raw)
                 mainHandler.post {
@@ -661,13 +664,16 @@ class MatchPlaybackController(
         mainHandler.removeCallbacks(frameRunnable)
         narrationScheduler.onClockTick(fullTimeSimTimeMs)
         narrationScheduler.reportBoundaryBacklog(fullTimeSimTimeMs)
-        try {
-            checkpointStore?.deleteCheckpoint(matchId)
-        } catch (_: Exception) {
-        }
         workerExecutor.execute {
             try {
+                if (!callbackCurrent()) return@execute
                 val finalObj = session.finish()
+                if (!finalObj.optBoolean("ok", false)) {
+                    throw IllegalStateException(finalObj.optString("error", "finish failed"))
+                }
+                // Serialized on the same worker as checkpoint saves. A failed
+                // native finish leaves the last verified checkpoint available.
+                checkpointStore?.deleteCheckpointIfCurrent(matchId) { callbackCurrent() }
                 session.close()
                 mainHandler.post {
                     if (callbackCurrent()) listener.onMatchFinished(finalObj)
@@ -763,15 +769,15 @@ class MatchPlaybackController(
                 if (!callbackCurrent() || !session.isOpen) return@execute
                 val rustJson = session.exportCheckpointJson()
                 if (callbackCurrent() && rustJson.isNotBlank() && !rustJson.contains("\"ok\":false")) {
-                    lastCommittedRustCheckpointJson = rustJson
-                    store.saveAtomic(
+                    val saved = store.saveAtomicIfCurrent(
                         MatchCheckpointStore.MatchCheckpointEnvelope(
                             matchId = matchId,
                             seed = seed,
                             rustCheckpointJson = rustJson,
                             androidPlayback = playbackState
                         )
-                    )
+                    ) { callbackCurrent() }
+                    if (saved && callbackCurrent()) lastCommittedRustCheckpointJson = rustJson
                 }
             } catch (e: Exception) {
                 LabLogStore.error("CHECKPOINT", "Dual-frontier checkpoint save failed", e)

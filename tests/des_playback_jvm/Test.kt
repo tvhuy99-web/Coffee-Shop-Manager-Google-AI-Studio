@@ -35,6 +35,16 @@ val playback=PlaybackCheckpointState(100L,200L,1f,true,"FULL_MATCH",true,0,null,
 fun checkpoint(ms:Long)=MatchCheckpointStore.MatchCheckpointEnvelope(matchId="backup-test",seed=12,rustCheckpointJson=JSONObject().put("matchId","backup-test").put("simTimeMs",ms).toString(),androidPlayback=playback.copy(committedRustSimTimeMs=ms))
 store.saveAtomic(checkpoint(200L));store.saveAtomic(checkpoint(300L))
 check(store.loadVerified("backup-test")!!.androidPlayback.committedRustSimTimeMs==300L)
+check(!store.saveAtomicIfCurrent(checkpoint(350L)) { false })
+var checks=0
+check(!store.saveAtomicIfCurrent(checkpoint(350L)) { ++checks < 3 })
+check(store.loadVerified("backup-test")!!.androidPlayback.committedRustSimTimeMs==300L)
+check(!store.deleteCheckpointIfCurrent("backup-test") { false })
+check(store.loadVerified("backup-test")!!.androidPlayback.committedRustSimTimeMs==300L)
+// Recreate the two generations for the original corruption test.
+check(store.deleteCheckpoint("backup-test"))
+store.saveAtomic(checkpoint(200L));store.saveAtomic(checkpoint(300L))
+println("PASS A6 stale worker cannot publish or delete a checkpoint")
 val checkpointDir=java.io.File(dir,"v4_active_checkpoints")
 val primary=checkpointDir.listFiles()!!.single{it.name.endsWith(".ckpt.json")}
 primary.writeText("corrupt")
