@@ -41,7 +41,8 @@ class MatchPlaybackController(
     private val listener: Listener,
     private val checkpointStore: MatchCheckpointStore? = null,
     private val clockProvider: () -> Long = { SystemClock.elapsedRealtime() },
-    private val workerExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val workerExecutor: ExecutorService = Executors.newSingleThreadExecutor(),
+    private val isSessionCurrent: () -> Boolean = { true }
 ) : pl.mkrstudio.truefootball3.presentation.MatchPlaybackBoundary {
     interface Listener {
         fun onEventsProduced(
@@ -69,6 +70,7 @@ class MatchPlaybackController(
     @Volatile private var started: Boolean = false
     @Volatile private var finished: Boolean = false
     @Volatile private var released: Boolean = false
+    private fun callbackCurrent(): Boolean = !released && isSessionCurrent()
     @Volatile private var stepInFlight: Boolean = false
     private var checkpointInFlight = false
     private var extraLookaheadMs = 0L
@@ -115,7 +117,7 @@ class MatchPlaybackController(
 
     private val frameRunnable = object : Runnable {
         override fun run() {
-            if (released || finished || paused) return
+            if (!callbackCurrent() || finished || paused) return
             if (currentHalfStage == DesHalfStage.HALF_TIME_BREAK ||
                 currentHalfStage == DesHalfStage.EXTRA_TIME_BREAK ||
                 currentHalfStage == DesHalfStage.FULL_TIME
@@ -236,7 +238,7 @@ class MatchPlaybackController(
     }
 
     fun start() {
-        if (released || finished) return
+        if (!callbackCurrent() || finished) return
         started = true
         paused = false
         anchorWallMs = clockProvider()
@@ -261,7 +263,7 @@ class MatchPlaybackController(
     }
 
     override fun resume() {
-        if (released || finished) return
+        if (!callbackCurrent() || finished) return
         if (currentHalfStage == DesHalfStage.HALF_TIME_BREAK ||
             currentHalfStage == DesHalfStage.EXTRA_TIME_BREAK
         ) {
@@ -284,7 +286,7 @@ class MatchPlaybackController(
      * persists the committed frontier checkpoint (never speculative lookahead or elapsedRealtime).
      */
     fun onHostPaused() {
-        if (released || finished) return
+        if (!callbackCurrent() || finished) return
         pause()
         exportAndSaveCommittedCheckpointAsync(force = true)
     }
@@ -294,6 +296,7 @@ class MatchPlaybackController(
      * Per DES v1.4 contract, ALWAYS resumes in `paused = true` state with zero added wall-clock time.
      */
     fun restoreFromCheckpoint(state: PlaybackCheckpointState) {
+        if (!callbackCurrent()) return
         val presentation = JSONObject(state.presentationStateJson)
         presentedHomeGoals = presentation.getInt("homeGoals")
         presentedAwayGoals = presentation.getInt("awayGoals")
@@ -362,7 +365,7 @@ class MatchPlaybackController(
      * revoking stale lookahead, re-anchoring clock, and resuming immediately without waiting 15 min.
      */
     fun continueFromPeriodBreak() {
-        if (released || finished || !session.isOpen) return
+        if (!callbackCurrent() || finished || !session.isOpen) return
         if (stepInFlight || checkpointInFlight) return
         stepInFlight = true
 
@@ -372,7 +375,7 @@ class MatchPlaybackController(
                 val stepObj = JSONObject(raw)
                 mainHandler.post {
                     stepInFlight = false
-                    if (released) return@post
+                    if (!callbackCurrent()) return@post
                     if (!stepObj.optBoolean("ok", false)) {
                         listener.onError(IllegalStateException(stepObj.optString("error", "startNextPeriod failed")))
                         return@post
@@ -390,7 +393,7 @@ class MatchPlaybackController(
             } catch (error: Exception) {
                 mainHandler.post {
                     stepInFlight = false
-                    if (!released) listener.onError(error)
+                    if (callbackCurrent()) listener.onError(error)
                 }
             }
         }
@@ -401,7 +404,7 @@ class MatchPlaybackController(
      * lookahead cues beyond the committed frontier so future narration reflects the new decision.
      */
     override fun submitCommandJson(commandJson: String, onResult: (ok: Boolean, responseJson: String) -> Unit) {
-        if (released || finished || !session.isOpen) {
+        if (!callbackCurrent() || finished || !session.isOpen) {
             onResult(false, "{\"ok\":false,\"error\":\"session_not_active\"}")
             return
         }
@@ -413,7 +416,7 @@ class MatchPlaybackController(
                 val ok = parsed?.optBoolean("ok", true) ?: true
                 mainHandler.post {
                     commandsInFlight--
-                    if (!released) {
+                    if (callbackCurrent()) {
                         // Native commands are accepted at its confirmed frontier. Never revoke
                         // already produced football events without a corresponding rollback.
                         if (ok) exportAndSaveCommittedCheckpointAsync(force = true)
@@ -423,7 +426,7 @@ class MatchPlaybackController(
             } catch (error: Exception) {
                 mainHandler.post {
                     commandsInFlight--
-                    if (!released) onResult(false, "{\"ok\":false,\"error\":\"${error.message}\"}")
+                    if (callbackCurrent()) onResult(false, "{\"ok\":false,\"error\":\"${error.message}\"}")
                 }
             }
         }
@@ -437,7 +440,7 @@ class MatchPlaybackController(
     }
 
     private fun requestAdvanceUntil(targetSimTimeMs: Long) {
-        if (stepInFlight || released || finished || !session.isOpen) return
+        if (stepInFlight || !callbackCurrent() || finished || !session.isOpen) return
         stepInFlight = true
 
         workerExecutor.execute {
@@ -446,7 +449,7 @@ class MatchPlaybackController(
                 val stepObj = JSONObject(raw)
                 mainHandler.post {
                     stepInFlight = false
-                    if (released) return@post
+                    if (!callbackCurrent()) return@post
                     if (!stepObj.optBoolean("ok", false)) {
                         listener.onError(IllegalStateException(stepObj.optString("error", "advanceUntilMs failed")))
                         return@post
@@ -462,7 +465,7 @@ class MatchPlaybackController(
             } catch (error: Exception) {
                 mainHandler.post {
                     stepInFlight = false
-                    if (!released) listener.onError(error)
+                    if (callbackCurrent()) listener.onError(error)
                 }
             }
         }
@@ -667,11 +670,11 @@ class MatchPlaybackController(
                 val finalObj = session.finish()
                 session.close()
                 mainHandler.post {
-                    if (!released) listener.onMatchFinished(finalObj)
+                    if (callbackCurrent()) listener.onMatchFinished(finalObj)
                 }
             } catch (error: Exception) {
                 mainHandler.post {
-                    if (!released) listener.onError(error)
+                    if (callbackCurrent()) listener.onError(error)
                 }
             }
         }
@@ -710,7 +713,7 @@ class MatchPlaybackController(
 
     private fun exportAndSaveCommittedCheckpointAsync(force: Boolean) {
         val store = checkpointStore ?: return
-        if (!session.isOpen || finished) return
+        if (!callbackCurrent() || !session.isOpen || finished) return
         if (checkpointInFlight || stepInFlight || commandsInFlight > 0) {
             checkpointRequested = checkpointRequested || force
             return
@@ -757,9 +760,9 @@ class MatchPlaybackController(
 
         workerExecutor.execute {
             try {
-                if (!session.isOpen) return@execute
+                if (!callbackCurrent() || !session.isOpen) return@execute
                 val rustJson = session.exportCheckpointJson()
-                if (rustJson.isNotBlank() && !rustJson.contains("\"ok\":false")) {
+                if (callbackCurrent() && rustJson.isNotBlank() && !rustJson.contains("\"ok\":false")) {
                     lastCommittedRustCheckpointJson = rustJson
                     store.saveAtomic(
                         MatchCheckpointStore.MatchCheckpointEnvelope(
@@ -775,7 +778,7 @@ class MatchPlaybackController(
             } finally {
                 mainHandler.post {
                     checkpointInFlight = false
-                    if (checkpointRequested && !released) exportAndSaveCommittedCheckpointAsync(force = true)
+                    if (checkpointRequested && callbackCurrent()) exportAndSaveCommittedCheckpointAsync(force = true)
                 }
             }
         }

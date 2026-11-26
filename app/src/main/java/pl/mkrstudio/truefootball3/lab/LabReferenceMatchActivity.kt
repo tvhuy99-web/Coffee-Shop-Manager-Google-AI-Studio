@@ -22,6 +22,7 @@ import pl.mkrstudio.truefootball3.audio.TtsSettingsStore
 import java.util.ArrayList
 import java.util.HashMap
 import java.util.concurrent.Executors
+import pl.mkrstudio.truefootball3.presentation.PresentationSessionGate
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
@@ -72,6 +73,7 @@ class LabReferenceMatchActivity : Activity() {
 
     private val main = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor()
+    private val sessionGate = PresentationSessionGate()
     private val records = ArrayList<HashMap<String, Any>>()
     private val narration = ArrayList<LabNarration>()
     private val homeOnPitch = ArrayList<RosterEntry>()
@@ -286,9 +288,9 @@ class LabReferenceMatchActivity : Activity() {
                     .setPositiveButton("Tiếp tục") { _, _ ->
                         if (!tryResumeActiveV4Checkpoint(saved.matchId)) state.text = "Không thể khôi phục bản lưu."
                     }
-                    .setNegativeButton("Trận mới") { _, _ -> executor.execute { startMatch() } }
+                    .setNegativeButton("Trận mới") { _, _ -> launchMatch() }
                     .setCancelable(false).show()
-            } else executor.execute { startMatch() }
+            } else launchMatch()
         }
     }
 
@@ -554,12 +556,15 @@ class LabReferenceMatchActivity : Activity() {
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) applyRoster.run() else main.post(applyRoster)
     }
 
-    private fun startMatch() {
+    private fun launchMatch() {
+        val token = sessionGate.begin(v4MatchId)
+        executor.execute { startMatch(token) }
+    }
+
+    private fun startMatch(token: PresentationSessionGate.Token) {
+        if (!sessionGate.isCurrent(token)) return
         try {
             val factory = LabMatchInputFactory(this)
-            matchFactory = factory
-            runningHomeGoals = 0
-            runningAwayGoals = 0
             LabLogStore.log(
                 "MATCH",
                 "START [$engineVersion/$viewingMode] $home (${homeTactics.formation.label}/${homeTactics.style.label}) vs " +
@@ -576,28 +581,31 @@ class LabReferenceMatchActivity : Activity() {
                 simulationMode = LabSimulationMode.FULL_EVENT,
                 homeTactics = homeTactics,
                 awayTactics = awayTactics
-            ).also { generated ->
-                v4InputJson = generated
-                v4MatchId = JSONObject(generated).optString("matchId", v4MatchId)
-            }
-            populateHomeRoster(inputJson)
+            )
+            val matchId = JSONObject(inputJson).optString("matchId", token.matchId)
             val session = LabRustLiveSession.open(inputJson, engineVersion)
                 ?: throw IllegalStateException("Không tạo được phiên Rust ${engineVersion.labelVi}")
-            if (isFinishing || isDestroyed) {
-                session.close()
-                return
-            }
-            liveRustSession = session
-            rustCommentary = LabCommentaryEngine(this, home, away, seed)
-
             main.post {
-                if (!isFinishing && !isDestroyed) {
-                    startV4DesPlayback(session)
+                if (!sessionGate.isCurrent(token) || isFinishing || isDestroyed) {
+                    session.close()
+                    return@post
                 }
+                playbackController?.release()
+                liveRustSession?.close()
+                matchFactory = factory
+                runningHomeGoals = 0
+                runningAwayGoals = 0
+                v4InputJson = inputJson
+                v4MatchId = matchId
+                populateHomeRoster(inputJson)
+                liveRustSession = session
+                rustCommentary = LabCommentaryEngine(this, home, away, seed)
+                startV4DesPlayback(session)
             }
         } catch (error: Exception) {
             LabLogStore.error("ERROR", "startMatch failed", error)
             main.post {
+                if (!sessionGate.isCurrent(token) || isFinishing || isDestroyed) return@post
                 finished = true
                 state.text = "Không chạy được trận đấu: ${error.javaClass.simpleName}: ${error.message}"
             }
@@ -605,22 +613,25 @@ class LabReferenceMatchActivity : Activity() {
     }
 
     private fun startV4DesPlayback(session: LabRustLiveSession, restored: PlaybackCheckpointState? = null) {
+        val token = sessionGate.begin(v4MatchId)
+        fun current() = sessionGate.isCurrent(token) && !isFinishing && !isDestroyed
         val scheduler = NarrationScheduler(
             context = this,
             ttsManager = tts,
             lookaheadWindowMs = NarrationScheduler.DEFAULT_LOOKAHEAD_MS,
             onCuePresented = { _, ev ->
-                if (isFinishing || isDestroyed) return@NarrationScheduler
+                if (!current()) return@NarrationScheduler
                 records.add(hashMapOf("time" to ev.minute, "commentary" to ev.text))
                 recordAdapter.notifyDataSetChanged()
                 list.setSelection(records.size - 1)
             },
             onHighSpeedWarning = { msg ->
-                if (!isFinishing && !isDestroyed) {
+                if (current()) {
                     Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                 }
             },
             onHealthChanged = { status, detail ->
+                if (!current()) return@NarrationScheduler
                 ttsHealthStatus = status
                 LabLogStore.log("TTS_HEALTH", "$status ($detail)")
             }
@@ -637,6 +648,7 @@ class LabReferenceMatchActivity : Activity() {
             includeTurningPointsInShort = includeTurningPointsInShort,
             checkpointStore = checkpointStore,
             workerExecutor = executor,
+            isSessionCurrent = { sessionGate.isCurrent(token) },
             listener = object : MatchPlaybackController.Listener {
                 override fun onEventsProduced(
                     stepObj: JSONObject,
@@ -644,6 +656,7 @@ class LabReferenceMatchActivity : Activity() {
                     filteredEvents: List<JSONObject>,
                     isLookahead: Boolean
                 ): List<NarrationScheduler.SimulationEvent> {
+                    if (!current()) return emptyList()
                     return convertV4StepEvents(stepObj, rawEvents, filteredEvents)
                 }
 
@@ -652,7 +665,7 @@ class LabReferenceMatchActivity : Activity() {
                     playbackRate: Float,
                     paused: Boolean
                 ) {
-                    if (isFinishing || isDestroyed) return
+                    if (!current()) return
                     val displayMin = formatDisplayMinute(
                         period = snapshot.period,
                         gameSecond = (snapshot.simTimeMs / 1000L).toInt(),
@@ -670,13 +683,13 @@ class LabReferenceMatchActivity : Activity() {
                 }
 
                 override fun onRosterUpdated(homeRoster: JSONObject) {
-                    if (!isFinishing && !isDestroyed) {
+                    if (current()) {
                         syncV4HomeRoster(homeRoster)
                     }
                 }
 
                 override fun onPeriodBreak(stage: DesHalfStage, period: Int, homeGoals: Int, awayGoals: Int) {
-                    if (isFinishing || isDestroyed) return
+                    if (!current()) return
                     paused = true
                     playButton.text = "Tiếp tục"
                     continuePeriodButton.text = if (stage == DesHalfStage.HALF_TIME_BREAK) {
@@ -690,14 +703,14 @@ class LabReferenceMatchActivity : Activity() {
                 }
 
                 override fun onFastForwardSkip(fromSimTimeMs: Long, toSimTimeMs: Long) {
-                    if (!isFinishing && !isDestroyed) {
+                    if (current()) {
                         val toMin = ((toSimTimeMs / 1000L) / 60L).coerceAtLeast(1L)
                         state.text = "Tua nhanh Highlights đến phút $toMin'..."
                     }
                 }
 
                 override fun onMatchFinished(finalResult: JSONObject) {
-                    if (isFinishing || isDestroyed) return
+                    if (!current()) return
                     finished = true
                     paused = true
                     continuePeriodButton.visibility = View.GONE
@@ -708,7 +721,7 @@ class LabReferenceMatchActivity : Activity() {
 
                 override fun onError(error: Throwable) {
                     LabLogStore.error("PLAYBACK", "DES playback error", error)
-                    if (!isFinishing && !isDestroyed) {
+                    if (current()) {
                         finished = true
                         state.text = "Lỗi phiên Rust DES: ${error.message}"
                     }
@@ -1021,6 +1034,7 @@ class LabReferenceMatchActivity : Activity() {
     }
 
     override fun onDestroy() {
+        sessionGate.invalidate()
         commandDialogActive = false
         playbackController?.release()
         narrationScheduler?.release()
@@ -1044,6 +1058,7 @@ class LabReferenceMatchActivity : Activity() {
         val targetId = matchIdToResume ?: store.listActiveCheckpoints().firstOrNull()?.matchId ?: return false
         val envelope = store.loadVerified(targetId) ?: return false
         val restoredSession = LabRustLiveSession.importFromCheckpoint(envelope.rustCheckpointJson) ?: return false
+        sessionGate.invalidate()
         playbackController?.release()
         liveRustSession?.close()
         liveRustSession = restoredSession
