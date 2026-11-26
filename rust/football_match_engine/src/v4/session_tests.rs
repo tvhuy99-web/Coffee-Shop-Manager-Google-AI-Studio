@@ -1221,72 +1221,97 @@ mod locomotion_full_match_experiment {
 
     #[test]
     fn b12_exp5_parry_ends_one_flight_then_schedules_recovery() {
-        // A recorded failing seed exercised a nested legacy follow-up shot.
-        // Inspect the actual scheduled experimental parry, then resume it
-        // from a checkpoint and execute both the save and recovery.
-        let (input,_)=fixture(((326125_i64-104729)/7907) as usize,SimulationMode::FastBatch);
-        let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
-        for _ in 0..12000 {
-            if session.is_full_time() {break;}
-            session.step_one_des_event(true).unwrap();
-            session.completed_beats+=1;
-            let Some(flight)=session.pending_flight.as_ref() else {continue;};
-            let FlightActionV4::Shot{shooter_idx}=flight.action else {continue;};
-            if flight.ball_after.control!=BallControlState::Loose {continue;}
-            let side=session.state.players[shooter_idx].side;
-            let at=flight.resolves_at_ms;
-            let launch=flight.trajectory.start_time_ms;
-            let offside=flight.offside_at_launch.clone();
-            assert!(at<=flight.planned_arrival_ms && at>launch);
-            assert!(flight.early_interaction.is_none());
-            let save_path=flight.pass_contact_motion.clone().expect("reserved saving keeper");
-            let terminal=save_path.experimental_plan().unwrap().unwrap().sample_at(at-launch).unwrap().state;
-            assert!(terminal.position.distance(save_path.target)<=save_path.candidate.reach_m+1e-5);
-            assert!(flight.ball_after.owner_player_id.is_none());
-            assert!(flight.ball_after.owner_side.is_none());
-            assert_eq!(flight.ball_after.last_touch_side,Some(side.opposite()));
-            assert_eq!(flight.outcome.events.iter().filter(|e|e.kind==EventTypeV4::ShotOnTarget).count(),1);
-            assert_eq!(flight.outcome.events.iter().filter(|e|e.kind==EventTypeV4::Rebound).count(),1);
-            assert!(!flight.outcome.events.iter().any(|e|e.kind==EventTypeV4::Block));
-            let ck=session.export_checkpoint().unwrap();
-            let mut restored=MatchSessionV4::from_checkpoint(
-                serde_json::from_str(&serde_json::to_string(&ck).unwrap()).unwrap()).unwrap();
-            for current in [&mut session,&mut restored] {
-                for _ in 0..100 {
-                    if current.sim_time_ms()>=at {break;}
-                    current.step_one_des_event(true).unwrap();
-                    current.completed_beats+=1;
+        // Explicit reachable shot fixture, not a dependency on the event
+        // distribution of an older behavior ID. The real scheduler, RNG,
+        // shot resolver and recovery run unchanged. The historical failing
+        // seed 326125 remains in b12_exp5_previous_failure_regressions.
+        for side in [TeamSideV4::Home, TeamSideV4::Away] {
+            let mut exercised = false;
+            for seed in 12061_i64..12157 {
+                let input = make_v4_input(seed, SimulationMode::FastBatch, RulesModeV4::Standard);
+                let mut session = MatchSessionV4::new_locomotion_experiment(input).unwrap();
+                session.step_one_des_event(true).unwrap();
+                session.scheduler.invalidate_live_play();
+                let shooter_idx = session.state.players.iter().position(|p|
+                    p.side == side && p.on_pitch && !p.is_goalkeeper).unwrap();
+                let keeper_idx = session.state.players.iter().position(|p|
+                    p.side != side && p.on_pitch && p.is_goalkeeper).unwrap();
+                let mirror = |x: f32| if side == TeamSideV4::Home { x } else { PITCH_LENGTH_M-x };
+                for p in &mut session.state.players {
+                    p.pos = Vec2::new(mirror(50.0), 5.0);
+                    p.target_pos = p.pos;
+                    p.vel = Vec2::default();
                 }
-                assert_eq!(current.sim_time_ms(),at);
-                let keeper=current.state.players.iter().find(|p|p.player_id==save_path.candidate.player_id).unwrap();
-                assert!(keeper.is_goalkeeper);
-                assert_eq!(keeper.pos,terminal.position);
-                assert_eq!(keeper.vel,terminal.velocity);
-                let pending=current.pending_flight.as_ref().expect("scheduled loose rebound race");
-                assert_eq!(pending.trajectory.start_time_ms,at);
-                assert!(pending.resolves_at_ms>at);
-                assert_eq!(pending.offside_at_launch,offside);
-                assert!(matches!(&pending.action,FlightActionV4::LooseRecovery{origin_side,cause}
-                    if *origin_side==side && cause=="SHOT_REBOUND_LOOSE"));
-                assert_eq!(current.state.ball.control,BallControlState::Loose);
-                assert!(current.state.ball.owner_player_id.is_none());
-                assert!(current.state.ball.owner_side.is_none());
-                let recovery_at=pending.resolves_at_ms;
-                for _ in 0..100 {
-                    if current.sim_time_ms()>=recovery_at {break;}
-                    current.step_one_des_event(true).unwrap();
-                    current.completed_beats+=1;
+                session.state.players[shooter_idx].pos = Vec2::new(mirror(85.0), 34.0);
+                session.state.players[shooter_idx].target_pos = session.state.players[shooter_idx].pos;
+                session.state.players[keeper_idx].pos = Vec2::new(mirror(102.0), 34.0);
+                session.state.players[keeper_idx].target_pos = session.state.players[keeper_idx].pos;
+                session.carrier_idx = shooter_idx;
+                session.possession_side = side;
+                session.state.ball.pos = Vec3::ground(mirror(85.0), 34.0);
+                session.state.ball.vel = Vec3::default();
+                session.state.ball.control = BallControlState::Controlled;
+                session.state.ball.owner_side = Some(side);
+                session.state.ball.owner_player_id = Some(session.state.players[shooter_idx].player_id.clone());
+                session.schedule_shot_flight(shooter_idx, None, Some(ShotKindV4::Driven)).unwrap();
+                let flight = session.pending_flight.as_ref().expect("scheduled test shot");
+                if flight.ball_after.control != BallControlState::Loose { continue; }
+                assert!(matches!(flight.action, FlightActionV4::Shot { shooter_idx: i } if i == shooter_idx));
+                let at=flight.resolves_at_ms;
+                let launch=flight.trajectory.start_time_ms;
+                let offside=flight.offside_at_launch.clone();
+                assert!(at<=flight.planned_arrival_ms && at>launch);
+                assert!(flight.early_interaction.is_none());
+                let save_path=flight.pass_contact_motion.clone().expect("reserved saving keeper");
+                let terminal=save_path.experimental_plan().unwrap().unwrap().sample_at(at-launch).unwrap().state;
+                assert!(terminal.position.distance(save_path.target)<=save_path.candidate.reach_m+1e-5);
+                assert!(flight.ball_after.owner_player_id.is_none());
+                assert!(flight.ball_after.owner_side.is_none());
+                assert_eq!(flight.ball_after.last_touch_side,Some(side.opposite()));
+                assert_eq!(flight.outcome.events.iter().filter(|e|e.kind==EventTypeV4::ShotOnTarget).count(),1);
+                assert_eq!(flight.outcome.events.iter().filter(|e|e.kind==EventTypeV4::Rebound).count(),1);
+                assert!(!flight.outcome.events.iter().any(|e|e.kind==EventTypeV4::Block));
+                let ck=session.export_checkpoint().unwrap();
+                let mut restored=MatchSessionV4::from_checkpoint(
+                    serde_json::from_str(&serde_json::to_string(&ck).unwrap()).unwrap()).unwrap();
+                for current in [&mut session,&mut restored] {
+                    for _ in 0..100 {
+                        if current.sim_time_ms()>=at {break;}
+                        current.step_one_des_event(true).unwrap();
+                        current.completed_beats+=1;
+                    }
+                    assert_eq!(current.sim_time_ms(),at);
+                    let keeper=current.state.players.iter().find(|p|p.player_id==save_path.candidate.player_id).unwrap();
+                    assert!(keeper.is_goalkeeper);
+                    assert_eq!(keeper.pos,terminal.position);
+                    assert_eq!(keeper.vel,terminal.velocity);
+                    let pending=current.pending_flight.as_ref().expect("scheduled loose rebound race");
+                    assert_eq!(pending.trajectory.start_time_ms,at);
+                    assert!(pending.resolves_at_ms>at);
+                    assert_eq!(pending.offside_at_launch,offside);
+                    assert!(matches!(&pending.action,FlightActionV4::LooseRecovery{origin_side,cause}
+                        if *origin_side==side && cause=="SHOT_REBOUND_LOOSE"));
+                    assert_eq!(current.state.ball.control,BallControlState::Loose);
+                    assert!(current.state.ball.owner_player_id.is_none());
+                    assert!(current.state.ball.owner_side.is_none());
+                    let recovery_at=pending.resolves_at_ms;
+                    for _ in 0..100 {
+                        if current.sim_time_ms()>=recovery_at {break;}
+                        current.step_one_des_event(true).unwrap();
+                        current.completed_beats+=1;
+                    }
+                    assert_eq!(current.sim_time_ms(),recovery_at);
+                    assert!(current.pending_flight.is_none());
+                    // Recovery may yield possession or an offside restart;
+                    // neither may resolve a synthetic second shot.
+                    assert!(matches!(current.state.ball.control,BallControlState::Controlled|BallControlState::DeadBall));
                 }
-                assert_eq!(current.sim_time_ms(),recovery_at);
-                assert!(current.pending_flight.is_none());
-                // Recovery may yield possession or an offside restart;
-                // neither may resolve a synthetic second shot.
-                assert!(matches!(current.state.ball.control,BallControlState::Controlled|BallControlState::DeadBall));
+                assert_eq!(session.export_checkpoint().unwrap().checksum_hex,restored.export_checkpoint().unwrap().checksum_hex);
+                exercised = true;
+                break;
             }
-            assert_eq!(session.export_checkpoint().unwrap().checksum_hex,restored.export_checkpoint().unwrap().checksum_hex);
-            return;
+            assert!(exercised, "no scheduled parry in reachable fixture for {side:?}");
         }
-        panic!("no scheduled parry in recorded exp5 fixture");
     }
 
     #[test]
