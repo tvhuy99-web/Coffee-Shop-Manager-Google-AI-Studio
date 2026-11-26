@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
 
-BEHAVIOR = "b1.2-keeper-contact-window-exp10"
+BEHAVIOR = "b1.2-shot-block-window-exp11"
 COHORTS = ["reference", "balanced", "strong_away", "high_press"]
 FIELDS = ["home_goals", "away_goals", "shots", "passes", "completed_passes",
           "fouls", "live_ms", "dead_ms", "events", "wall_ms",
@@ -119,7 +119,7 @@ def main(directory):
         "cohort_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in cohorts.items()},
         "role_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in roles.items()},
         "production_acceptance": "BLOCKED: remaining execution paths, rule boundaries, non-pass perception, sprint episode definition, performance and tracking calibration incomplete",
-        "notes": ["Exp10 retains Exp9 movement policy and searches every integer millisecond of conservatively reachable goalkeeper-contact windows. Shot and save probabilities and reach priors are unchanged. Probe counts are experimental open-play scheduled shot launches only; legacy probe fields are zero/not measured.",
+        "notes": ["Exp11 retains Exp10 keeper contact search and applies complete integer-millisecond windows to experimental outfield shot-block contacts. Shot, block and save probabilities and reach priors are unchanged. Probe counts are experimental open-play scheduled shot launches only; legacy probe fields are zero/not measured.",
                   "Keeper segment/depth/speed fields are sums over probe launches, divide by total probe count; diagnostic probe time is excluded from wall_ms. Scheduled shots may be cancelled before commit, so probe counts are not a subset of committed shot totals.",
                   "Pooled rates are descriptive. Goals and saves may include restarts/own goals; ratios are not a disjoint shot-outcome partition.",
                   "Distributions are conditional on successful pairs; failures are retained.",
