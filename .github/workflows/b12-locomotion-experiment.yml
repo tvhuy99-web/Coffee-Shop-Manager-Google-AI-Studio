@@ -18,8 +18,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  paired:
+  preflight:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'feature/b1-1-world-contracts'
+    name: B1.2 shot-contact regression gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Focused atomic-contact and checkpoint regressions
+        run: |
+          set -euo pipefail
+          cd rust/football_match_engine
+          cargo test --release --locked --lib b12_exp5_contact_outcome_is_atomic_in_both_directions -- --nocapture
+          cargo test --release --locked --lib b12_exp5_shot_block_path_survives_checkpoint_and_real_des -- --nocapture
+      - name: Replay eight previous exp5 and exp5r1 failures
+        run: |
+          set -euo pipefail
+          cd rust/football_match_engine
+          cargo test --release --locked --lib b12_exp5_previous_failure_regressions -- --ignored --nocapture
+  paired:
+    needs: preflight
+    if: needs.preflight.result == 'success'
     name: B1.2 hybrid pairs (shard ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 50
@@ -43,12 +62,6 @@ jobs:
           set -euo pipefail
           cd rust/football_match_engine
           cargo test --release --locked --lib b12_exp2_previous_failure_regressions -- --ignored --nocapture
-      - name: Replay recorded exp5 shot-block handoff failures
-        if: always() && matrix.shard == 0
-        run: |
-          set -euo pipefail
-          cd rust/football_match_engine
-          cargo test --release --locked --lib b12_exp5_previous_failure_regressions -- --ignored --nocapture
       - name: Experimental cross-mode consistency
         if: always() && matrix.shard == 0
         run: |

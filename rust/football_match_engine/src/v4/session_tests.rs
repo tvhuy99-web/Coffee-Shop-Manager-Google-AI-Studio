@@ -1106,6 +1106,60 @@ mod locomotion_full_match_experiment {
     }
 
     #[test]
+    fn b12_exp5_contact_outcome_is_atomic_in_both_directions() {
+        use crate::v4::shooting::{resolve_shot_v4_des_with_motion,ShotContactResolution};
+        use crate::rng::DeterministicRng;
+        let input=make_v4_input(12056,SimulationMode::FastBatch,RulesModeV4::Standard);
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            for kind in [ShotKindV4::Driven,ShotKindV4::Header] {
+                let mut initial=MatchStateV4::from_input(&input);
+                let shooter=initial.players.iter().position(|p|p.side==side && p.on_pitch && !p.is_goalkeeper).unwrap();
+                let defender=initial.players.iter().position(|p|p.side!=side && p.on_pitch && !p.is_goalkeeper).unwrap();
+                let mirror=|x:f32|if side==TeamSideV4::Home {x} else {105.0-x};
+                for p in &mut initial.players {
+                    p.pos=Vec2::new(mirror(60.0),8.0);
+                    p.vel=Vec2::default();
+                }
+                initial.players[shooter].pos=Vec2::new(mirror(86.0),34.0);
+                initial.players[defender].pos=Vec2::new(mirror(88.0),34.0);
+                let candidates=vec![crate::v4::ball_play::pass_reach_candidate_for_motion(&initial,defender,true,true)];
+                let mut accepted=0;
+                let mut declined=0;
+                for seed in 0..64 {
+                    let mut state=initial.clone();
+                    let mut rng=DeterministicRng::new(seed);
+                    let shot=resolve_shot_v4_des_with_motion(&mut state,&input,&input.timing_model,
+                        shooter,None,Some(kind),false,true,&mut rng);
+                    let had_block=shot.outcome.events.iter().any(|e|e.kind==EventTypeV4::Block);
+                    let launch=shot.trajectory.start_time_ms;
+                    let available=match_physics::find_locomotion_shot_block(&shot.trajectory,&candidates,
+                        launch,launch+shot.planned_flight_ms);
+                    match shot.early_interaction {
+                        ShotContactResolution::CommittedBlock(witness)=>{
+                            accepted+=1;
+                            assert!(had_block);
+                            assert!(available.is_some());
+                            assert_eq!(witness.hit.defender_id.as_deref(),Some(initial.players[defender].player_id.as_str()));
+                            assert_eq!(witness.motion.candidate,candidates[0]);
+                            assert_eq!(witness.hit.time_ms,launch+shot.flight_ms);
+                            let sample=witness.motion.experimental_plan().unwrap().unwrap()
+                                .sample_at(shot.flight_ms).unwrap();
+                            assert!(sample.state.position.distance(witness.hit.ball_pos.xy())<=witness.motion.candidate.reach_m+1e-5);
+                        }
+                        ShotContactResolution::None=>{
+                            assert!(!had_block);
+                            if available.is_some() {declined+=1;}
+                        }
+                        ShotContactResolution::LegacyHit(_)=>panic!("legacy contact leaked into experiment"),
+                    }
+                }
+                assert!(accepted>0,"no accepted contact for {side:?} {kind:?}");
+                assert!(declined>0,"no declined opportunity for {side:?} {kind:?}");
+            }
+        }
+    }
+
+    #[test]
     fn b12_exp5_shot_block_path_survives_checkpoint_and_real_des() {
         // Find a real committed block in deterministic match fixtures;
         // no synthetic player displacement, mocked contact, or forced RNG.
@@ -1282,7 +1336,7 @@ mod locomotion_full_match_experiment {
     #[ignore = "full matches reproducing exp5 shot-block handoff failures"]
     fn b12_exp5_previous_failure_regressions() {
         let mut failures=Vec::new();
-        for seed in [326125_i64,270776,152171,128450] {
+        for seed in [326125_i64,270776,152171,128450,515893,112636,1322407,349846] {
             let index=((seed-104729)/7907) as usize;
             let (input,cohort)=fixture(index,SimulationMode::FastBatch);
             assert_eq!(input.seed,seed);

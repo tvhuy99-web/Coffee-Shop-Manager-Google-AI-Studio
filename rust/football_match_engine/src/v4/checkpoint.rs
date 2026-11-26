@@ -248,7 +248,7 @@ pub struct MatchSessionSnapshotV4 {
     pub locomotion_experiment_id: Option<String>,
 }
 
-pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-shot-block-handoff-exp5r1";
+pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-atomic-shot-contact-exp5r2";
 
 /// Self-verifying versioned DES v1.4 match checkpoint envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -403,6 +403,10 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
     if let Some(f)=&p.pending_flight {
         if experimental && matches!(f.action,FlightActionV4::Shot{..}) {
             let block=f.early_interaction.as_ref().filter(|h|h.kind==crate::v4::interaction::InteractionKind::ShotBlocked);
+            let block_event=f.outcome.events.iter().any(|ev|ev.kind==crate::v4::events::EventTypeV4::Block);
+            if block.is_some()!=block_event {
+                return Err(bad("experimental shot block event/contact mismatch"));
+            }
             match (block,f.pass_contact_motion.as_ref()) {
                 (Some(hit),Some(path)) if hit.defender_id.as_deref()==Some(path.candidate.player_id.as_str())
                     && hit.time_ms==f.resolves_at_ms && path.target==hit.ball_pos.xy()

@@ -90,3 +90,6 @@ Exp5 changes test-only ID to `b1.2-shot-block-locomotion-exp5` and adds actual r
 
 
 Exp5r1 retries the same 1000 pairs after the failed Exp5 handoff (821/1000). Four recorded Exp5 failure seeds run in shard 0 independently of the paired test result. Experimental identity is `b1.2-shot-block-handoff-exp5r1`; no change to production manifest or golden fixtures. Failure diagnostics remain mandatory.
+
+
+Exp5r2 adds mandatory shot-contact preflight before the 1000-pair workflow: atomic accepted/declined contact tests, actual reserved path/restore test, and eight recorded failing seed replays. If preflight fails the population is not run; no completion claim or summary accepted without all 1000 pairs. Legacy L0–L4 remains independently required.
