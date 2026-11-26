@@ -235,6 +235,11 @@ impl MatchSessionV4 {
                 if experimental {
                     let attrs = &profiles.get(p.profile_idx).ok_or_else(||
                         V4Error::InvalidInput("missing experiment actor profile".into()))?.attrs;
+                    let target = if p.is_goalkeeper {
+                        db_ctx.map_or(target, |(kind, _, restart_side, spot)|
+                            crate::v4::movement::experimental_keeper_restart_target(
+                                p.side, kind, restart_side, spot.xy()))
+                    } else { target };
                     let (_,load)=crate::v4::movement::integrate_experimental_actor(p, attrs, target,
                         Some(walk_speed_mps), dt_ms)?;
                     crate::v4::movement::record_experimental_motion(&mut motion_loads[idx],load)?;

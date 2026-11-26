@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: b12-experiment-${{ github.ref }}
+  group: b12-experiment-${{ github.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -40,6 +40,8 @@ jobs:
           cargo test --release --locked -p match_physics --lib b12_acceleration_filter_preserves_direct_contact_results -- --nocapture
           cargo test --release --locked --lib b12_exp7_keeper_guard_geometry_is_mirrored_and_goal_side -- --nocapture
           cargo test --release --locked --lib b12_exp7_keeper_facing_is_independent_of_guard_movement -- --nocapture
+          cargo test --release --locked --lib b12_exp8_keeper_restart_target_stays_in_own_goal_area -- --nocapture
+          cargo test --release --locked --lib b12_exp8_keeper_restart_motion_uses_solver_not_teleport -- --nocapture
       - name: Replay eight previous exp5 and exp5r1 failures
         run: |
           set -euo pipefail

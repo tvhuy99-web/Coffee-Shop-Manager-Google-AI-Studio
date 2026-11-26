@@ -303,6 +303,30 @@ fn experimental_keeper_guard_target(side: TeamSideV4, ball: Vec2, shape: Vec2) -
     Vec2::new(if side == TeamSideV4::Home { depth } else { PITCH_LENGTH_M - depth }, y).clamp_to_pitch()
 }
 
+/// Goalkeepers do not share outfield celebration, wall or attacking-box
+/// setup targets. The goal-area center is a conservative provisional
+/// restart intent; a valid own goal kick may use its actual restart spot.
+/// This selects an intent only, not a teleport or a legal penalty stance.
+pub(crate) fn experimental_keeper_restart_target(
+    side: TeamSideV4,
+    kind: crate::v4::rules::DeadBallKind,
+    restart_side: TeamSideV4,
+    spot: Vec2,
+) -> Vec2 {
+    use match_contracts::spatial::{SIX_YARD_LENGTH_M, SIX_YARD_MIN_Y, SIX_YARD_MAX_Y};
+    use crate::v4::rules::DeadBallKind;
+    let own_depth = if side == TeamSideV4::Home { spot.x } else { PITCH_LENGTH_M - spot.x };
+    if kind == DeadBallKind::GoalKick && restart_side == side
+        && (0.5..=SIX_YARD_LENGTH_M).contains(&own_depth)
+        && (SIX_YARD_MIN_Y..=SIX_YARD_MAX_Y).contains(&spot.y) {
+        return spot;
+    }
+    Vec2::new(
+        if side == TeamSideV4::Home { SIX_YARD_LENGTH_M } else { PITCH_LENGTH_M - SIX_YARD_LENGTH_M },
+        PITCH_WIDTH_M * 0.5,
+    )
+}
+
 /// Experimental runtime integration for actors without a reserved contact path.
 /// Called by the DES test experiment, never by the shipping session.
 pub(crate) fn advance_experimental_tactical_motion(
@@ -979,6 +1003,55 @@ mod b12_experimental_workload_tests {
         assert!(p.last_moved_m > 0.0 && p.last_moved_m <= bound);
         assert_eq!(load.high_entries, 0);
         assert_eq!(load.sprint_entries, 0);
+    }
+
+    #[test]
+    fn b12_exp8_keeper_restart_target_stays_in_own_goal_area() {
+        use crate::v4::rules::DeadBallKind::*;
+        use match_contracts::spatial::SIX_YARD_LENGTH_M;
+        for side in [TeamSideV4::Home, TeamSideV4::Away] {
+            let x = |depth: f32| if side == TeamSideV4::Home { depth } else { PITCH_LENGTH_M - depth };
+            let home = Vec2::new(x(SIX_YARD_LENGTH_M), PITCH_WIDTH_M * 0.5);
+            let far = Vec2::new(x(104.5), 0.5);
+            let near = Vec2::new(x(4.0), 30.0);
+            for kind in [GoalCelebration, Kickoff, Corner, DirectFreeKick,
+                         IndirectFreeKick, QuickFreeKick, PenaltyKick, ThrowIn,
+                         Offside, InjuryStoppage, SubstitutionWindow] {
+                for restart_side in [side, side.opposite()] {
+                    assert_eq!(experimental_keeper_restart_target(side, kind, restart_side, far), home);
+                    assert_eq!(experimental_keeper_restart_target(side, kind, restart_side, near), home);
+                }
+            }
+            assert_eq!(experimental_keeper_restart_target(side, GoalKick, side, near), near);
+            assert_eq!(experimental_keeper_restart_target(side, GoalKick, side, far), home);
+            assert_eq!(experimental_keeper_restart_target(side, GoalKick, side.opposite(), far), home);
+        }
+    }
+
+    #[test]
+    fn b12_exp8_keeper_restart_motion_uses_solver_not_teleport() {
+        let input = crate::v4::tests::make_v4_input(
+            12046, crate::v4::input::SimulationMode::FullEvent,
+            crate::v4::input::RulesModeV4::Standard,
+        );
+        let mut state = MatchStateV4::from_input(&input);
+        for side in [TeamSideV4::Home, TeamSideV4::Away] {
+            let idx = state.players.iter().position(|p| p.side == side && p.is_goalkeeper && p.on_pitch).unwrap();
+            let attrs = *player_attrs(&state, &state.players[idx]);
+            let x = |depth: f32| if side == TeamSideV4::Home { depth } else { PITCH_LENGTH_M - depth };
+            let p = &mut state.players[idx];
+            p.pos = Vec2::new(x(12.0), 34.0);
+            p.vel = Vec2::default();
+            let initial = p.pos;
+            let target = experimental_keeper_restart_target(side,
+                crate::v4::rules::DeadBallKind::Corner, side, Vec2::new(x(104.5), 0.5));
+            let (bound, load) = integrate_experimental_actor(p, &attrs, target, Some(2.1), 500).unwrap();
+            assert!(p.pos.distance(target) < initial.distance(target));
+            assert!(p.pos.distance(target) > 0.0);
+            assert!(p.last_moved_m > 0.0 && p.last_moved_m <= bound);
+            assert_eq!(load.high_entries, 0);
+            assert_eq!(load.sprint_entries, 0);
+        }
     }
 
     #[test]
