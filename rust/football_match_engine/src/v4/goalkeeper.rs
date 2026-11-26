@@ -138,3 +138,21 @@ pub fn resolve_gk_aerial_claim(
 
 // Compatibility export: execution of saves/claims remains here, distribution intent belongs to PI.
 pub use crate::player_intelligence::choose_gk_distribution;
+
+
+/// Experimental shot-contact capability. Reuse the same running solver;
+/// hand extension, reachable height and reflex delay are explicit provisional
+/// priors, not a simulated dive or calibrated anatomical envelope.
+pub(crate) fn shot_contact_candidate(
+    state:&MatchStateV4,idx:usize,
+)->Option<match_physics::PassReachCandidate> {
+    let p=state.players.get(idx)?;
+    if !p.on_pitch || p.sent_off || !p.is_goalkeeper {return None;}
+    let attrs=crate::v4::movement::player_attrs(state,p);
+    let mut candidate=crate::v4::ball_play::pass_reach_candidate_for_motion(state,idx,true,true);
+    candidate.reaction_ms=(280.0-140.0*normalize_attr(attrs.goalkeeping.reflexes)
+        -30.0*normalize_attr(attrs.mental.anticipation)).round() as i64;
+    candidate.reach_m=1.10+0.60*normalize_attr(attrs.goalkeeping.aerial_reach);
+    candidate.playable_height_m=2.05+0.75*normalize_attr(attrs.goalkeeping.aerial_reach);
+    Some(candidate)
+}

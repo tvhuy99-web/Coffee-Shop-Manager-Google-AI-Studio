@@ -600,7 +600,7 @@ pub fn find_pass_contact(
     t_now_ms: i64,
     t_arrival_ms: i64,
 ) -> Option<PassContact> {
-    find_pass_contact_with_motion(traj,defenders,receiver,t_now_ms,t_arrival_ms).map(|(contact,_)|contact)
+    find_pass_contact_with_motion(traj,defenders,receiver,t_now_ms,t_arrival_ms,|_,_,_|true).map(|(contact,_)|contact)
 }
 
 /// The winning sample owns its immutable candidate snapshot. Returning the
@@ -609,6 +609,7 @@ pub fn find_pass_contact(
 fn find_pass_contact_with_motion(
     traj:&BallTrajectory, defenders:&[PassReachCandidate], receiver:Option<&PassReachCandidate>,
     t_now_ms:i64,t_arrival_ms:i64,
+    eligible:impl Fn(&PassReachCandidate,Vec3,i64)->bool,
 )->Option<(PassContact,Option<PassContactMotion>)> {
     if t_arrival_ms <= t_now_ms { return None; }
     let boundary = find_earliest_ball_interaction(traj, &[], t_now_ms, t_arrival_ms);
@@ -628,9 +629,11 @@ fn find_pass_contact_with_motion(
         let ball = traj.position_at_ms(time);
         let elapsed = time - t_now_ms;
         let receiving = receiver.filter(|_| ball.xy().distance(destination) <= 2.0)
+            .filter(|p|eligible(p,ball,elapsed))
             .and_then(|p| p.contact_distance(ball, elapsed));
         let mut best: Option<(&PassReachCandidate, f32)> = None;
         for &p in &nearby {
+            if !eligible(p,ball,elapsed) {continue;}
             if let Some(d) = p.contact_distance(ball, elapsed) {
                 if best.map_or(true, |(prev, prev_d)| d < prev_d - 1e-4
                     || ((d - prev_d).abs() <= 1e-4 && p.player_id < prev.player_id)) {
@@ -691,11 +694,39 @@ pub fn find_locomotion_shot_block(
     if !traj.is_shot {return None;}
     // This entrypoint never accepts an opportunity from the legacy path.
     let candidates:Vec<_>=defenders.iter().filter(|p|p.locomotion.is_some()).cloned().collect();
-    match find_pass_contact_with_motion(traj,&candidates,None,now_ms,goal_ms) {
+    match find_pass_contact_with_motion(traj,&candidates,None,now_ms,goal_ms,|_,_,_|true) {
         Some((PassContact::Other(mut hit),Some(motion))) if hit.kind==InteractionKind::PassInterception=>{
             hit.kind=InteractionKind::ShotBlocked;
             Some(ShotBlockOpportunity{hit,motion})
         }
+        _=>None,
+    }
+}
+
+
+/// A keeper contact is not an outfield block. The caller supplies a
+/// capability/hand-reach snapshot; the shared race supplies the actual
+/// contact time, ball position and immutable motion path.
+#[derive(Debug,Clone)]
+pub struct GoalkeeperContact {
+    pub time_ms:i64,
+    pub ball_pos:Vec3,
+    pub motion:PassContactMotion,
+}
+
+pub fn goalkeeper_hand_contact_allowed(side:TeamSideV4,ball:Vec3)->bool {
+    !ball.xy().is_out_of_bounds()
+        && match_contracts::spatial::is_in_attacking_penalty_box(side.opposite(),ball.xy())
+}
+
+pub fn find_locomotion_goalkeeper_contact(
+    traj:&BallTrajectory, keeper:&PassReachCandidate, now_ms:i64, goal_ms:i64,
+)->Option<GoalkeeperContact> {
+    if !traj.is_shot || keeper.locomotion.is_none() {return None;}
+    match find_pass_contact_with_motion(traj,std::slice::from_ref(keeper),None,now_ms,goal_ms,
+        |p,ball,elapsed|elapsed>=p.reaction_ms && goalkeeper_hand_contact_allowed(p.side,ball)) {
+        Some((PassContact::Other(hit),Some(motion))) if hit.kind==InteractionKind::PassInterception=>
+            Some(GoalkeeperContact{time_ms:hit.time_ms,ball_pos:hit.ball_pos,motion}),
         _=>None,
     }
 }
@@ -1180,6 +1211,41 @@ mod b12_contact_locomotion_tests {
         assert!(at.distance(p.pos)<0.0021);
         assert_eq!(at,plan.sample_at(1).unwrap().state.position);
         assert!(at.x<0.0);
+    }
+
+    #[test]
+    fn b12_goalkeeper_contact_respects_box_reaction_and_momentum() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            let mirror=|x:f32|if side==TeamSideV4::Away {x}else{105.0-x};
+            let sign=if side==TeamSideV4::Away {1.0}else{-1.0};
+            let mut p=candidate(mirror(102.0),0.0);
+            p.side=side;
+            p.reaction_ms=150;
+            p.reach_m=1.5;
+            p.playable_height_m=2.6;
+            let shot=BallTrajectory {
+                start_time_ms:100,start_pos:Vec3::new(mirror(85.0),34.0,1.1),
+                initial_vel:Vec3::new(sign*20.0,0.0,0.0),gravity_z:0.0,drag:0.0,
+                is_shot:true,is_carrier_dribble:false,
+            };
+            let hit=find_locomotion_goalkeeper_contact(&shot,&p,100,1100).unwrap();
+            assert!(hit.time_ms>=250 && hit.time_ms<1100);
+            assert!(goalkeeper_hand_contact_allowed(side,hit.ball_pos));
+            assert_eq!(hit.motion.candidate,p);
+            let terminal=hit.motion.experimental_plan().unwrap().unwrap().sample_at(hit.time_ms-100).unwrap();
+            assert!(terminal.state.position.distance(hit.ball_pos.xy())<=p.reach_m+1e-5);
+            p.pos.y=5.0;
+            assert!(find_locomotion_goalkeeper_contact(&shot,&p,100,1100).is_none());
+            p.pos=Vec2::new(mirror(102.0),34.0);
+            p.reaction_ms=1100;
+            assert!(find_locomotion_goalkeeper_contact(&shot,&p,100,1100).is_none());
+            p.reaction_ms=0;
+            let high=BallTrajectory{start_pos:Vec3::new(mirror(85.0),34.0,3.5),..shot.clone()};
+            assert!(find_locomotion_goalkeeper_contact(&high,&p,100,1100).is_none());
+            let outside=BallTrajectory{start_pos:Vec3::new(mirror(60.0),34.0,1.1),..shot};
+            p.pos=Vec2::new(mirror(65.0),34.0);
+            assert!(find_locomotion_goalkeeper_contact(&outside,&p,100,850).is_none());
+        }
     }
 
     #[test]
