@@ -10,6 +10,7 @@ impl MatchSessionV4 {
         self.pending_flight = None;
         self.pending_decision = None;
         self.pending_carry = None;
+        self.tactical_intents=None;
         self.state.dead_ball = None;
 
         match period {

@@ -98,6 +98,7 @@ pub struct MatchSessionV4 {
     pending_flight: Option<PendingFlightSnapshotV4>,
     pending_decision: Option<PendingDecisionV4>,
     pending_carry: Option<PendingCarryV4>,
+    tactical_intents: Option<crate::v4::movement::TacticalIntentBatch>,
     tackle_ready_at: BTreeMap<String,i64>,
     goal_audit: Option<crate::v4::transition::GoalDeltaAudit>,
     #[cfg(test)]
@@ -159,6 +160,7 @@ impl MatchSessionV4 {
             pending_flight: None,
             pending_decision: None,
             pending_carry: None,
+            tactical_intents: None,
             tackle_ready_at: BTreeMap::new(),
             goal_audit: None,
             #[cfg(test)]
@@ -251,6 +253,7 @@ impl MatchSessionV4 {
             pi_policy_id: PI_POLICY_ID.into(),
             pending_decision: self.pending_decision.clone(),
             pending_carry: self.pending_carry.clone(),
+            tactical_intents: self.tactical_intents.clone(),
             tackle_ready_at: self.tackle_ready_at.clone(),
             locomotion_experiment_id: self.uses_locomotion_experiment().then(|| crate::v4::checkpoint::LOCOMOTION_EXPERIMENT_ID.to_string()),
         };
@@ -317,6 +320,7 @@ impl MatchSessionV4 {
             pending_flight: payload.pending_flight,
             pending_decision: payload.pending_decision,
             pending_carry: payload.pending_carry,
+            tactical_intents: payload.tactical_intents,
             tackle_ready_at: payload.tackle_ready_at,
             goal_audit: None,
             #[cfg(test)]
@@ -1013,6 +1017,7 @@ impl MatchSessionV4 {
         self.pending_flight = None;
         self.pending_decision = None;
         self.pending_carry = None;
+        self.tactical_intents = None;
         self.state.dead_ball = None;
         self.state.des_clock.begin_period(period, regulation_ms);
         self.state.sync_legacy_clock();
@@ -1210,6 +1215,14 @@ impl MatchSessionV4 {
                     }
                 }
 
+                // Ordinary action/manager/restart events start a new intent
+                // epoch. Clock-only checks preserve the observed targets.
+                // Actual tactical commands invalidate in their apply handler;
+                // unmatched clock probes do not.
+                if !matches!(&ev.payload, DesEventPayload::AnnounceAddedTime{..}
+                    | DesEventPayload::CheckPeriodEnd{..} | DesEventPayload::TacticalCommandEffective{..}) {
+                    self.tactical_intents=None;
+                }
                 match ev.payload {
                     DesEventPayload::AnnounceAddedTime { period: p } => {
                         self.handle_announce_added_time(p, auto_advance_breaks)?;

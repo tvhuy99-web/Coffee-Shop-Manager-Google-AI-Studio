@@ -165,6 +165,7 @@ impl MatchSessionV4 {
         let high_line = instructions.line_height >= 68;
         let wasting = instructions.time_wasting >= 55;
         *self.state.active_instructions_mut(side) = instructions;
+        self.tactical_intents=None;
         let ball_pos = self.state.ball.pos;
         self.emit(
             EventTypeV4::TacticalPhaseChanged,
@@ -268,6 +269,7 @@ impl MatchSessionV4 {
         self.pending_flight = None;
         self.pending_decision = None;
         self.pending_carry = None;
+        self.tactical_intents=None;
         self.state.dead_ball = Some(db);
 
         self.scheduler

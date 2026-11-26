@@ -37,22 +37,20 @@ impl MatchSessionV4 {
             }).collect();
             // The experiment reserves every committed path before
             // integrating other actors. No preliminary displacement for those actors.
-            let reserved: Vec<bool> = if experimental {
-                self.state.players.iter().map(|p| {
-                    self.pending_flight.as_ref().and_then(|f| f.pass_contact_motion.as_ref())
-                        .is_some_and(|m| m.candidate.player_id == p.player_id)
-                    || self.pending_carry.as_ref().is_some_and(|c|
-                        c.motion.candidate.player_id == p.player_id ||
-                        c.challenger.as_ref().is_some_and(|m| m.candidate.player_id == p.player_id))
-                    || self.pending_decision.as_ref().is_some_and(|d|
-                        d.challenger.as_ref().is_some_and(|m| m.candidate.player_id == p.player_id)
-                        || d.preparation_motion.as_ref().is_some_and(|m| m.candidate.player_id == p.player_id))
-                }).collect()
-            } else { vec![] };
+            let reserved=if experimental {
+                crate::v4::movement::experimental_reserved_actors(&self.state,
+                    self.pending_flight.as_ref(),self.pending_decision.as_ref(),self.pending_carry.as_ref())
+            }else{Vec::new()};
             let defense = if experimental {
-                crate::v4::movement::advance_experimental_tactical_motion(&mut self.state,
-                    &self.input, self.possession_side, self.carrier_idx, dt_ms,
-                    &mut self.rng, &reserved, &mut budgets, &mut motion_loads)?
+                if self.tactical_intents.is_none(){
+                    self.tactical_intents=Some(crate::v4::movement::plan_experimental_tactical_intents(
+                        &self.state,&self.input,self.possession_side,self.carrier_idx,before_ms,
+                        &mut self.rng,&reserved)?);
+                }
+                let batch=self.tactical_intents.as_ref().ok_or_else(||
+                    V4Error::InvalidInput("missing tactical intent batch".into()))?;
+                crate::v4::movement::integrate_experimental_tactical_intents(&mut self.state,
+                    batch,dt_ms,&reserved,&mut budgets,&mut motion_loads)?
             } else {
                 advance_off_ball_movement_with_report(&mut self.state, &self.input,
                     self.possession_side, self.carrier_idx, dt_sec, &mut self.rng)
@@ -193,6 +191,7 @@ impl MatchSessionV4 {
                 }
             }
         } else {
+            self.tactical_intents=None;
             // NHIỆM VỤ 6: Simulate purposeful low-intensity dead-ball movement (celebration,
             // returning to own half for kickoff, entering box for corner/FK, forming wall).
             let db_ctx = self.state.dead_ball.as_ref().map(|db| (db.kind, db.phase, db.restart_side, db.restart_spot));
@@ -272,6 +271,7 @@ impl MatchSessionV4 {
         if is_ball_in_play {
             let avg_wr = self.team_avg_work_rate(self.possession_side);
             let ball_pos_now = self.state.ball.pos;
+            let prior_phases=(self.state.home.phase,self.state.away.phase);
             let phase_events = update_tactical_phases(
                 &mut self.state,
                 self.possession_side,
@@ -280,6 +280,9 @@ impl MatchSessionV4 {
                 dt_ms,
                 avg_wr,
             );
+            if prior_phases!=(self.state.home.phase,self.state.away.phase){
+                self.tactical_intents=None;
+            }
             if !phase_events.is_empty() {
                 let poss = self.possession_side;
                 self.flush_play_events(phase_events, poss);

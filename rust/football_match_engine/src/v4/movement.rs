@@ -327,51 +327,137 @@ pub(crate) fn experimental_keeper_restart_target(
     )
 }
 
-/// Experimental runtime integration for actors without a reserved contact path.
-/// Called by the DES test experiment, never by the shipping session.
-pub(crate) fn advance_experimental_tactical_motion(
-    state: &mut MatchStateV4,
-    input: &MatchInputV4,
-    possession_side: TeamSideV4,
-    carrier_idx: usize,
-    duration_ms: i64,
-    rng: &mut DeterministicRng,
-    reserved: &[bool],
-    budgets: &mut [f32],
-    loads: &mut [Option<ExperimentalMotionLoad>],
-) -> Result<Vec<DefensiveIntent>, V4Error> {
-    let dt = match_contracts::units::ms_to_seconds_f32(duration_ms);
-    let (targets, defense) = select_movement_targets(state, input, possession_side, carrier_idx, dt, rng, true);
-    for (idx, target) in targets.into_iter().enumerate() {
-        if reserved[idx] { continue; }
-        if let Some(target) = target {
-            let p=&state.players[idx];
-            let attrs = *player_attrs(state,p);
-            let role=defense.iter().find(|a|a.idx==idx).map(|a|a.role);
-            let phase=state.team_state(p.side).phase;
-            let guarding = p.is_goalkeeper && (p.side != possession_side
-                || state.ball.control == BallControlState::Loose);
-            let ball = state.ball.pos.xy();
-            let target = if guarding { experimental_keeper_guard_target(p.side, ball, target) } else { target };
-            let facing = if guarding && p.pos.distance(ball) > 0.001 {
-                Some((ball.y-p.pos.y).atan2(ball.x-p.pos.x))
-            } else { None };
-            // Guarding is a time-sensitive positioning task. The shared
-            // solver already limits speed and brakes for the destination;
-            // distance/2s would impose an additional slow approach.
-            let requested = if guarding { None } else {
-                Some(experimental_tactical_speed(p.pos.distance(target),phase,role,p.is_goalkeeper))
-            };
-            let (bound,load) = integrate_experimental_actor_with_facing(&mut state.players[idx], &attrs, target,
-                requested, facing, duration_ms)?;
-            budgets[idx]=bound;
-            record_experimental_motion(&mut loads[idx],load)?;
-        } else {
-            state.players[idx].last_moved_m = 0.0;
-            state.players[idx].vel = Vec2::default();
+/// Serializable intent, not an outcome or a promised future position.
+#[derive(Debug,Clone,serde::Serialize,serde::Deserialize)]
+pub(crate) struct TacticalActorIntent {
+    player_id: String,
+    target: Vec2,
+    requested_speed: Option<f32>,
+    facing_rad: Option<f32>,
+    role: Option<match_contracts::event_types::DefensiveRole>,
+    marked_idx: Option<usize>,
+}
+
+#[derive(Debug,Clone,serde::Serialize,serde::Deserialize)]
+pub(crate) struct TacticalIntentBatch {
+    planned_at_ms: i64,
+    rows: Vec<Option<TacticalActorIntent>>,
+}
+
+impl TacticalIntentBatch {
+    pub(crate) fn validate(&self,state:&MatchStateV4,reserved:&[bool],now_ms:i64)->Result<(),V4Error>{
+        if self.planned_at_ms<0 || self.planned_at_ms>now_ms
+            || self.rows.len()!=state.players.len() || reserved.len()!=state.players.len() {
+            return Err(candidate_motion_error("tactical intent batch clock/roster"));
+        }
+        for (idx,(row,p)) in self.rows.iter().zip(&state.players).enumerate() {
+            if let Some(row)=row {
+                if !p.on_pitch || p.sent_off || reserved[idx] || row.player_id!=p.player_id
+                    || !row.target.x.is_finite() || !row.target.y.is_finite()
+                    || row.requested_speed.is_some_and(|v|!v.is_finite() || v<0.0)
+                    || row.facing_rad.is_some_and(|v|!v.is_finite())
+                    || row.marked_idx.is_some_and(|i|i>=state.players.len()) {
+                    return Err(candidate_motion_error("invalid tactical actor intent"));
+                }
+            } else if p.on_pitch && !p.sent_off && !reserved[idx] {
+                return Err(candidate_motion_error("missing active tactical actor intent"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One reservation mask used by the world and checkpoint validation.
+pub(crate) fn experimental_reserved_actors(state:&MatchStateV4,
+    flight:Option<&crate::v4::checkpoint::PendingFlightSnapshotV4>,
+    decision:Option<&crate::v4::checkpoint::PendingDecisionV4>,
+    carry:Option<&crate::v4::checkpoint::PendingCarryV4>)->Vec<bool>{
+    state.players.iter().map(|p|{
+        flight.and_then(|f|f.pass_contact_motion.as_ref())
+            .is_some_and(|m|m.candidate.player_id==p.player_id)
+        || carry.is_some_and(|c|c.motion.candidate.player_id==p.player_id
+            || c.challenger.as_ref().is_some_and(|m|m.candidate.player_id==p.player_id))
+        || decision.is_some_and(|d|d.challenger.as_ref().is_some_and(|m|m.candidate.player_id==p.player_id)
+            || d.preparation_motion.as_ref().is_some_and(|m|m.candidate.player_id==p.player_id))
+    }).collect()
+}
+
+/// Choose from the current observation once per semantic action epoch.
+/// Target jitter no longer depends on the length of the next DES interval.
+/// The existing one-second reference noise scale is retained, not calibrated.
+pub(crate) fn plan_experimental_tactical_intents(
+    state:&MatchStateV4,input:&MatchInputV4,possession_side:TeamSideV4,
+    carrier_idx:usize,planned_at_ms:i64,rng:&mut DeterministicRng,reserved:&[bool],
+)->Result<TacticalIntentBatch,V4Error>{
+    if reserved.len()!=state.players.len(){return Err(candidate_motion_error("tactical reservation mask"));}
+    let (targets,defense)=select_movement_targets(state,input,possession_side,carrier_idx,1.0,rng,true);
+    let ball=state.ball.pos.xy();
+    let mut rows=Vec::with_capacity(state.players.len());
+    for (idx,target) in targets.into_iter().enumerate() {
+        let p=&state.players[idx];
+        if !p.on_pitch || p.sent_off || reserved[idx] {rows.push(None);continue;}
+        let target=target.ok_or_else(||candidate_motion_error("missing tactical target"))?;
+        let assignment=defense.iter().find(|a|a.idx==idx);
+        let role=assignment.map(|a|a.role);
+        let phase=state.team_state(p.side).phase;
+        let guarding=p.is_goalkeeper && (p.side!=possession_side || state.ball.control==BallControlState::Loose);
+        let target=if guarding{experimental_keeper_guard_target(p.side,ball,target)}else{target};
+        let facing_rad=if guarding && p.pos.distance(ball)>0.001 {
+            Some((ball.y-p.pos.y).atan2(ball.x-p.pos.x))
+        }else{None};
+        let requested_speed=if guarding{None}else{
+            Some(experimental_tactical_speed(p.pos.distance(target),phase,role,p.is_goalkeeper))
+        };
+        rows.push(Some(TacticalActorIntent{player_id:p.player_id.clone(),target,requested_speed,
+            facing_rad,role,marked_idx:assignment.and_then(|a|a.marked_idx)}));
+    }
+    let batch=TacticalIntentBatch{planned_at_ms,rows};
+    batch.validate(state,reserved,planned_at_ms)?;
+    Ok(batch)
+}
+
+/// Apply previously chosen targets from the actual current motion state.
+/// Capability follows current fatigue; reserved contact paths remain exact.
+/// This is intent persistence, not a claim of partition-invariant integration.
+pub(crate) fn integrate_experimental_tactical_intents(
+    state:&mut MatchStateV4,batch:&TacticalIntentBatch,duration_ms:i64,
+    reserved:&[bool],budgets:&mut [f32],loads:&mut [Option<ExperimentalMotionLoad>],
+)->Result<Vec<DefensiveIntent>,V4Error>{
+    batch.validate(state,reserved,state.des_clock.sim_time_ms)?;
+    if budgets.len()!=state.players.len() || loads.len()!=state.players.len(){
+        return Err(candidate_motion_error("tactical accounting mask"));
+    }
+    let mut defense=Vec::new();
+    for (idx,row) in batch.rows.iter().enumerate(){
+        let Some(row)=row else {
+            if !reserved[idx] {
+                // Inactive actors do not consume a movement interval.
+                state.players[idx].last_moved_m=0.0;
+            }
+            continue;
+        };
+        let attrs=*player_attrs(state,&state.players[idx]);
+        let (bound,load)=integrate_experimental_actor_with_facing(&mut state.players[idx],&attrs,row.target,
+            row.requested_speed,row.facing_rad,duration_ms)?;
+        budgets[idx]=bound;
+        record_experimental_motion(&mut loads[idx],load)?;
+        if let Some(role)=row.role{
+            defense.push(DefensiveIntent{idx,target:row.target,role,marked_idx:row.marked_idx});
         }
     }
     Ok(defense)
+}
+
+/// Isolated one-interval adapter for the existing focused tests.
+#[cfg(test)]
+pub(crate) fn advance_experimental_tactical_motion(
+    state: &mut MatchStateV4, input: &MatchInputV4, possession_side: TeamSideV4,
+    carrier_idx: usize, duration_ms: i64, rng: &mut DeterministicRng,
+    reserved: &[bool], budgets: &mut [f32], loads: &mut [Option<ExperimentalMotionLoad>],
+) -> Result<Vec<DefensiveIntent>, V4Error> {
+    let batch=plan_experimental_tactical_intents(state,input,possession_side,carrier_idx,
+        state.des_clock.sim_time_ms,rng,reserved)?;
+    integrate_experimental_tactical_intents(state,&batch,duration_ms,reserved,budgets,loads)
 }
 
 /// Does not charge fatigue; the centralized DES interval accounting owns it.

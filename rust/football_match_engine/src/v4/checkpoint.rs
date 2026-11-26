@@ -246,9 +246,13 @@ pub struct MatchSessionSnapshotV4 {
     /// Absent for all shipped behavior; legacy canonical JSON remains identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locomotion_experiment_id: Option<String>,
+    /// Experimental off-ball intentions survive passive clock interruptions.
+    /// Absent in legacy checkpoints, preserving their canonical bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tactical_intents: Option<crate::v4::movement::TacticalIntentBatch>,
 }
 
-pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-batch1-ordered-contact";
+pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-batch1-intent-lifetime";
 
 /// One live action may reserve actors until its exclusive resolution or
 /// cancellation. Check cheap ownership/time structure both at event commit
@@ -281,8 +285,14 @@ pub(crate) fn verify_experimental_motion_lifetime(
         Ok(())
     };
     if let Some(f)=flight {
+        // A pending recovery owns a trajectory without claiming that the
+        // ball is a deliberate pass or shot. Both are uncontrolled states.
+        let expected_control=match f.action {
+            FlightActionV4::LooseRecovery{..}=>crate::v4::state::BallControlState::Loose,
+            _=>crate::v4::state::BallControlState::InFlight,
+        };
         if f.trajectory.start_time_ms>now || f.resolves_at_ms<now
-            || state.ball.control!=crate::v4::state::BallControlState::InFlight {
+            || state.ball.control!=expected_control {
             return Err(bad("invalid flight lifetime"));
         }
         if let Some(path)=&f.pass_contact_motion {
@@ -470,6 +480,15 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
     if experimental {
         verify_experimental_motion_lifetime(&p.state,p.pending_flight.as_ref(),
             p.pending_decision.as_ref(),p.pending_carry.as_ref())?;
+    }
+    if let Some(batch)=&p.tactical_intents {
+        if !experimental || p.state.dead_ball.is_some() || p.half_stage.is_break()
+            || matches!(p.half_stage,HalfStageV4::PreMatch|HalfStageV4::FullTime|HalfStageV4::PenaltyShootout) {
+            return Err(bad("tactical intentions outside experimental live play"));
+        }
+        let reserved=crate::v4::movement::experimental_reserved_actors(&p.state,
+            p.pending_flight.as_ref(),p.pending_decision.as_ref(),p.pending_carry.as_ref());
+        batch.validate(&p.state,&reserved,ckpt.sim_time_ms)?;
     }
     let mut contact_paths = Vec::new();
     if let Some(f)=&p.pending_flight {

@@ -1106,6 +1106,39 @@ mod locomotion_full_match_experiment {
     }
 
     #[test]
+    fn b12_batch1_intents_survive_clock_probe_and_checkpoint() {
+        let input=make_v4_input(12051,SimulationMode::FastBatch,RulesModeV4::Standard);
+        let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+        session.step_one_des_event(true).unwrap();
+        session.scheduler.invalidate_live_play();
+        session.begin_player_decision(false).unwrap();
+        let now=session.sim_time_ms();
+        let end=session.pending_decision.as_ref().unwrap().executes_at_ms;
+        assert!(end>now+2);
+        session.schedule_test_clock_probe(now+1).unwrap();
+        session.step_one_des_event(true).unwrap();
+        let ck=session.export_checkpoint().unwrap();
+        let batch=ck.payload.tactical_intents.as_ref().expect("intent epoch survives passive probe");
+        let before=serde_json::to_string(batch).unwrap();
+        let mut restored=MatchSessionV4::from_checkpoint(ck.clone()).unwrap();
+        assert_eq!(serde_json::to_string(restored.tactical_intents.as_ref().unwrap()).unwrap(),before);
+        for s in [&mut session,&mut restored]{
+            s.schedule_test_clock_probe(now+2).unwrap();
+            s.step_one_des_event(true).unwrap();
+            assert_eq!(serde_json::to_string(s.tactical_intents.as_ref().unwrap()).unwrap(),before);
+        }
+        assert_eq!(session.export_checkpoint().unwrap().checksum_hex,restored.export_checkpoint().unwrap().checksum_hex);
+        let side=session.possession_side;
+        let spot=session.state.ball.pos;
+        session.open_dead_ball(DeadBallKind::InjuryStoppage,side,spot,true,false).unwrap();
+        assert!(session.tactical_intents.is_none());
+        assert!(session.pending_decision.is_none());
+        let legacy=MatchSessionV4::new(session.input.clone()).unwrap().export_checkpoint().unwrap();
+        assert!(legacy.payload.tactical_intents.is_none());
+        assert!(!serde_json::to_string(&legacy).unwrap().contains("tacticalIntents"));
+    }
+
+    #[test]
     fn b12_batch1_motion_lifetime_rejects_corrupt_reservations_and_cancels_on_stoppage() {
         let input=make_v4_input(12051,SimulationMode::FastBatch,RulesModeV4::Standard);
         let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
