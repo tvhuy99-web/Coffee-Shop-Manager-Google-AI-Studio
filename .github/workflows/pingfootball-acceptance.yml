@@ -84,6 +84,7 @@ jobs:
             cargo test --workspace --locked --all-targets -- --nocapture
             cargo test --release --locked --lib pi_attribute_isolated_ -- --nocapture
             cargo test --release --locked --lib pi_psychology_ -- --nocapture
+            A4_PERF_REPORT_PATH="$GITHUB_WORKSPACE/evidence/a4-performance.json" cargo test --release --locked --lib a4_transaction_performance_report -- --ignored --nocapture
           ) 2>&1 | tee evidence/rust.log
       - uses: actions/upload-artifact@v4
         if: always()

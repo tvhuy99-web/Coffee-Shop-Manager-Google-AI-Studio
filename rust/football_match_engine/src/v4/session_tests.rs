@@ -762,4 +762,50 @@ mod a4_atomic_api_tests {
         assert!(verify_controlled_actor(&s.state,0).is_err());
     }
 
+    /// Host benchmark with the actual transactional public API. Report only,
+    /// no arbitrary wall-clock threshold on shared runners. ARM64 device
+    /// latency and RSS must be measured separately.
+    #[test]
+    #[ignore = "explicit A4 release performance report"]
+    fn a4_transaction_performance_report(){
+        use std::time::Instant;
+        let mut rows=Vec::new();
+        for seed in [4242,4243,4244] {
+            let input=make_v4_input(seed,SimulationMode::FullEvent,RulesModeV4::Standard);
+            let mut reference=MatchSessionV4::new(input.clone()).unwrap();
+            let start=Instant::now();
+            let expected=reference.run_to_full_time().unwrap();
+            rows.push(serde_json::json!({"seed":seed,"mode":"whole_match","elapsedMs":start.elapsed().as_secs_f64()*1000.0,
+                "events":expected.event_count,"fingerprint":expected.event_timeline_fingerprint}));
+            for batch in [1usize,32,500] {
+                let mut s=MatchSessionV4::new(input.clone()).unwrap();
+                let start=Instant::now();
+                let mut calls=0u64;
+                let mut max_call_ms=0.0f64;
+                let mut delivered=0usize;
+                while !s.is_full_time(){
+                    let call_start=Instant::now();
+                    let step=if s.stage.is_break() {s.start_next_period().unwrap()} else {s.advance_steps(batch).unwrap()};
+                    max_call_ms=max_call_ms.max(call_start.elapsed().as_secs_f64()*1000.0);
+                    calls+=1;
+                    delivered+=step.new_events.len();
+                    assert!(calls<=100_000,"interactive benchmark watchdog");
+                }
+                let actual=s.run_to_full_time().unwrap();
+                let elapsed=start.elapsed().as_secs_f64()*1000.0;
+                assert_eq!(actual.event_timeline_fingerprint,expected.event_timeline_fingerprint);
+                assert_eq!(actual.event_count,expected.event_count);
+                assert_eq!(delivered,actual.event_count as usize);
+                assert_eq!(serde_json::to_string(&actual.summary).unwrap(),serde_json::to_string(&expected.summary).unwrap());
+                rows.push(serde_json::json!({"seed":seed,"mode":"interactive","batch":batch,"calls":calls,
+                    "elapsedMs":elapsed,"maxCallMs":max_call_ms,"events":actual.event_count,
+                    "fingerprint":actual.event_timeline_fingerprint}));
+            }
+        }
+        let report=serde_json::json!({"schema":1,"scope":"host release build, FullEvent, three seeds; not Android device performance","measurements":rows});
+        let json=serde_json::to_string_pretty(&report).unwrap();
+        println!("{json}");
+        if let Ok(path)=std::env::var("A4_PERF_REPORT_PATH"){std::fs::write(path,json).unwrap();}
+    }
+
 }
