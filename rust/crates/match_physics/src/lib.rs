@@ -658,6 +658,22 @@ pub fn find_pass_contact(
     boundary.map(PassContact::Other)
 }
 
+/// Experimental shot-block reach uses the same moving-contact race as a
+/// pass. This returns a physical opportunity, not a block success roll.
+/// Existing ball-boundary geometry and sample resolution remain unchanged.
+pub fn find_locomotion_shot_block(
+    traj:&BallTrajectory, defenders:&[PassReachCandidate], now_ms:i64, goal_ms:i64,
+) -> Option<EarlyInteractionHit> {
+    if !traj.is_shot {return None;}
+    match find_pass_contact(traj,defenders,None,now_ms,goal_ms) {
+        Some(PassContact::Other(mut hit)) if hit.kind==InteractionKind::PassInterception=>{
+            hit.kind=InteractionKind::ShotBlocked;
+            Some(hit)
+        }
+        _=>None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1138,6 +1154,29 @@ mod b12_contact_locomotion_tests {
         assert!(at.distance(p.pos)<0.0021);
         assert_eq!(at,plan.sample_at(1).unwrap().state.position);
         assert!(at.x<0.0);
+    }
+
+    #[test]
+    fn b12_shot_block_requires_shared_reachable_contact() {
+        let mut p=candidate(50.0,0.0);
+        p.reaction_ms=0;
+        let shot=BallTrajectory {
+            start_time_ms:100,start_pos:Vec3::ground(40.0,34.0),
+            initial_vel:Vec3::new(25.0,0.0,0.0),gravity_z:9.81,drag:0.0,
+            is_shot:true,is_carrier_dribble:false,
+        };
+        let hit=find_locomotion_shot_block(&shot,&[p.clone()],100,2700).unwrap();
+        assert_eq!(hit.kind,InteractionKind::ShotBlocked);
+        let plan=p.motion_plan(hit.ball_pos.xy()).unwrap().unwrap();
+        let sample=plan.sample_at(hit.time_ms-100).unwrap();
+        assert!(sample.state.position.distance(hit.ball_pos.xy())<=p.reach_m+1e-5);
+        assert!(hit.time_ms<2700);
+        p.pos.y=65.0;
+        assert!(find_locomotion_shot_block(&shot,&[p],100,2700).is_none());
+        let mut p=candidate(50.0,0.0);
+        p.playable_height_m=0.5;
+        let high=BallTrajectory{start_pos:Vec3::new(40.0,34.0,5.0),gravity_z:0.0,..shot};
+        assert!(find_locomotion_shot_block(&high,&[p],100,2700).is_none());
     }
 
     #[test]

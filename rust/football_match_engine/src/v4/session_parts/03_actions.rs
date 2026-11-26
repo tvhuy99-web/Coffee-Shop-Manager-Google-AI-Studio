@@ -638,8 +638,26 @@ impl MatchSessionV4 {
         let now = self.state.des_clock.sim_time_ms;
         let side = self.state.players[shooter_idx].side;
         let mut resolved = self.state.clone();
-        let shot = resolve_shot_v4_des(&mut resolved, &self.input, &self.input.timing_model,
-            shooter_idx, assist_idx, shot_kind, false, &mut self.rng);
+        let experimental=self.uses_locomotion_experiment();
+        let shot = crate::v4::shooting::resolve_shot_v4_des_with_motion(&mut resolved, &self.input, &self.input.timing_model,
+            shooter_idx, assist_idx, shot_kind, false, experimental, &mut self.rng);
+        // In the experiment a selected shot blocker follows exactly the
+        // same reserved path as a pass interceptor. No instantaneous
+        // correction of the actor when the block event is committed.
+        let block_motion=if experimental {
+            if let Some(hit)=shot.early_interaction.as_ref().filter(|h|h.kind==InteractionKind::ShotBlocked) {
+                let idx=self.state.players.iter().position(|p|Some(p.player_id.as_str())==hit.defender_id.as_deref())
+                    .ok_or_else(||V4Error::InvalidInput("missing shot blocker".into()))?;
+                let candidate=self.contact_candidate(idx,true);
+                let target=hit.ball_pos.xy();
+                let predicted=candidate.contact_position_toward(target,hit.time_ms-now)
+                    .ok_or_else(||V4Error::InvalidInput("invalid shot block path".into()))?;
+                if predicted.distance(target)>candidate.reach_m+1e-5 {
+                    return Err(V4Error::InvalidInput("unreachable shot block".into()));
+                }
+                Some(PassContactMotion{candidate,target,started_at_ms:now})
+            } else {None}
+        } else {None};
         let delta = FlightCounterDeltaV4::between(&self.state, &resolved);
         self.state.next_highlight_sequence_id = resolved.next_highlight_sequence_id;
         let flight = PendingFlightSnapshotV4 {
@@ -649,7 +667,7 @@ impl MatchSessionV4 {
             action: FlightActionV4::Shot { shooter_idx },
             outcome: shot.outcome, ball_after: resolved.ball, counter_delta: delta,
             won_corner: shot.won_corner, early_interaction: shot.early_interaction,
-            pass_contact_motion: None,
+            pass_contact_motion: block_motion,
             offside_at_launch: Vec::new(),
         };
         let payload = DesEventPayload::ShotArrival { shooter_id: self.state.players[shooter_idx].player_id.clone(), side,

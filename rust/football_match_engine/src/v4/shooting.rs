@@ -58,6 +58,21 @@ pub fn resolve_shot_v4_des(
     is_rebound: bool,
     rng: &mut DeterministicRng,
 ) -> DesShotOutcome {
+    resolve_shot_v4_des_with_motion(state,input,timing,shooter_idx,assist_idx,forced_kind,is_rebound,false,rng)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_shot_v4_des_with_motion(
+    state: &mut MatchStateV4,
+    input: &MatchInputV4,
+    timing: &TimingModelConfig,
+    shooter_idx: usize,
+    assist_idx: Option<usize>,
+    forced_kind: Option<ShotKindV4>,
+    is_rebound: bool,
+    experimental: bool,
+    rng: &mut DeterministicRng,
+) -> DesShotOutcome {
     let mut events = Vec::with_capacity(6);
     let att_side = state.players[shooter_idx].side;
     let def_side = att_side.opposite();
@@ -258,10 +273,17 @@ pub fn resolve_shot_v4_des(
     state.ball.last_touch_player_id = Some(shooter_id.clone());
 
     // 1. Live-ball block check BEFORE reaching the goal line via continuous interaction detector.
-    if !one_vs_one && !is_header {
-        let defenders = build_defender_candidates(state, def_side, false);
-        let early_hit =
-            find_earliest_ball_interaction(&shot_traj, &defenders, t_now_ms, t_goal_ms);
+    if experimental || (!one_vs_one && !is_header) {
+        let early_hit = if experimental {
+            let defenders:Vec<_>=state.players.iter().enumerate()
+                .filter(|(_,p)|p.on_pitch && !p.sent_off && p.side==def_side && !p.is_goalkeeper)
+                .map(|(idx,_)|crate::v4::ball_play::pass_reach_candidate_for_motion(state,idx,true,true))
+                .collect();
+            match_physics::find_locomotion_shot_block(&shot_traj,&defenders,t_now_ms,t_goal_ms)
+        } else {
+            let defenders=build_defender_candidates(state,def_side,false);
+            find_earliest_ball_interaction(&shot_traj,&defenders,t_now_ms,t_goal_ms)
+        };
 
         let blocked_candidate: Option<(usize, Vec3, i64, Option<EarlyInteractionHit>)> =
             if let Some(hit) = early_hit.filter(|h| h.kind == InteractionKind::ShotBlocked) {
@@ -283,7 +305,7 @@ pub fn resolve_shot_v4_des(
                     None
                 }
             } else if let Some((blk_idx, blk_prob)) =
-                find_shot_blocker(state, att_side, shooter_pos, goal_center)
+                if experimental {None} else {find_shot_blocker(state, att_side, shooter_pos, goal_center)}
             {
                 if (rng.next_double() as f32) < blk_prob {
                     let pos = Vec3::new(
