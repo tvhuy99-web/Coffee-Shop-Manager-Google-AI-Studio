@@ -181,6 +181,14 @@ impl MatchSessionV4 {
         { false }
     }
 
+    fn runtime_behavior_label(&self) -> String {
+        if self.uses_locomotion_experiment() {
+            crate::v4::checkpoint::LOCOMOTION_EXPERIMENT_ID.to_string()
+        } else {
+            ENGINE_VERSION_V4.to_string()
+        }
+    }
+
     pub fn is_full_time(&self) -> bool {
         self.finished || self.stage.is_full_time()
     }
@@ -252,7 +260,7 @@ impl MatchSessionV4 {
 
         Ok(MatchCheckpointV4 {
             checkpoint_schema_version: CHECKPOINT_SCHEMA_VERSION_V4,
-            engine_version: ENGINE_VERSION_V4.to_string(),
+            engine_version: self.runtime_behavior_label(),
             protocol_version: ENGINE_PROTOCOL_VERSION_V4,
             event_schema_version: EVENT_SCHEMA_VERSION_V4,
             ruleset_identity: self.ruleset.identity.clone(),

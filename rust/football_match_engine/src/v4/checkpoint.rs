@@ -288,9 +288,12 @@ pub fn compute_checkpoint_checksum(payload_json: &str) -> String {
 /// Validates checkpoint integrity, schema/protocol compatibility, ruleset identity, and checksum.
 pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
     if let Some(id) = ckpt.payload.locomotion_experiment_id.as_deref() {
-        if !cfg!(test) || id != LOCOMOTION_EXPERIMENT_ID {
+        if !cfg!(test) || id != LOCOMOTION_EXPERIMENT_ID || ckpt.engine_version != id {
             return Err(V4Error::InvalidInput(format!("unsupported locomotion experiment: {id}")));
         }
+    }
+    if ckpt.payload.locomotion_experiment_id.is_none() && ckpt.engine_version == LOCOMOTION_EXPERIMENT_ID {
+        return Err(V4Error::InvalidInput("missing locomotion experiment identity".into()));
     }
     if ckpt.checkpoint_schema_version != CHECKPOINT_SCHEMA_VERSION_V4 {
         return Err(V4Error::InvalidInput(format!(

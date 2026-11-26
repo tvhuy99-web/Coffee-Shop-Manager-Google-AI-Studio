@@ -1067,3 +1067,143 @@ mod locomotion_calibration_tests {
         assert_eq!(failures, 0, "inspect report for candidate failures");
     }
 }
+
+
+#[cfg(test)]
+mod locomotion_full_match_experiment {
+    use super::*;
+    use crate::v4::checkpoint::LOCOMOTION_EXPERIMENT_ID;
+    use crate::v4::input::{SimulationMode, RulesModeV4};
+    use crate::v4::tests::{make_v4_input, make_v4_input_teams, make_v4_team};
+    use serde_json::{json, Value};
+    use std::time::Instant;
+
+    #[test]
+    fn b12_experiment_checkpoint_identity_and_resume() {
+        let input = make_v4_input(12051, SimulationMode::FastBatch, RulesModeV4::Standard);
+        let legacy = MatchSessionV4::new(input.clone()).unwrap().export_checkpoint().unwrap();
+        assert!(legacy.payload.locomotion_experiment_id.is_none());
+        assert!(!serde_json::to_string(&legacy).unwrap().contains("locomotionExperimentId"));
+        let mut candidate = MatchSessionV4::new_locomotion_experiment(input).unwrap();
+        candidate.advance_steps(25).unwrap();
+        let checkpoint = candidate.export_checkpoint().unwrap();
+        assert_eq!(checkpoint.engine_version, LOCOMOTION_EXPERIMENT_ID);
+        assert_eq!(checkpoint.payload.locomotion_experiment_id.as_deref(), Some(LOCOMOTION_EXPERIMENT_ID));
+        let mut invalid = checkpoint.clone();
+        invalid.payload.locomotion_experiment_id = None;
+        invalid.checksum_hex = compute_checkpoint_checksum(&serde_json::to_string(&invalid.payload).unwrap());
+        assert!(MatchSessionV4::from_checkpoint(invalid).is_err());
+        let mut invalid = checkpoint.clone();
+        invalid.payload.locomotion_experiment_id = Some("unknown".into());
+        invalid.checksum_hex = compute_checkpoint_checksum(&serde_json::to_string(&invalid.payload).unwrap());
+        assert!(MatchSessionV4::from_checkpoint(invalid).is_err());
+        let encoded = serde_json::to_string(&checkpoint).unwrap();
+        let mut resumed = MatchSessionV4::from_checkpoint(serde_json::from_str(&encoded).unwrap()).unwrap();
+        assert!(resumed.uses_locomotion_experiment());
+        candidate.advance_steps(25).unwrap();
+        resumed.advance_steps(25).unwrap();
+        assert_eq!(candidate.export_checkpoint().unwrap().checksum_hex, resumed.export_checkpoint().unwrap().checksum_hex);
+    }
+
+    fn fixture(index: usize, mode: SimulationMode) -> (MatchInputV4, &'static str) {
+        let seed = 104729_i64 + index as i64 * 7907;
+        let (name, hl, al, press) = match index % 4 {
+            0 => ("reference",14,12,None),
+            1 => ("balanced",14,14,None),
+            2 => ("strong_away",12,14,None),
+            _ => ("high_press",14,12,Some(85)),
+        };
+        let mut home = make_v4_team("H","HOME_V4",hl);
+        let mut away = make_v4_team("A","AWAY_V4",al);
+        if let Some(press) = press {
+            home.team_instructions.pressing_intensity = press;
+            away.team_instructions.pressing_intensity = press;
+        }
+        (make_v4_input_teams(seed,mode,RulesModeV4::Standard,home,away),name)
+    }
+
+    fn run(input: MatchInputV4, experiment: bool) -> Value {
+        let start = Instant::now();
+        let mut session = if experiment {
+            MatchSessionV4::new_locomotion_experiment(input).unwrap()
+        } else { MatchSessionV4::new(input).unwrap() };
+        // Advance individual atomic events for a useful first-failure clock.
+        // Full time still uses the same result builder and session lifecycle.
+        while !session.is_full_time() {
+            if session.stage.is_break() {
+                if let Err(err) = session.begin_next_period_internal() {
+                    return json!({"ok":false,"time_ms":session.sim_time_ms(),"error":format!("{err:?}")});
+                }
+                continue;
+            }
+            if let Err(err) = session.step_one_des_event(true) {
+                return json!({"ok":false,"time_ms":session.sim_time_ms(),"error":format!("{err:?}")});
+            }
+            session.completed_beats += 1;
+            if session.completed_beats > 250_000 {
+                return json!({"ok":false,"time_ms":session.sim_time_ms(),"error":"experiment watchdog"});
+            }
+        }
+        session.finished = true;
+        let result = session.build_result();
+        let players: Vec<_> = session.state.players.iter().map(|p| json!({
+            "id":p.player_id, "slot":p.slot_id,"goalkeeper":p.is_goalkeeper,
+            "distance_m":p.fatigue.distance_m,"aerobic":p.fatigue.aerobic,
+            "anaerobic":p.fatigue.anaerobic,"interval_sprint_counter":p.fatigue.sprint_count,
+        })).collect();
+        json!({
+            "ok":true,"behavior_id":result.engine_version,"wall_ms":start.elapsed().as_secs_f64()*1000.0,
+            "fingerprint":result.event_timeline_fingerprint,"events":result.event_count,
+            "time_ms":session.sim_time_ms(),"live_ms":session.state.des_clock.ball_in_play_ms,
+            "dead_ms":session.state.des_clock.ball_out_of_play_ms,
+            "home_goals":result.summary.home.goals,"away_goals":result.summary.away.goals,
+            "shots":u32::from(result.summary.home.shots)+u32::from(result.summary.away.shots),
+            "passes":u32::from(result.summary.home.passes_attempted)+u32::from(result.summary.away.passes_attempted),
+            "completed_passes":u32::from(result.summary.home.passes_completed)+u32::from(result.summary.away.passes_completed),
+            "fouls":u32::from(result.summary.home.fouls)+u32::from(result.summary.away.fouls),
+            "players":players,
+        })
+    }
+
+    #[test]
+    #[ignore = "experimental full-match cross-mode test, not production golden"]
+    fn b12_experiment_cross_mode() {
+        let (input,_) = fixture(0,SimulationMode::FastBatch);
+        let mut full = input.clone();
+        full.simulation_mode = SimulationMode::FullEvent;
+        let a = run(input,true);
+        let b = run(full,true);
+        assert_eq!(a["ok"],true,"{a}");
+        assert_eq!(b["ok"],true,"{b}");
+        for key in ["fingerprint","events","time_ms","home_goals","away_goals","players"] {
+            assert_eq!(a[key],b[key],"mismatch {key}");
+        }
+    }
+
+    #[test]
+    #[ignore = "paired full-match experiment, run in separate evidence workflow"]
+    fn b12_experiment_paired_report() {
+        let shard = std::env::var("B12_EXPERIMENT_SHARD").ok().map(|s|s.parse::<usize>().unwrap()).unwrap_or(0);
+        let count = std::env::var("B12_EXPERIMENT_COUNT").ok().map(|s|s.parse::<usize>().unwrap()).unwrap_or(250);
+        assert!(shard<4 && (1..=250).contains(&count));
+        let mut rows=Vec::with_capacity(count);
+        let mut failures=0;
+        for i in 0..count {
+            let index=4*i+shard;
+            let (input,cohort)=fixture(index,SimulationMode::FastBatch);
+            let seed=input.seed;
+            let legacy=run(input.clone(),false);
+            let experiment=run(input,true);
+            if legacy["ok"]!=true || experiment["ok"]!=true { failures+=1; }
+            rows.push(json!({"seed":seed,"cohort":cohort,"legacy":legacy,"experiment":experiment}));
+        }
+        let report=json!({"schema":1,"scope":"hybrid_experiment_full_match_pairs",
+            "behavior_id":LOCOMOTION_EXPERIMENT_ID,"shard":shard,"attempted_pairs":count,
+            "failed_pairs":failures,"rows":rows});
+        if let Ok(path)=std::env::var("B12_EXPERIMENT_REPORT_PATH") {
+            std::fs::write(path,serde_json::to_vec(&report).unwrap()).unwrap();
+        }
+        println!("B12_EXPERIMENT shard={shard} attempted={count} failures={failures}");
+        assert_eq!(failures,0,"inspect paired experiment failure rows");
+    }
+}
