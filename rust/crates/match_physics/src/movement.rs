@@ -168,6 +168,14 @@ pub struct BallReachHit {
     pub motion: MotionResult,
 }
 
+/// Threshold exposure along a motion plan, independent of the number of
+/// DES calls. Entries count upward crossings, not intervals or possessions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpeedExposure {
+    pub above_threshold_s: f32,
+    pub entries: u32,
+}
+
 /// Immutable snapshot for both prediction and execution. Sampling at an absolute
 /// elapsed time never replans, consumes RNG or depends on previous queries.
 /// Not yet wired to production or serialized in checkpoints.
@@ -358,6 +366,45 @@ impl MotionPlan {
         hit.map(|(elapsed_ms, ball_position)| Ok(BallReachHit {
             elapsed_ms, ball_position, motion: self.sample_at(elapsed_ms)?,
         })).transpose()
+    }
+
+    /// Time strictly above a chosen speed and upward crossings. Within
+    /// each constant-acceleration segment the squared speed is quadratic.
+    /// The threshold is caller-owned and is not a fatigue or outcome quota.
+    /// An actor already above threshold at plan origin is not a new entry.
+    pub fn speed_exposure_at(&self, elapsed_ms: i64, threshold_mps: f32)
+        -> Result<SpeedExposure, MotionError>
+    {
+        if !threshold_mps.is_finite() || threshold_mps <= 0.0 {
+            return Err(MotionError::InvalidReach);
+        }
+        let threshold_sq = (threshold_mps as f64).powi(2);
+        let mut above_s = 0.0_f64;
+        let mut entries = 0_u32;
+        self.walk(elapsed_ms, |_, span, _, v, dv| {
+            let a = dv.dot(dv);
+            let b = 2.0 * v.dot(dv);
+            let c = v.dot(v) - threshold_sq;
+            let end = v.add(dv);
+            let end_above = end.dot(end) > threshold_sq;
+            let below_fraction = if a == 0.0 {
+                if c <= 0.0 { 1.0 } else { 0.0 }
+            } else {
+                let discriminant = b*b - 4.0*a*c;
+                if discriminant > 0.0 {
+                    let root = discriminant.sqrt();
+                    let low = (-b-root)/(2.0*a);
+                    let high = (-b+root)/(2.0*a);
+                    (high.min(1.0)-low.max(0.0)).clamp(0.0,1.0)
+                } else { 0.0 }
+            };
+            above_s += span as f64 / 1000.0 * (1.0-below_fraction);
+            if end_above && (c <= 0.0 || below_fraction > 0.0) {
+                entries += 1;
+            }
+            false
+        })?;
+        Ok(SpeedExposure { above_threshold_s: above_s as f32, entries })
     }
 
     fn walk(&self, elapsed_ms: i64, mut visit: impl FnMut(i64, i64, D2, D2, D2) -> bool)
@@ -611,6 +658,24 @@ mod solver_tests {
             initial_vel: Vec3::default(), gravity_z: 0.0, ..ball };
         assert!(p.first_ball_reach(&airborne,100,1000,1.0,1.2,None).unwrap().is_none());
         assert_eq!(p.first_ball_reach(&ball,99,1000,1.0,1.2,None),Err(MotionError::InvalidHorizon));
+    }
+
+    #[test]
+    fn b12_speed_exposure_counts_crossings_not_calls() {
+        let p=plan(initial(0.0,0.0),intent(100.0,34.0,1.0));
+        let a=p.speed_exposure_at(1000,6.0).unwrap();
+        let b=p.speed_exposure_at(2000,6.0).unwrap();
+        let c=p.speed_exposure_at(3000,6.0).unwrap();
+        assert_eq!(a.entries,0);
+        assert_eq!(b.entries,1);
+        assert_eq!(c.entries,1);
+        near(b.above_threshold_s,0.5,1e-4);
+        near(c.above_threshold_s,1.5,1e-4);
+        let rev=plan(initial(8.0,0.0),intent(0.0,34.0,1.0));
+        let exposure=rev.speed_exposure_at(4000,6.0).unwrap();
+        assert_eq!(exposure.entries,1);
+        near(exposure.above_threshold_s,1.3,1e-4);
+        assert_eq!(p.speed_exposure_at(1000,0.0),Err(MotionError::InvalidReach));
     }
 
     #[test]
