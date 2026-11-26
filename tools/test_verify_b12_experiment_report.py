@@ -16,14 +16,14 @@ class ReportValidatorTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name)
 
-    def write_population(self, corrupt=None):
+    def write_population(self, corrupt=None, count=250):
         players = [{"id": f"p{i}", "slot": "CF", "goalkeeper": i in (0, 11),
                     "distance_m": 9000, "aerobic": 55, "anaerobic": 80,
                     "sprint_counter": 12, "high_intensity_counter": 25}
                    for i in range(22)]
         for shard, cohort in enumerate(report.COHORTS):
             rows = []
-            for i in range(250):
+            for i in range(count):
                 a = dict.fromkeys(report.FIELDS, 0)
                 b = dict.fromkeys(report.FIELDS, 0)
                 a.update(ok=True, behavior_id="synthetic-legacy", fingerprint="old",
@@ -45,7 +45,7 @@ class ReportValidatorTests(unittest.TestCase):
                              "cohort": cohort, "legacy": a, "experiment": b})
             data = {"schema": 1, "scope": "hybrid_experiment_full_match_pairs",
                     "behavior_id": report.BEHAVIOR, "shard": shard,
-                    "attempted_pairs": 250, "failed_pairs": 0, "rows": rows}
+                    "attempted_pairs": count, "failed_pairs": 0, "rows": rows}
             (self.path / f"b12-exp-{shard}.json").write_text(json.dumps(data))
 
     def test_pooled_rates_and_total_goal_distribution(self):
@@ -68,6 +68,19 @@ class ReportValidatorTests(unittest.TestCase):
             self.assertIsNone(rates["legacy_keeper_probe_no_reach_share"])
             self.assertEqual(rates["experiment_keeper_probe_no_reach_share"], .5)
             self.assertEqual(rates["experiment_keeper_probe_mean_segment_m"], 2)
+
+    def test_smoke_evidence_cannot_pass_as_full_population(self):
+        self.write_population(count=12)
+        with self.assertRaisesRegex(ValueError, "wrong shard size"):
+            report.main(self.path)
+        with contextlib.redirect_stdout(io.StringIO()):
+            report.main(self.path, 12)
+        data = json.loads((self.path / "b12-experiment-summary.json").read_text())
+        self.assertEqual(data["evidence_tier"], "smoke")
+        self.assertEqual(data["successful_pairs"], 48)
+        self.assertTrue(data["production_acceptance"].startswith("BLOCKED"))
+        with self.assertRaisesRegex(ValueError, "invalid evidence tier"):
+            report.main(self.path, 1)
 
     def test_rejects_impossible_probe_counts(self):
         self.write_population(lambda a, b: b.update(shot_probe_no_reach=5))

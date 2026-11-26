@@ -3,13 +3,22 @@ name: B1.2 experimental locomotion evidence
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'rust/**'
       - 'tools/verify_b12_experiment_report.py'
       - 'tools/test_verify_b12_experiment_report.py'
       - '.github/workflows/b12-locomotion-experiment.yml'
   workflow_dispatch:
+    inputs:
+      evidence_tier:
+        description: 'smoke (48), integration (200), or full (1000)'
+        type: choice
+        options: [smoke, integration, full]
+        default: full
+
+env:
+  B12_PAIRS_PER_SHARD: ${{ github.event_name == 'workflow_dispatch' && (inputs.evidence_tier == 'smoke' && '12' || inputs.evidence_tier == 'integration' && '50' || '250') || (github.event.pull_request.draft && '12' || '250') }}
 
 permissions:
   contents: read
@@ -39,6 +48,7 @@ jobs:
           cargo test --release --locked -p match_physics --lib b12_goalkeeper_contact_respects_box_reaction_and_momentum -- --nocapture
           cargo test --release --locked -p match_physics --lib b12_exp10_keeper_contact_short_window_and_integer_oracle -- --nocapture
           cargo test --release --locked -p match_physics --lib b12_exp11_block_contact -- --nocapture
+          cargo test --release --locked -p match_physics --lib b12_batch1_pass_and_recovery_share_integer_contact_race -- --nocapture
           cargo test --release --locked --lib b12_candidate_live_uses_same_target_policy_rng_and_terminal_velocity -- --nocapture
           cargo test --release --locked -p match_physics --lib b12_acceleration_filter_preserves_direct_contact_results -- --nocapture
           cargo test --release --locked --lib b12_exp7_keeper_guard_geometry_is_mirrored_and_goal_side -- --nocapture
@@ -64,13 +74,13 @@ jobs:
         shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
-      - name: Paired full matches (250 unique seeds per shard)
+      - name: Paired full matches (selected evidence tier)
         run: |
           set -euo pipefail
           mkdir -p evidence
           (
             cd rust/football_match_engine
-            B12_EXPERIMENT_SHARD=${{ matrix.shard }} B12_EXPERIMENT_COUNT=250 B12_EXPERIMENT_REPORT_PATH="$GITHUB_WORKSPACE/evidence/b12-exp-${{ matrix.shard }}.json" cargo test --release --locked --lib b12_experiment_paired_report -- --ignored --nocapture
+            B12_EXPERIMENT_SHARD=${{ matrix.shard }} B12_EXPERIMENT_COUNT="$B12_PAIRS_PER_SHARD" B12_EXPERIMENT_REPORT_PATH="$GITHUB_WORKSPACE/evidence/b12-exp-${{ matrix.shard }}.json" cargo test --release --locked --lib b12_experiment_paired_report -- --ignored --nocapture
           ) 2>&1 | tee evidence/b12-exp-${{ matrix.shard }}.log
       - name: Replay recorded exp1 failure seeds
         if: always() && matrix.shard == 0
@@ -102,8 +112,8 @@ jobs:
           pattern: b12-experiment-shard-*
           merge-multiple: true
           path: evidence
-      - name: Validate all 1000 pairs and summarize
-        run: python3 tools/verify_b12_experiment_report.py evidence
+      - name: Validate exact selected population and summarize
+        run: python3 tools/verify_b12_experiment_report.py evidence "$B12_PAIRS_PER_SHARD"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

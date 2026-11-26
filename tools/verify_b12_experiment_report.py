@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
 
-BEHAVIOR = "b1.2-shot-block-window-exp11"
+BEHAVIOR = "b1.2-batch1-shared-reach"
 COHORTS = ["reference", "balanced", "strong_away", "high_press"]
 FIELDS = ["home_goals", "away_goals", "shots", "passes", "completed_passes",
           "fouls", "live_ms", "dead_ms", "events", "wall_ms",
@@ -39,7 +39,10 @@ def stats(values):
             "min": ordered[0], "max": ordered[-1]}
 
 
-def main(directory):
+def main(directory, pairs_per_shard=250):
+    require(pairs_per_shard in (12, 50, 250), "invalid evidence tier")
+    population = pairs_per_shard * len(COHORTS)
+    tier = {12: "smoke", 50: "integration", 250: "full"}[pairs_per_shard]
     cohorts = defaultdict(lambda: defaultdict(list))
     roles = defaultdict(lambda: defaultdict(list))
     failures = []
@@ -52,7 +55,7 @@ def main(directory):
                 "wrong report schema/scope")
         require(report["behavior_id"] == BEHAVIOR and report["shard"] == shard,
                 "wrong experiment identity")
-        require(report["attempted_pairs"] == len(report["rows"]) == 250, "wrong shard size")
+        require(report["attempted_pairs"] == len(report["rows"]) == pairs_per_shard, "wrong shard size")
         shard_failed = 0
         for i, row in enumerate(report["rows"]):
             seed = row["seed"]
@@ -110,16 +113,16 @@ def main(directory):
                     roles[group]["experiment_" + field].append(y)
                     roles[group]["delta_" + field].append(y - x)
         require(shard_failed == report["failed_pairs"], "failure count mismatch")
-    require(len(seeds) == 1000 and successful + len(failures) == 1000, "population count mismatch")
+    require(len(seeds) == population and successful + len(failures) == population, "population count mismatch")
     summary = {
         "schema": 1, "scope": "hybrid_experiment_full_match_pairs", "behavior_id": BEHAVIOR,
-        "attempted_pairs": 1000, "successful_pairs": successful,
+        "evidence_tier": tier, "attempted_pairs": population, "successful_pairs": successful,
         "failed_pairs": len(failures), "changed_fingerprints_in_successful_pairs": changed,
         "failure_rows": failures,
         "cohort_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in cohorts.items()},
         "role_distributions": {g: {k: stats(v) for k, v in m.items()} for g, m in roles.items()},
         "production_acceptance": "BLOCKED: remaining execution paths, rule boundaries, non-pass perception, sprint episode definition, performance and tracking calibration incomplete",
-        "notes": ["Exp11 retains Exp10 keeper contact search and applies complete integer-millisecond windows to experimental outfield shot-block contacts. Shot, block and save probabilities and reach priors are unchanged. Probe counts are experimental open-play scheduled shot launches only; legacy probe fields are zero/not measured.",
+        "notes": ["Batch1 shares complete integer-ms contact windows across experimental passes, shot blocks, saves and loose/grounded recovery. Shot, block and save probabilities and reach priors are unchanged. Probe counts are experimental open-play scheduled shot launches only; legacy probe fields are zero/not measured.",
                   "Keeper segment/depth/speed fields are sums over probe launches, divide by total probe count; diagnostic probe time is excluded from wall_ms. Scheduled shots may be cancelled before commit, so probe counts are not a subset of committed shot totals.",
                   "Pooled rates are descriptive. Goals and saves may include restarts/own goals; ratios are not a disjoint shot-outcome partition.",
                   "Distributions are conditional on successful pairs; failures are retained.",
@@ -150,10 +153,10 @@ def main(directory):
     summary["pooled_rates"] = rates
     (directory / "b12-experiment-summary.json").write_text(
         json.dumps(summary, indent=2, allow_nan=False) + "\n")
-    print(f"B1.2 hybrid full-match experiment: {successful}/1000 successful pairs; "
+    print(f"B1.2 hybrid full-match experiment: {successful}/{population} successful pairs; "
           f"{len(failures)} failed; {changed} changed fingerprints")
     require(not failures, "experimental pairs failed; inspect summary")
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]))
+    main(Path(sys.argv[1]), int(sys.argv[2]) if len(sys.argv)>2 else 250)

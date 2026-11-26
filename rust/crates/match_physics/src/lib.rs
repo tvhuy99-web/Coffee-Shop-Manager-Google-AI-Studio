@@ -630,6 +630,14 @@ pub fn find_pass_contact(
     t_now_ms: i64,
     t_arrival_ms: i64,
 ) -> Option<PassContact> {
+    // The production/legacy race retains its exact sampling and outcomes.
+    // A mixed set also retains legacy semantics; the experimental engine
+    // supplies locomotion snapshots for every participant.
+    if (receiver.is_some() || !defenders.is_empty())
+        && defenders.iter().all(|p| p.locomotion.is_some())
+        && receiver.is_none_or(|p| p.locomotion.is_some()) {
+        return find_experimental_pass_contact(traj,defenders,receiver,t_now_ms,t_arrival_ms);
+    }
     find_pass_contact_with_motion(traj,defenders,receiver,t_now_ms,t_arrival_ms,|_,_,_|true).map(|(contact,_)|contact)
 }
 
@@ -721,6 +729,89 @@ fn locomotion_window_may_reach(p: &PassReachCandidate, start: Vec2, end: Vec2, e
         <= bound + p.reach_m as f64 + 0.01
 }
 
+/// Shared integer-time race for straight horizontal ball trajectories.
+/// Eligibility and receiver priority are explicit at the call site.
+/// Return the actual candidate index, time, ball position and residual;
+/// the caller reserves exactly this solver path if the action commits.
+fn scan_locomotion_contacts(
+    traj: &BallTrajectory, candidates: &[&PassReachCandidate], now_ms: i64,
+    mut first: i64, end: i64, receiver_idx: Option<usize>,
+    eligible: impl Fn(usize, &PassReachCandidate, Vec3, i64) -> bool,
+) -> Option<(usize, i64, Vec3, f32)> {
+    let horizon = end.checked_sub(now_ms)?;
+    if !(1..=movement::MAX_MOTION_HORIZON_MS).contains(&horizon) || first <= now_ms || first > end {
+        return None;
+    }
+    let a = traj.position_at_ms(first).xy();
+    let b = traj.position_at_ms(end).xy();
+    let nearby: Vec<usize> = candidates.iter().enumerate().filter(|(_,p)|
+        p.locomotion.is_some() && p.reaction_ms >= 0 && p.reach_m.is_finite()
+        && p.reach_m >= 0.0 && locomotion_window_may_reach(p,a,b,horizon))
+        .map(|(idx,_)|idx).collect();
+    if nearby.is_empty() { return None; }
+    let mut possible = Vec::with_capacity(nearby.len());
+    while first <= end {
+        let last = first.saturating_add(24).min(end);
+        let a = traj.position_at_ms(first).xy();
+        let b = traj.position_at_ms(last).xy();
+        possible.clear();
+        possible.extend(nearby.iter().copied().filter(|&idx|
+            locomotion_window_may_reach(candidates[idx],a,b,last-now_ms)));
+        if !possible.is_empty() {
+            for time in first..=last {
+                let ball = traj.position_at_ms(time);
+                let elapsed = time-now_ms;
+                let mut best: Option<(usize,f32)> = None;
+                let mut receiving = None;
+                for &idx in &possible {
+                    let p = candidates[idx];
+                    if !eligible(idx,p,ball,elapsed) { continue; }
+                    let Some(d) = p.contact_distance(ball,elapsed) else { continue; };
+                    if receiver_idx == Some(idx) {
+                        receiving = Some((idx,d));
+                    } else if best.is_none_or(|(old,old_d)| d < old_d-1e-4
+                        || ((d-old_d).abs() <= 1e-4 && p.player_id < candidates[old].player_id)) {
+                        best = Some((idx,d));
+                    }
+                }
+                if let Some((idx,d)) = receiving {
+                    if best.is_none_or(|(_,other)|d <= other) { return Some((idx,time,ball,d)); }
+                }
+                if let Some((idx,d)) = best { return Some((idx,time,ball,d)); }
+            }
+        }
+        if last == end { break; }
+        first = last.checked_add(1)?;
+    }
+    None
+}
+
+fn find_experimental_pass_contact(
+    traj: &BallTrajectory, defenders: &[PassReachCandidate], receiver: Option<&PassReachCandidate>,
+    now_ms: i64, arrival_ms: i64,
+) -> Option<PassContact> {
+    if arrival_ms <= now_ms { return None; }
+    let boundary = find_earliest_ball_interaction(traj,&[],now_ms,arrival_ms);
+    let end = boundary.as_ref().map_or(arrival_ms,|h|h.time_ms.saturating_sub(1));
+    let destination = traj.position_at_ms(arrival_ms).xy();
+    let mut candidates: Vec<_> = defenders.iter().collect();
+    let receiver_idx = receiver.map(|p| { let idx=candidates.len(); candidates.push(p); idx });
+    match scan_locomotion_contacts(traj,&candidates,now_ms,now_ms.checked_add(1)?,end,receiver_idx,
+        |idx,_,ball,_| receiver_idx != Some(idx) || ball.xy().distance(destination)<=2.0) {
+        Some((idx,time_ms,ball_pos,_)) if receiver_idx==Some(idx) =>
+            Some(PassContact::Receiver {time_ms,ball_pos}),
+        Some((idx,time_ms,ball_pos,distance_m)) => {
+            let p=candidates[idx];
+            Some(PassContact::Other(EarlyInteractionHit {
+                time_ms,kind:InteractionKind::PassInterception,ball_pos,
+                defender_id:Some(p.player_id.clone()),defender_side:Some(p.side),
+                boundary:None,distance_m,used_adaptive_substep:true,
+            }))
+        }
+        None => boundary.map(PassContact::Other),
+    }
+}
+
 /// Experimental shot-block reach. An opportunity is not a success roll.
 /// Search each feasible integer timestamp, not only coarse endpoint hits.
 /// The legacy pass race and its sample resolution remain unchanged.
@@ -734,61 +825,20 @@ pub fn find_locomotion_shot_block(
     traj:&BallTrajectory, defenders:&[PassReachCandidate], now_ms:i64, goal_ms:i64,
 ) -> Option<ShotBlockOpportunity> {
     if !traj.is_shot { return None; }
-    let horizon = goal_ms.checked_sub(now_ms)?;
-    if !(1..=movement::MAX_MOTION_HORIZON_MS).contains(&horizon) { return None; }
-    let end = find_earliest_ball_interaction(traj, &[], now_ms, goal_ms)
-        .map_or(goal_ms, |hit| hit.time_ms.saturating_sub(1));
-    let mut first = now_ms.checked_add(1)?;
-    if first > end { return None; }
-    let start_pos = traj.position_at_ms(first).xy();
-    let end_pos = traj.position_at_ms(end).xy();
-    // Only experimental candidates; do not clone profiles or motion paths
-    // before selecting the actual contact witness.
-    let nearby: Vec<_> = defenders.iter().filter(|p| p.locomotion.is_some()
-        && p.reaction_ms >= 0 && p.reach_m.is_finite() && p.reach_m >= 0.0
-        && locomotion_window_may_reach(p, start_pos, end_pos, end-now_ms)).collect();
-    if nearby.is_empty() { return None; }
-    let mut possible = Vec::with_capacity(nearby.len());
-    while first <= end {
-        let last = first.saturating_add(24).min(end);
-        let a = traj.position_at_ms(first).xy();
-        let b = traj.position_at_ms(last).xy();
-        possible.clear();
-        possible.extend(nearby.iter().copied().filter(|p|
-            locomotion_window_may_reach(p, a, b, last-now_ms)));
-        if !possible.is_empty() {
-            for time in first..=last {
-                let ball = traj.position_at_ms(time);
-                let elapsed = time-now_ms;
-                let mut best: Option<(&PassReachCandidate, f32)> = None;
-                for &p in &possible {
-                    // Retain outfield semantics: existing momentum can
-                    // create contact during reaction; no new hand rule.
-                    if let Some(d) = p.contact_distance(ball, elapsed) {
-                        if best.map_or(true, |(prev, prev_d)| d < prev_d - 1e-4
-                            || ((d-prev_d).abs() <= 1e-4 && p.player_id < prev.player_id)) {
-                            best = Some((p, d));
-                        }
-                    }
-                }
-                if let Some((p, residual)) = best {
-                    return Some(ShotBlockOpportunity {
-                        hit: EarlyInteractionHit {
-                            time_ms: time, kind: InteractionKind::ShotBlocked, ball_pos: ball,
-                            defender_id: Some(p.player_id.clone()), defender_side: Some(p.side),
-                            boundary: None, distance_m: residual, used_adaptive_substep: true,
-                        },
-                        motion: PassContactMotion {
-                            candidate: p.clone(), target: ball.xy(), started_at_ms: now_ms,
-                        },
-                    });
-                }
-            }
-        }
-        if last == end { break; }
-        first = last.checked_add(1)?;
-    }
-    None
+    let end = find_earliest_ball_interaction(traj,&[],now_ms,goal_ms)
+        .map_or(goal_ms,|h|h.time_ms.saturating_sub(1));
+    let candidates:Vec<_> = defenders.iter().collect();
+    let (idx,time_ms,ball_pos,distance_m) = scan_locomotion_contacts(
+        traj,&candidates,now_ms,now_ms.checked_add(1)?,end,None,|_,_,_,_|true)?;
+    let p=candidates[idx];
+    Some(ShotBlockOpportunity {
+        hit:EarlyInteractionHit {
+            time_ms,kind:InteractionKind::ShotBlocked,ball_pos,
+            defender_id:Some(p.player_id.clone()),defender_side:Some(p.side),
+            boundary:None,distance_m,used_adaptive_substep:true,
+        },
+        motion:PassContactMotion {candidate:p.clone(),target:ball_pos.xy(),started_at_ms:now_ms},
+    })
 }
 
 
@@ -810,43 +860,14 @@ pub fn goalkeeper_hand_contact_allowed(side:TeamSideV4,ball:Vec3)->bool {
 pub fn find_locomotion_goalkeeper_contact(
     traj:&BallTrajectory, keeper:&PassReachCandidate, now_ms:i64, goal_ms:i64,
 )->Option<GoalkeeperContact> {
-    if !traj.is_shot || keeper.locomotion.is_none() || keeper.reaction_ms < 0
-        || !keeper.reach_m.is_finite() || keeper.reach_m < 0.0 {
-        return None;
-    }
-    let horizon = goal_ms.checked_sub(now_ms)?;
-    if !(1..=movement::MAX_MOTION_HORIZON_MS).contains(&horizon) { return None; }
-    // Boundary remains exclusive, exactly as in the pass-contact race.
-    let end = find_earliest_ball_interaction(traj, &[], now_ms, goal_ms)
-        .map_or(goal_ms, |hit| hit.time_ms.saturating_sub(1));
-    let mut first = now_ms.checked_add(keeper.reaction_ms.max(1))?;
-    // A short contact window can fall entirely between coarse samples.
-    // Skip only windows proved unreachable by the horizontal displacement
-    // envelope. Within each remaining window, check every integer ms.
-    // This is a local one-actor query, not an added world tick.
-    while first <= end {
-        let last = first.saturating_add(24).min(end);
-        let a = traj.position_at_ms(first).xy();
-        let b = traj.position_at_ms(last).xy();
-        if locomotion_window_may_reach(keeper, a, b, last-now_ms) {
-            for time in first..=last {
-                let ball = traj.position_at_ms(time);
-                if goalkeeper_hand_contact_allowed(keeper.side, ball)
-                    && keeper.contact_distance(ball, time - now_ms).is_some() {
-                    return Some(GoalkeeperContact {
-                        time_ms: time,
-                        ball_pos: ball,
-                        motion: PassContactMotion {
-                            candidate: keeper.clone(), target: ball.xy(), started_at_ms: now_ms,
-                        },
-                    });
-                }
-            }
-        }
-        if last == end { break; }
-        first = last.checked_add(1)?;
-    }
-    None
+    if !traj.is_shot || keeper.locomotion.is_none() || keeper.reaction_ms<0 {return None;}
+    let end=find_earliest_ball_interaction(traj,&[],now_ms,goal_ms)
+        .map_or(goal_ms,|h|h.time_ms.saturating_sub(1));
+    let (_,time_ms,ball_pos,_) = scan_locomotion_contacts(
+        traj,&[keeper],now_ms,now_ms.checked_add(keeper.reaction_ms.max(1))?,end,None,
+        |_,p,ball,elapsed|elapsed>=p.reaction_ms && goalkeeper_hand_contact_allowed(p.side,ball))?;
+    Some(GoalkeeperContact {time_ms,ball_pos,
+        motion:PassContactMotion {candidate:keeper.clone(),target:ball_pos.xy(),started_at_ms:now_ms}})
 }
 
 #[cfg(test)]
@@ -1084,6 +1105,13 @@ pub fn contact_control_probability(
 pub fn find_grounded_ball_recovery(
     candidates: &[PassReachCandidate], spot: Vec2,
 ) -> Option<(usize, i64)> {
+    if !candidates.is_empty() && candidates.iter().all(|p|p.locomotion.is_some()) {
+        let ball=BallTrajectory {start_time_ms:0,start_pos:Vec3::ground(spot.x,spot.y),
+            initial_vel:Vec3::default(),gravity_z:0.0,drag:0.0,is_shot:false,is_carrier_dribble:false};
+        let refs:Vec<_>=candidates.iter().collect();
+        return scan_locomotion_contacts(&ball,&refs,0,250,movement::MAX_MOTION_HORIZON_MS,None,
+            |_,_,_,_|true).map(|(idx,time,_,_)|(idx,time));
+    }
     // Allow the ball to drop and players to react before awarding possession.
     // A bounded local search, not an engine-wide simulation tick.
     for ms in (250_i64..=120_000).step_by(50) {
@@ -1167,6 +1195,27 @@ pub fn find_moving_ball_recovery(traj: &BallTrajectory, candidates: &[PassReachC
     let end = now.saturating_add(120_000);
     let boundary = find_earliest_ball_interaction(traj, &[], now, end);
     let stop = boundary.as_ref().map_or(end, |h| h.time_ms);
+    if !candidates.is_empty() && candidates.iter().all(|p|p.locomotion.is_some()) {
+        let last = boundary.as_ref().map_or(end,|h|h.time_ms.saturating_sub(1));
+        let refs:Vec<_>=candidates.iter().collect();
+        // The horizontal speed decays monotonically with non-negative drag.
+        // Find the first eligible integer once instead of evaluating the
+        // same velocity for every actor and every contact query.
+        let speed_ok=|t:i64| {let v=traj.velocity_at_ms(t); (v.x*v.x+v.y*v.y).sqrt()<=7.0};
+        let mut first=now.saturating_add(250);
+        if first<=last && speed_ok(last) {
+            let mut hi=last;
+            while first<hi {
+                let mid=first+(hi-first)/2;
+                if speed_ok(mid) {hi=mid;} else {first=mid+1;}
+            }
+            if let Some((candidate_idx,time_ms,ball_pos,_))=scan_locomotion_contacts(
+                traj,&refs,now,first,last,None,|_,_,_,_|true) {
+                return Some(LooseBallResolution::Player{candidate_idx,time_ms,ball_pos});
+            }
+        }
+        return boundary.map(LooseBallResolution::Boundary);
+    }
     let mut t = now.saturating_add(250);
     while t <= stop {
         if boundary.as_ref().map_or(false, |h| t >= h.time_ms) { break; }
@@ -1560,6 +1609,63 @@ mod b12_contact_locomotion_tests {
         p.playable_height_m=0.5;
         let high=BallTrajectory{start_pos:Vec3::new(40.0,34.0,5.0),gravity_z:0.0,..shot};
         assert!(find_locomotion_shot_block(&high,&[p],100,2700).is_none());
+    }
+
+    #[test]
+    fn b12_batch1_pass_and_recovery_share_integer_contact_race() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            let mirror=|x:f32|if side==TeamSideV4::Away{x}else{105.0-x};
+            let sign=if side==TeamSideV4::Away{1.0}else{-1.0};
+            let pass=BallTrajectory{start_time_ms:100,start_pos:Vec3::ground(mirror(40.0),34.0),
+                initial_vel:Vec3::new(sign*30.0,0.0,0.0),gravity_z:0.0,drag:0.0,
+                is_shot:false,is_carrier_dribble:false};
+            let mut p=candidate(mirror(40.36),0.0);
+            p.side=side;
+            p.reaction_ms=200;
+            p.reach_m=0.1;
+            let hit=match find_pass_contact(&pass,&[p.clone()],None,100,600).unwrap() {
+                PassContact::Other(h)=>h,_=>panic!("expected narrow interception"),
+            };
+            assert!(hit.time_ms>100 && hit.time_ms<125);
+            assert!(p.contact_distance(pass.position_at_ms(125),25).is_none());
+            let mut legacy=p.clone();
+            legacy.locomotion=None;
+            assert!(find_pass_contact(&pass,&[legacy],None,100,600).is_none());
+            let short=BallTrajectory{initial_vel:Vec3::new(sign*2.0,0.0,0.0),..pass.clone()};
+            let mut d=candidate(mirror(41.0),0.0);
+            d.reaction_ms=200;
+            d.reach_m=0.1;
+            let mut recv=d.clone();
+            recv.side=side.opposite();
+            recv.player_id="R".into();
+            let expected=(101..=600).find(|&t| {
+                let b=short.position_at_ms(t);
+                d.contact_position_toward(b.xy(),t-100).is_some_and(|p|p.distance(b.xy())<=d.reach_m)
+            }).unwrap();
+            match find_pass_contact(&short,&[d.clone()],Some(&recv),100,600).unwrap() {
+                PassContact::Receiver{time_ms,..}=>assert_eq!(time_ms,expected),
+                _=>panic!("receiver wins exact residual tie"),
+            }
+            let stationary=Vec2::new(mirror(43.0),34.0);
+            let expected=(250..=2000).find(|&t|d.contact_position_toward(stationary,t)
+                .is_some_and(|p|p.distance(stationary)<=d.reach_m)).unwrap();
+            assert_eq!(find_grounded_ball_recovery(&[d.clone()],stationary),Some((0,expected)));
+            let rolling=BallTrajectory{start_time_ms:100,start_pos:Vec3::ground(mirror(40.0),34.0),
+                initial_vel:Vec3::new(sign*10.0,0.0,0.0),drag:1.6,..pass};
+            let expected=(350..=3000).find(|&t| {
+                let b=rolling.position_at_ms(t);
+                let v=rolling.velocity_at_ms(t);
+                (v.x*v.x+v.y*v.y).sqrt()<=7.0 && d.contact_position_toward(b.xy(),t-100)
+                    .is_some_and(|p|p.distance(b.xy())<=d.reach_m)
+            }).unwrap();
+            match find_moving_ball_recovery(&rolling,&[d]).unwrap() {
+                LooseBallResolution::Player{candidate_idx,time_ms,ball_pos}=>{
+                    assert_eq!((candidate_idx,time_ms),(0,expected));
+                    assert_eq!(ball_pos,rolling.position_at_ms(time_ms));
+                }
+                _=>panic!("expected rolling recovery"),
+            }
+        }
     }
 
     #[test]
