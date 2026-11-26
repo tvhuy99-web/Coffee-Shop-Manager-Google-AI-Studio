@@ -1121,7 +1121,11 @@ mod locomotion_full_match_experiment {
                     p.vel=Vec2::default();
                 }
                 initial.players[shooter].pos=Vec2::new(mirror(86.0),34.0);
-                initial.players[defender].pos=Vec2::new(mirror(88.0),34.0);
+                // At the start of either a header or driven shot a nearby
+                // high-reach defender has a real playable opportunity.
+                initial.players[defender].pos=Vec2::new(mirror(86.6),34.0);
+                let profile=initial.players[defender].profile_idx;
+                initial.player_profiles[profile].attrs.physical.jumping_reach=20;
                 let candidates=vec![crate::v4::ball_play::pass_reach_candidate_for_motion(&initial,defender,true,true)];
                 let mut accepted=0;
                 let mut declined=0;
@@ -1182,6 +1186,14 @@ mod locomotion_full_match_experiment {
                 let terminal=plan.sample_at(at-path.started_at_ms).unwrap().state;
                 assert!(terminal.position.distance(target)<=path.candidate.reach_m+1e-5);
                 let ck=session.export_checkpoint().unwrap();
+                // A checksum-valid snapshot cannot hide a scheduled block
+                // by deleting both contact fields while leaving its event.
+                let mut corrupt=ck.clone();
+                let flight=corrupt.payload.pending_flight.as_mut().unwrap();
+                flight.early_interaction=None;
+                flight.pass_contact_motion=None;
+                corrupt.checksum_hex=compute_checkpoint_checksum(&serde_json::to_string(&corrupt.payload).unwrap());
+                assert!(MatchSessionV4::from_checkpoint(corrupt).is_err());
                 let mut resumed=MatchSessionV4::from_checkpoint(
                     serde_json::from_str(&serde_json::to_string(&ck).unwrap()).unwrap()).unwrap();
                 for current in [&mut session,&mut resumed] {
