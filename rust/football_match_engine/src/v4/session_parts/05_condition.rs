@@ -23,7 +23,7 @@ impl MatchSessionV4 {
                 TeamSideV4::Away => away_press,
             };
             let attrs = *lookup_attrs(&self.input, &self.state.players[idx]);
-            let moved_m = if is_dead_ball {
+            let moved_m = if is_dead_ball && !self.uses_locomotion_experiment() {
                 // Light walking/repositioning during stoppages (~0.35 m/s).
                 dt_sec * if is_gk { 0.15 } else { 0.35 }
             } else {

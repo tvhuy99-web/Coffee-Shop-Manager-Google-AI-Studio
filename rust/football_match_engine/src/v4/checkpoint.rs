@@ -241,7 +241,12 @@ pub struct MatchSessionSnapshotV4 {
     /// Physical follow-through/recovery after a committed tackle.
     #[serde(default)]
     pub tackle_ready_at: std::collections::BTreeMap<String,i64>,
+    /// Absent for all shipped behavior; legacy canonical JSON remains identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locomotion_experiment_id: Option<String>,
 }
+
+pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-hybrid-tactical-locomotion-exp1";
 
 /// Self-verifying versioned DES v1.4 match checkpoint envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +287,11 @@ pub fn compute_checkpoint_checksum(payload_json: &str) -> String {
 
 /// Validates checkpoint integrity, schema/protocol compatibility, ruleset identity, and checksum.
 pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
+    if let Some(id) = ckpt.payload.locomotion_experiment_id.as_deref() {
+        if !cfg!(test) || id != LOCOMOTION_EXPERIMENT_ID {
+            return Err(V4Error::InvalidInput(format!("unsupported locomotion experiment: {id}")));
+        }
+    }
     if ckpt.checkpoint_schema_version != CHECKPOINT_SCHEMA_VERSION_V4 {
         return Err(V4Error::InvalidInput(format!(
             "unsupported checkpoint schema version: expected {}, got {}",

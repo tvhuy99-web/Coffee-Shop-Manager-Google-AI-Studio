@@ -100,6 +100,8 @@ pub struct MatchSessionV4 {
     pending_carry: Option<PendingCarryV4>,
     tackle_ready_at: BTreeMap<String,i64>,
     goal_audit: Option<crate::v4::transition::GoalDeltaAudit>,
+    #[cfg(test)]
+    locomotion_experiment: bool,
 }
 
 impl MatchSessionV4 {
@@ -159,7 +161,24 @@ impl MatchSessionV4 {
             pending_carry: None,
             tackle_ready_at: BTreeMap::new(),
             goal_audit: None,
+            #[cfg(test)]
+            locomotion_experiment: false,
         })
+    }
+
+    /// Internal experiment only; not selectable by JNI, MatchInput or shipping binaries.
+    #[cfg(test)]
+    fn new_locomotion_experiment(input: MatchInputV4) -> Result<Self, V4Error> {
+        let mut session = Self::new(input)?;
+        session.locomotion_experiment = true;
+        Ok(session)
+    }
+
+    fn uses_locomotion_experiment(&self) -> bool {
+        #[cfg(test)]
+        { self.locomotion_experiment }
+        #[cfg(not(test))]
+        { false }
     }
 
     pub fn is_full_time(&self) -> bool {
@@ -225,6 +244,7 @@ impl MatchSessionV4 {
             pending_decision: self.pending_decision.clone(),
             pending_carry: self.pending_carry.clone(),
             tackle_ready_at: self.tackle_ready_at.clone(),
+            locomotion_experiment_id: self.uses_locomotion_experiment().then(|| crate::v4::checkpoint::LOCOMOTION_EXPERIMENT_ID.to_string()),
         };
 
         let payload_json = serde_json::to_string(&payload)?;
@@ -291,6 +311,8 @@ impl MatchSessionV4 {
             pending_carry: payload.pending_carry,
             tackle_ready_at: payload.tackle_ready_at,
             goal_audit: None,
+            #[cfg(test)]
+            locomotion_experiment: payload.locomotion_experiment_id.is_some(),
         })
     }
 

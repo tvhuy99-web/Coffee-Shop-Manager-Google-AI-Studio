@@ -23,6 +23,7 @@ impl MatchSessionV4 {
         }
 
         update_in_match_psychology(&mut self.state, &self.input, game_sec, dt_sec);
+        let experimental = self.uses_locomotion_experiment();
 
         if is_ball_in_play {
             let prev_positions: Vec<Vec2> = self.state.players.iter().map(|p| p.pos).collect();
@@ -31,14 +32,27 @@ impl MatchSessionV4 {
                     crate::v4::movement::player_max_speed_mps(crate::v4::movement::player_attrs(&self.state,p),p)*dt_sec
                 } else {0.0}
             }).collect();
-            let defense=advance_off_ball_movement_with_report(
-                &mut self.state,
-                &self.input,
-                self.possession_side,
-                self.carrier_idx,
-                dt_sec,
-                &mut self.rng,
-            );
+            // The experiment reserves every legacy committed path before
+            // integrating other actors. No preliminary displacement for those actors.
+            let reserved: Vec<bool> = if experimental {
+                self.state.players.iter().map(|p| {
+                    self.pending_flight.as_ref().and_then(|f| f.pass_contact_motion.as_ref())
+                        .is_some_and(|m| m.candidate.player_id == p.player_id)
+                    || self.pending_carry.as_ref().is_some_and(|c|
+                        c.motion.candidate.player_id == p.player_id ||
+                        c.challenger.as_ref().is_some_and(|m| m.candidate.player_id == p.player_id))
+                    || self.pending_decision.as_ref().and_then(|d| d.challenger.as_ref())
+                        .is_some_and(|m| m.candidate.player_id == p.player_id)
+                }).collect()
+            } else { vec![] };
+            let defense = if experimental {
+                crate::v4::movement::advance_experimental_tactical_motion(&mut self.state,
+                    &self.input, self.possession_side, self.carrier_idx, dt_ms,
+                    &mut self.rng, &reserved, &mut budgets)?
+            } else {
+                advance_off_ball_movement_with_report(&mut self.state, &self.input,
+                    self.possession_side, self.carrier_idx, dt_sec, &mut self.rng)
+            };
             // Keep the predicted contact participant on the same motion
             // path used by the resolver, including across unrelated DES events.
             if let Some(motion) = self.pending_flight.as_ref().and_then(|f| f.pass_contact_motion.as_ref()) {
@@ -113,7 +127,9 @@ impl MatchSessionV4 {
             for (idx, p) in self.state.players.iter_mut().enumerate() {
                 if let Some(prev) = prev_positions.get(idx) {
                     crate::v4::transition::verify_motion_budget(*prev,p.pos,budgets[idx],&p.player_id)?;
-                    p.last_moved_m = prev.distance(p.pos);
+                    if !experimental || reserved[idx] {
+                        p.last_moved_m = prev.distance(p.pos);
+                    }
                 }
             }
             // Measure the realized movement after physical contact path
@@ -136,6 +152,7 @@ impl MatchSessionV4 {
             // NHIỆM VỤ 6: Simulate purposeful low-intensity dead-ball movement (celebration,
             // returning to own half for kickoff, entering box for corner/FK, forming wall).
             let db_ctx = self.state.dead_ball.as_ref().map(|db| (db.kind, db.phase, db.restart_side, db.restart_spot));
+            let profiles = &self.state.player_profiles;
             for p in &mut self.state.players {
                 if !p.on_pitch || p.sent_off {
                     p.last_moved_m = 0.0;
@@ -171,6 +188,13 @@ impl MatchSessionV4 {
                 } else {
                     (prev, 0.0f32)
                 };
+                if experimental {
+                    let attrs = &profiles.get(p.profile_idx).ok_or_else(||
+                        V4Error::InvalidInput("missing experiment actor profile".into()))?.attrs;
+                    crate::v4::movement::integrate_experimental_actor(p, attrs, target,
+                        Some(walk_speed_mps), dt_ms)?;
+                    continue;
+                }
                 let max_step = walk_speed_mps * dt_sec;
                 let delta = Vec2::new(target.x - prev.x, target.y - prev.y);
                 let dist = (delta.x * delta.x + delta.y * delta.y).sqrt();

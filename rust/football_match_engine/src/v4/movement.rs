@@ -222,6 +222,74 @@ pub(crate) fn advance_off_ball_movement_with_report(
     defense
 }
 
+/// Experimental runtime integration for actors without a reserved contact path.
+/// Called by the DES test experiment, never by the shipping session.
+pub(crate) fn advance_experimental_tactical_motion(
+    state: &mut MatchStateV4,
+    input: &MatchInputV4,
+    possession_side: TeamSideV4,
+    carrier_idx: usize,
+    duration_ms: i64,
+    rng: &mut DeterministicRng,
+    reserved: &[bool],
+    budgets: &mut [f32],
+) -> Result<Vec<DefensiveIntent>, V4Error> {
+    let dt = match_contracts::units::ms_to_seconds_f32(duration_ms);
+    let (targets, defense) = select_movement_targets(state, input, possession_side, carrier_idx, dt, rng);
+    for (idx, target) in targets.into_iter().enumerate() {
+        if reserved[idx] { continue; }
+        if let Some(target) = target {
+            let attrs = *player_attrs(state, &state.players[idx]);
+            budgets[idx] = integrate_experimental_actor(&mut state.players[idx], &attrs, target,
+                None, duration_ms)?;
+        } else {
+            state.players[idx].last_moved_m = 0.0;
+            state.players[idx].vel = Vec2::default();
+        }
+    }
+    Ok(defense)
+}
+
+/// Does not charge fatigue; the centralized DES interval accounting owns it.
+/// Overspeed is braked, not clipped; target and boundary behavior are measured.
+pub(crate) fn integrate_experimental_actor(
+    player: &mut PlayerRuntimeStateV4,
+    attrs: &PlayerAttributes54,
+    target: Vec2,
+    requested_speed: Option<f32>,
+    duration_ms: i64,
+) -> Result<f32, V4Error> {
+    let cap = MovementCapability::from_attributes(&attrs.physical, player.fatigue.aerobic,
+        player.fatigue.anaerobic).map_err(candidate_motion_error)?;
+    let intent = MovementIntent { target, intensity: requested_speed.map_or(1.0, |v|
+        (v / cap.max_speed_mps).clamp(0.0, 1.0)), desired_facing_rad: None, reaction_ms: 0 };
+    let mut current = MotionState { position: player.pos, velocity: player.vel, facing_rad: player.facing_rad };
+    let mut remaining = duration_ms;
+    let mut distance = 0.0_f32;
+    let mut budget = 0.0_f32;
+    while remaining > 0 {
+        // Explicit technical plan horizon; no extra RNG or condition update.
+        let span = remaining.min(match_physics::movement::MAX_MOTION_HORIZON_MS);
+        let plan = MotionPlan::new(current, intent, cap).map_err(candidate_motion_error)?;
+        let result = plan.sample_at(span).map_err(candidate_motion_error)?;
+        let bound = plan.maximum_path_speed_mps() * match_contracts::units::ms_to_seconds_f32(span);
+        let eps = 32.0 * f32::EPSILON * PITCH_LENGTH_M.max(PITCH_WIDTH_M) + 4.0 * f32::EPSILON * bound;
+        if result.distance_m > bound + eps || current.position.distance(result.state.position) > result.distance_m + eps {
+            return Err(candidate_motion_error("experimental motion budget"));
+        }
+        distance += result.distance_m;
+        budget += bound;
+        current = result.state;
+        remaining -= span;
+    }
+    player.pos = current.position;
+    player.vel = current.velocity;
+    player.facing_rad = current.facing_rad;
+    player.target_pos = target;
+    player.last_moved_m = distance;
+    Ok(budget)
+}
+
 /// Select intentions from one immutable world snapshot; shared with the isolated
 /// B1.2 candidate adapter. Legacy integration and RNG draw order are unchanged.
 fn select_movement_targets(
