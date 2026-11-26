@@ -1070,11 +1070,17 @@ impl MatchSessionV4 {
 
     pub(super) fn step_one_des_event(&mut self, auto_advance_breaks: bool) -> Result<(), V4Error> {
         let before=crate::v4::transition::goal_counters(&self.state);
+        let before_ms=self.sim_time_ms();
+        let before_events=self.event_count;
+        let before_steps=self.completed_beats;
         self.goal_audit=Some(crate::v4::transition::GoalDeltaAudit::default());
         let result=self.step_one_des_event_inner(auto_advance_breaks);
         let audit=self.goal_audit.take().expect("event audit initialized");
         result?;
         audit.verify(before,&self.state)?;
+        crate::v4::transition::verify_commit_progress(before_ms,self.sim_time_ms(),before_events,self.event_count,before_steps,self.completed_beats)?;
+        crate::v4::transition::verify_clock_accounting(&self.state,self.home_possession_ms,self.away_possession_ms)?;
+        crate::v4::transition::verify_uncontrolled_ball(&self.state)?;
         Ok(())
     }
 
