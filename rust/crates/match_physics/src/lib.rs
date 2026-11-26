@@ -1,3 +1,5 @@
+pub mod movement;
+
 use serde::{Deserialize, Serialize};
 
 use match_contracts::spatial::{
