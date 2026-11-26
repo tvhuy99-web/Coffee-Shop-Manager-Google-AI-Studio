@@ -1,8 +1,10 @@
 package pl.mkrstudio.truefootball3.lab
+import pl.mkrstudio.truefootball3.match_playback.*
+import pl.mkrstudio.truefootball3.match_commentary.*
 import android.content.Context
 import pl.mkrstudio.truefootball3.presentation.PresentationSessionGate
 import android.os.TestClock
-import pl.mkrstudio.truefootball3.audio.MatchTtsManager
+import pl.mkrstudio.truefootball3.match_commentary.MatchTtsManager
 import java.nio.file.Files
 import java.util.concurrent.AbstractExecutorService
 import java.util.concurrent.TimeUnit

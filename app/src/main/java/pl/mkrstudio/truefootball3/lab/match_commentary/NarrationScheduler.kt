@@ -1,9 +1,12 @@
-package pl.mkrstudio.truefootball3.lab
+package pl.mkrstudio.truefootball3.match_commentary
+
+import pl.mkrstudio.truefootball3.lab.*
+import pl.mkrstudio.truefootball3.match_playback.MatchPlaybackController
 
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import pl.mkrstudio.truefootball3.audio.MatchTtsManager
+import pl.mkrstudio.truefootball3.match_commentary.MatchTtsManager
 import pl.mkrstudio.truefootball3.audio.TtsSettingsStore
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong

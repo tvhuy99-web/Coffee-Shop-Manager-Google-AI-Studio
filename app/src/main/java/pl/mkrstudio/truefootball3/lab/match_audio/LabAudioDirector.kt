@@ -1,7 +1,9 @@
-package pl.mkrstudio.truefootball3.lab
+package pl.mkrstudio.truefootball3.match_audio
+
+import pl.mkrstudio.truefootball3.lab.*
 
 import org.json.JSONObject
-import pl.mkrstudio.truefootball3.audio.MatchAudioManager
+import pl.mkrstudio.truefootball3.match_audio.MatchAudioManager
 
 /**
  * DES v1.4 simulation-time-anchored audio director.

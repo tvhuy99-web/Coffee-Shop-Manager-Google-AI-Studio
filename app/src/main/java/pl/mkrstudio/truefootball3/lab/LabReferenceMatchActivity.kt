@@ -1,5 +1,17 @@
 package pl.mkrstudio.truefootball3.lab
 
+import pl.mkrstudio.truefootball3.match_audio.LabAudioDirector
+import pl.mkrstudio.truefootball3.match_commentary.LabCommentaryEngine
+import pl.mkrstudio.truefootball3.match_commentary.MatchEventCueAdapter
+import pl.mkrstudio.truefootball3.match_commentary.NarrationScheduler
+import pl.mkrstudio.truefootball3.match_playback.LabGlobalSeedReplayStore
+import pl.mkrstudio.truefootball3.match_playback.LabRustLiveSession
+import pl.mkrstudio.truefootball3.match_playback.MatchCheckpointStore
+import pl.mkrstudio.truefootball3.match_playback.MatchPlaybackController
+import pl.mkrstudio.truefootball3.match_playback.MatchRosterProjection
+import pl.mkrstudio.truefootball3.match_playback.MatchStatsProjection
+import pl.mkrstudio.truefootball3.match_playback.RosterEntry
+
 import android.app.Activity
 import android.app.AlertDialog
 import android.graphics.Color
@@ -16,8 +28,8 @@ import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
 import pl.mkrstudio.truefootball3.adapters.CommentaryRecordAdapter
-import pl.mkrstudio.truefootball3.audio.MatchAudioManager
-import pl.mkrstudio.truefootball3.audio.MatchTtsManager
+import pl.mkrstudio.truefootball3.match_audio.MatchAudioManager
+import pl.mkrstudio.truefootball3.match_commentary.MatchTtsManager
 import pl.mkrstudio.truefootball3.audio.TtsSettingsStore
 import java.util.ArrayList
 import java.util.HashMap

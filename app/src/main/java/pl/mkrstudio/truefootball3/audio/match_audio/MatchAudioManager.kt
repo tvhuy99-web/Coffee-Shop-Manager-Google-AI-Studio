@@ -1,4 +1,6 @@
-package pl.mkrstudio.truefootball3.audio
+package pl.mkrstudio.truefootball3.match_audio
+
+import pl.mkrstudio.truefootball3.audio.*
 
 import android.content.Context
 import android.content.res.AssetFileDescriptor
@@ -10,7 +12,7 @@ import android.os.Looper
 import java.io.IOException
 import java.util.EnumMap
 import java.util.Random
-import pl.mkrstudio.truefootball3.audio.MatchAudioManager.Cue.*
+import pl.mkrstudio.truefootball3.match_audio.MatchAudioManager.Cue.*
 
 class MatchAudioManager(context: Context, enabled: Boolean) : pl.mkrstudio.truefootball3.presentation.MatchAudioBoundary {
     enum class Cue {

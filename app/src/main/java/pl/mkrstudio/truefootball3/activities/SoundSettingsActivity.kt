@@ -16,8 +16,8 @@ import android.widget.TextView
 import android.widget.Toast
 import java.io.IOException
 import pl.mkrstudio.truefootball3.R
-import pl.mkrstudio.truefootball3.audio.SoundCatalog
-import pl.mkrstudio.truefootball3.audio.SoundPackManager
+import pl.mkrstudio.truefootball3.match_audio.SoundCatalog
+import pl.mkrstudio.truefootball3.match_audio.SoundPackManager
 import pl.mkrstudio.truefootball3.audio.SoundSettingsStore
 
 class SoundSettingsActivity : Activity() {
