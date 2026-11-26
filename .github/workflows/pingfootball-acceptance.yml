@@ -165,12 +165,26 @@ jobs:
           (
             cd candidate/rust/football_match_engine
             export A1_OUTPUT="$root/evidence/candidate.jsonl"
+            if [ "$A1_SCENARIO" != full_event ] && [ "$A1_SCENARIO" != checkpoint_markers ]; then
+              export A7_CROSS_MODE_OUTPUT="$root/evidence/cross-mode.json"
+            fi
             cargo test --locked --release --lib "v4::tests::$test_name" -- --ignored --exact --nocapture
           ) 2>&1 | tee evidence/candidate.log
           grep -Fq "test v4::tests::$test_name ... ok" evidence/candidate.log
           python3 candidate/tests/a1/compare_deep_golden.py reference/first.jsonl evidence/candidate.jsonl --scenario "$A1_SCENARIO" --expected "$A1_COUNT" | tee evidence/parity.log
+          if [ "$A1_SCENARIO" != full_event ] && [ "$A1_SCENARIO" != checkpoint_markers ]; then
+            python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          rows=json.loads(Path('evidence/cross-mode.json').read_text())
+          assert len(rows)==int(os.environ['A1_COUNT'])
+          assert len({r['seed'] for r in rows})==len(rows)
+          assert all(r['scenario']==os.environ['A1_SCENARIO'] and r['result']=='PASS' and r['terminalPayload']=='PASS' and r['eventCount']>0 for r in rows)
+          print('PASS A7 population cross-mode:',len(rows),'matches')
+          PY
+          fi
           git -C candidate rev-parse HEAD > evidence/commit.txt
-          (cd evidence && sha256sum *.jsonl *.log commit.txt > SHA256SUMS)
+          (cd evidence && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
       - uses: actions/upload-artifact@v4
         if: always()
         with:

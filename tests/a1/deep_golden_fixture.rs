@@ -1,5 +1,5 @@
-// Test-only baseline evidence fixture. Included in v4/tests.rs by the A-1 CI
-// harness on the exact baseline checkout. Never included in production builds.
+// Test-only golden fixture. The original output stays identical to A-1.
+// Optional A7 cross-mode checks run independently of golden serialization.
 #[test]
 #[ignore = "A-1 writes full per-seed snapshots under the locked toolchain"]
 fn a1_deep_terminal_golden() {
@@ -15,6 +15,8 @@ fn a1_deep_terminal_golden() {
     assert_eq!(count, expected);
     let path = std::env::var("A1_OUTPUT").expect("A1_OUTPUT");
     let mut out = BufWriter::new(std::fs::File::create(path).unwrap());
+    let cross_mode = std::env::var("A7_CROSS_MODE_OUTPUT").ok();
+    let mut cross_rows = Vec::new();
     for i in 0..count {
         let seed = if scenario == "full_event" { 92_000 + i as i64 } else { 104_729 + i as i64 * 7907 };
         let input = if scenario == "full_event" {
@@ -43,7 +45,7 @@ fn a1_deep_terminal_golden() {
             }
             input
         };
-        let mut session = MatchSessionV4::new(input).unwrap();
+        let mut session = MatchSessionV4::new(input.clone()).unwrap();
         let initial = session.export_checkpoint().unwrap();
         verify_checkpoint(&initial).unwrap();
         let result = session.run_to_full_time().unwrap();
@@ -53,6 +55,30 @@ fn a1_deep_terminal_golden() {
         let decoded: MatchCheckpointV4 = serde_json::from_str(&serde_json::to_string(&terminal).unwrap()).unwrap();
         verify_checkpoint(&decoded).unwrap();
         assert_eq!(terminal.seed, seed);
+        if cross_mode.is_some() && scenario != "full_event" {
+            let mut full_input=input;
+            full_input.simulation_mode=SimulationMode::FullEvent;
+            let mut full=MatchSessionV4::new(full_input).unwrap();
+            let full_result=full.run_to_full_time().unwrap();
+            let full_terminal=full.export_checkpoint().unwrap();
+            verify_checkpoint(&full_terminal).unwrap();
+            assert_eq!(full_result.events.len(),result.event_count as usize,"{scenario} {seed} retained event count");
+            assert!(result.events.is_empty());
+            assert_eq!(full_result.event_timeline_fingerprint,result.event_timeline_fingerprint,"{scenario} {seed} timeline");
+            // Only retention policy and the presentation delivery cursor may differ.
+            // Compare serialized typed structures, including all float fields.
+            let mut normalized_result=full_result;
+            normalized_result.simulation_mode=SimulationMode::FastBatch;
+            normalized_result.events.clear();
+            assert_eq!(serde_json::to_string(&normalized_result).unwrap(),serde_json::to_string(&result).unwrap(),"{scenario} {seed} result");
+            let mut normalized_payload=full_terminal.payload;
+            normalized_payload.input.simulation_mode=SimulationMode::FastBatch;
+            normalized_payload.stats.last_delivered_event_index=terminal.payload.stats.last_delivered_event_index;
+            assert!(normalized_payload.stats.retained_events.is_empty());
+            assert_eq!(serde_json::to_string(&normalized_payload).unwrap(),serde_json::to_string(&terminal.payload).unwrap(),"{scenario} {seed} state/RNG/scheduler/ledger");
+            cross_rows.push(serde_json::json!({"scenario":scenario,"seed":seed,"eventCount":result.event_count,
+                "fingerprint":result.event_timeline_fingerprint,"result":"PASS","terminalPayload":"PASS"}));
+        }
         let row = serde_json::json!({
             "scenario": scenario, "seed": seed, "externalCommands": [],
             "initial": initial, "result": result, "terminal": terminal,
@@ -62,6 +88,13 @@ fn a1_deep_terminal_golden() {
     }
     out.flush().unwrap();
     println!("A1_DEEP_TERMINAL {scenario} {count}");
+    if let Some(path)=cross_mode {
+        if scenario!="full_event" {
+            assert_eq!(cross_rows.len(),count);
+            std::fs::write(path,serde_json::to_string_pretty(&cross_rows).unwrap()).unwrap();
+            println!("A7_CROSS_MODE {scenario} {count} PASS");
+        }
+    }
 }
 
 #[test]
