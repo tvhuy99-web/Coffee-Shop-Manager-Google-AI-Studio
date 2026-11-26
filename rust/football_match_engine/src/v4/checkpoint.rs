@@ -248,7 +248,7 @@ pub struct MatchSessionSnapshotV4 {
     pub locomotion_experiment_id: Option<String>,
 }
 
-pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-separated-shot-rebound-exp5r3";
+pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-goalkeeper-contact-exp6";
 
 /// Self-verifying versioned DES v1.4 match checkpoint envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -406,8 +406,8 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
             // include a recursively resolved follow-up shot.
             if f.ball_after.control==crate::v4::state::BallControlState::Loose {
                 let parries=f.outcome.events.iter().filter(|ev|ev.kind==crate::v4::events::EventTypeV4::Rebound).count();
-                if parries!=1 || f.resolves_at_ms!=f.planned_arrival_ms
-                    || f.early_interaction.is_some() || f.pass_contact_motion.is_some()
+                if parries!=1 || f.resolves_at_ms>f.planned_arrival_ms
+                    || f.early_interaction.is_some() || f.pass_contact_motion.is_none()
                     || f.ball_after.owner_side.is_some() || f.ball_after.owner_player_id.is_some() {
                     return Err(bad("invalid separated parry flight"));
                 }
@@ -417,7 +417,28 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
             if block.is_some()!=block_event {
                 return Err(bad("experimental shot block event/contact mismatch"));
             }
-            match (block,f.pass_contact_motion.as_ref()) {
+            let saves:Vec<_>=f.outcome.events.iter().filter(|ev|ev.kind==crate::v4::events::EventTypeV4::Save).collect();
+            if !saves.is_empty() {
+                if saves.len()!=1 || block_event || f.early_interaction.is_some() {
+                    return Err(bad("invalid experimental save event"));
+                }
+                let path=f.pass_contact_motion.as_ref().ok_or_else(||bad("missing save path"))?;
+                let actor=p.state.players.iter().find(|a|a.player_id==path.candidate.player_id && a.side==path.candidate.side)
+                    .ok_or_else(||bad("unknown saving keeper"))?;
+                let ball=f.trajectory.position_at_ms(f.resolves_at_ms);
+                let elapsed=f.resolves_at_ms-f.trajectory.start_time_ms;
+                let predicted=path.candidate.contact_position_toward(path.target,elapsed)
+                    .ok_or_else(||bad("invalid save path"))?;
+                if !actor.is_goalkeeper || !actor.on_pitch || actor.sent_off
+                    || saves[0].actor.as_deref()!=Some(actor.player_id.as_str()) || saves[0].ball_pos!=ball
+                    || path.started_at_ms!=f.trajectory.start_time_ms || path.target!=ball.xy()
+                    || elapsed<path.candidate.reaction_ms || f.resolves_at_ms>f.planned_arrival_ms
+                    || ball.z>path.candidate.playable_height_m
+                    || !match_physics::goalkeeper_hand_contact_allowed(actor.side,ball)
+                    || predicted.distance(path.target)>path.candidate.reach_m+1e-5 {
+                    return Err(bad("unreachable or inconsistent save"));
+                }
+            } else {match (block,f.pass_contact_motion.as_ref()) {
                 (Some(hit),Some(path)) if hit.defender_id.as_deref()==Some(path.candidate.player_id.as_str())
                     && hit.time_ms==f.resolves_at_ms && path.target==hit.ball_pos.xy()
                     && path.started_at_ms==f.trajectory.start_time_ms => {
@@ -431,7 +452,7 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
                 }
                 (None,None)=>{}
                 _=>return Err(bad("shot block contact identity mismatch")),
-            }
+            }}
         }
         contact_paths.extend(f.pass_contact_motion.iter());
     }

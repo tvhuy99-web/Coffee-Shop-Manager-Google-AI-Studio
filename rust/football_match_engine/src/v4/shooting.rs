@@ -45,6 +45,7 @@ pub(crate) enum ShotContactResolution {
     None,
     LegacyHit(EarlyInteractionHit),
     CommittedBlock(match_physics::ShotBlockOpportunity),
+    CommittedSave(match_physics::GoalkeeperContact),
 }
 
 impl<C> DesShotOutcome<C> {
@@ -91,7 +92,7 @@ pub fn resolve_shot_v4_des(
         .map_contact(|contact|match contact {
             ShotContactResolution::None=>None,
             ShotContactResolution::LegacyHit(hit)=>Some(hit),
-            ShotContactResolution::CommittedBlock(_)=>unreachable!("legacy shot selected experimental contact"),
+            ShotContactResolution::CommittedBlock(_) | ShotContactResolution::CommittedSave(_)=>unreachable!("legacy shot selected experimental contact"),
         })
 }
 
@@ -506,7 +507,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
 
     // 3. Shot is ON TARGET — resolve via 9-attribute Goalkeeper system
     state.team_state_mut(att_side).shots_on_target += 1;
-    let gk_outcome = resolve_gk_shot_reaction(
+    let mut gk_outcome = resolve_gk_shot_reaction(
         &gk_attrs,
         gk_fam,
         gk_aero,
@@ -519,6 +520,17 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
         rng,
     );
 
+    // Preserve the conditional skill outcome for reachable shots, but
+    // no save can be committed without a physical opportunity. This is
+    // a reach gate, not a fitted multiplier on goals.
+    let save_contact=if experimental && gk_outcome!=GkShotOutcome::GoalConceded {
+        crate::v4::goalkeeper::shot_contact_candidate(state,gk_idx)
+            .and_then(|p|match_physics::find_locomotion_goalkeeper_contact(&shot_traj,&p,t_now_ms,t_goal_ms))
+    } else {None};
+    if experimental && save_contact.is_none() {
+        gk_outcome=GkShotOutcome::GoalConceded;
+    }
+    let save_elapsed=save_contact.as_ref().map_or(shot_flight_ms,|c|c.time_ms-t_now_ms);
     match gk_outcome {
         GkShotOutcome::GoalConceded => {
             state.team_state_mut(att_side).goals += 1;
@@ -585,7 +597,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
             } else {
                 HighlightTier::None
             };
-            let save_pos = Vec3::new(state.players[gk_idx].pos.x, state.players[gk_idx].pos.y, 1.0);
+            let save_pos = save_contact.as_ref().map_or_else(||Vec3::new(state.players[gk_idx].pos.x,state.players[gk_idx].pos.y,1.0),|c|c.ball_pos);
             events.push(EmittedPlayEvent {
                 kind: EventTypeV4::ShotOnTarget,
                 tier,
@@ -610,6 +622,24 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 },
             });
 
+            // Catch and subsequent distribution are different actions.
+            // The keeper must actually own the ball before PI chooses a
+            // new pass. Legacy instantaneous distribution stays isolated.
+            if let Some(contact)=save_contact {
+                state.ball.pos=save_pos;
+                state.ball.vel=Vec3::default();
+                state.ball.control=BallControlState::Controlled;
+                state.ball.owner_side=Some(def_side);
+                state.ball.owner_player_id=Some(gk_id.clone());
+                state.ball.last_touch_side=Some(def_side);
+                state.ball.last_touch_player_id=Some(gk_id);
+                return DesShotOutcome {
+                    trajectory:shot_traj.clone(),planned_flight_ms:shot_flight_ms,
+                    outcome:BallPlayOutcome{next_side:def_side,next_carrier_idx:gk_idx,stoppage_seconds:0,events},
+                    won_corner:false,flight_ms:save_elapsed,dead_ball_kind:None,restart_spot:None,
+                    early_interaction:ShotContactResolution::CommittedSave(contact),
+                };
+            }
             // GK distribution (`kicking` / `throwing`)
             let (recv_idx, is_long, dist_pos) =
                 choose_gk_distribution(state, &gk_attrs, def_side, rng);
@@ -663,6 +693,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 (PITCH_HALF_WIDTH_M + (rng.next_double() as f32 - 0.5) * 10.0).clamp(16.0, 52.0),
                 0.3,
             );
+            let contact_pos=save_contact.as_ref().map_or(reb_pos,|c|c.ball_pos);
             events.push(EmittedPlayEvent {
                 kind: EventTypeV4::ShotOnTarget,
                 tier: HighlightTier::Extended,
@@ -670,7 +701,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 side: Some(att_side),
                 actor: Some(shooter_id),
                 target: Some(gk_id.clone()),
-                ball_pos: reb_pos,
+                ball_pos: contact_pos,
                 metadata: base_meta,
             });
             events.push(EmittedPlayEvent {
@@ -680,7 +711,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                 side: Some(def_side),
                 actor: Some(gk_id.clone()),
                 target: None,
-                ball_pos: reb_pos,
+                ball_pos: contact_pos,
                 metadata: EventMetadataV4 {
                     outcome: Some("PARRIED".into()),
                     ..EventMetadataV4::default()
@@ -705,7 +736,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
             // coordinates or publish a second shot's contact as this one's.
             // Keep the legacy parry location as an explicit provisional
             // loose-ball spawn until goalkeeper/deflection physics lands.
-            if experimental {
+            if let Some(contact)=save_contact {
                 state.ball.pos=reb_pos;
                 state.ball.vel=Vec3::default();
                 state.ball.control=BallControlState::Loose;
@@ -724,10 +755,10 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                         events,
                     },
                     won_corner:false,
-                    flight_ms:shot_flight_ms,
+                    flight_ms:save_elapsed,
                     dead_ball_kind:None,
                     restart_spot:None,
-                    early_interaction:ShotContactResolution::None,
+                    early_interaction:ShotContactResolution::CommittedSave(contact),
                 };
             }
 
@@ -842,7 +873,7 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
             state.team_state_mut(def_side).saves += 1;
             base_meta.scored = Some(false);
             base_meta.outcome = Some("TIPPED_CORNER".into());
-            let save_pos = Vec3::new(goal_center.x, goal_center.y, 2.0);
+            let save_pos=save_contact.as_ref().map_or(Vec3::new(goal_center.x,goal_center.y,2.0),|c|c.ball_pos);
             events.push(EmittedPlayEvent {
                 kind: EventTypeV4::ShotOnTarget,
                 tier: HighlightTier::Extended,
@@ -890,10 +921,10 @@ pub(crate) fn resolve_shot_v4_des_with_motion(
                     events,
                 },
                 won_corner: true,
-                flight_ms: shot_flight_ms,
+                flight_ms: save_elapsed,
                 dead_ball_kind: Some(DeadBallKind::Corner),
                 restart_spot: Some(corner_spot),
-                early_interaction: ShotContactResolution::None,
+                early_interaction: save_contact.map_or(ShotContactResolution::None,ShotContactResolution::CommittedSave),
             }
         }
     }

@@ -662,6 +662,7 @@ impl MatchSessionV4 {
             shooter_idx, assist_idx, shot_kind, false, experimental, &mut self.rng);
         use crate::v4::shooting::ShotContactResolution;
         let is_block_event=shot.outcome.events.iter().any(|ev|ev.kind==EventTypeV4::Block);
+        let save_event=shot.outcome.events.iter().find(|ev|ev.kind==EventTypeV4::Save);
         // Decompose the single accepted witness exactly once, only when
         // publishing the backwards-compatible pending-flight fields.
         let (early_interaction,block_motion)=match shot.early_interaction {
@@ -690,6 +691,31 @@ impl MatchSessionV4 {
                 }
                 (Some(hit),Some(path))
             }
+            ShotContactResolution::CommittedSave(contact)=>{
+                let path=contact.motion;
+                let actor=self.state.players.iter().find(|p|p.player_id==path.candidate.player_id && p.side==path.candidate.side)
+                    .ok_or_else(||V4Error::InvalidInput("missing saving goalkeeper".into()))?;
+                let elapsed=contact.time_ms-now;
+                let terminal=path.experimental_plan().map_err(|e|V4Error::InvalidInput(format!("invalid save plan: {e:?}")))?
+                    .ok_or_else(||V4Error::InvalidInput("missing save locomotion".into()))?
+                    .sample_at(elapsed).map_err(|e|V4Error::InvalidInput(format!("invalid save sample: {e:?}")))?;
+                if !experimental || is_block_event || !actor.is_goalkeeper || !actor.on_pitch || actor.sent_off
+                    || actor.side!=side.opposite() || actor.pos!=path.candidate.pos || actor.vel!=path.candidate.velocity
+                    || path.candidate.locomotion.is_none_or(|m|m.facing_rad!=actor.facing_rad)
+                    || path.started_at_ms!=now || elapsed!=shot.flight_ms || elapsed<path.candidate.reaction_ms
+                    || elapsed>shot.planned_flight_ms || path.target!=contact.ball_pos.xy()
+                    || contact.ball_pos!=shot.trajectory.position_at_ms(contact.time_ms)
+                    || contact.ball_pos.z>path.candidate.playable_height_m
+                    || !match_physics::goalkeeper_hand_contact_allowed(actor.side,contact.ball_pos)
+                    || terminal.state.position.distance(path.target)>path.candidate.reach_m+1e-5
+                    || save_event.is_none_or(|ev|ev.actor.as_deref()!=Some(actor.player_id.as_str()) || ev.ball_pos!=contact.ball_pos)
+                {
+                    return Err(V4Error::InvalidInput(format!("save witness mismatch actor={} at={} ball={:?}",actor.player_id,contact.time_ms,contact.ball_pos)));
+                }
+                // A save uses ShotArrival at its actual contact time. No
+                // outfield ShotBlocked tag is fabricated for goalkeepers.
+                (None,Some(path))
+            }
             ShotContactResolution::LegacyHit(hit)=>{
                 if experimental {
                     return Err(V4Error::InvalidInput(format!("legacy shot contact in experimental resolver: {:?}",hit.kind)));
@@ -697,8 +723,8 @@ impl MatchSessionV4 {
                 (Some(hit),None)
             }
             ShotContactResolution::None=>{
-                if experimental && is_block_event {
-                    return Err(V4Error::InvalidInput("experimental block event without committed contact witness".into()));
+                if experimental && (is_block_event || save_event.is_some()) {
+                    return Err(V4Error::InvalidInput("experimental shot contact event without committed witness".into()));
                 }
                 (None,None)
             }
