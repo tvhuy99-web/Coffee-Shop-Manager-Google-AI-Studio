@@ -155,6 +155,11 @@ impl FlightCounterDeltaV4 {
     pub fn validate_references(&self,state:&MatchStateV4)->Result<(),V4Error>{
         let mut seen=std::collections::HashSet::new();
         for delta in &self.players{
+            // A sampled change between two valid 0..100 ratings cannot exceed
+            // this range. Reject corrupted snapshots before any counters change.
+            if !(-100..=100).contains(&delta.rating_delta) {
+                return Err(V4Error::InvalidInput(format!("INV-08: invalid flight rating delta for {}",delta.player_id)));
+            }
             if !seen.insert(delta.player_id.as_str()) || !state.players.iter().any(|p|p.player_id==delta.player_id){
                 return Err(V4Error::InvalidInput(format!("INV-08: unknown or duplicate flight delta player {}",delta.player_id)));
             }
@@ -169,7 +174,7 @@ impl FlightCounterDeltaV4 {
             player.goals = player.goals.saturating_add(delta.goals);
             player.own_goals = player.own_goals.saturating_add(delta.own_goals);
             player.assists = player.assists.saturating_add(delta.assists);
-            player.rating_tenths = (i16::from(player.rating_tenths) + delta.rating_delta).clamp(0,100) as u8;
+            player.rating_tenths = (i32::from(player.rating_tenths) + i32::from(delta.rating_delta)).clamp(0,100) as u8;
         }
         Ok(())
     }

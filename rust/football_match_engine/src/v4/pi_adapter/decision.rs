@@ -39,3 +39,31 @@ pub(crate) fn reconsider_short_pass(state:&MatchStateV4,input:&MatchInputV4,idx:
 pub(crate) fn decision_uncertainty(state:&MatchStateV4,idx:usize,pressure:f32)->f32{
     policy::decision_uncertainty(&observation(state,idx),idx,pressure)
 }
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use crate::v4::tests::make_v4_input;
+    use crate::v4::{RulesModeV4,SimulationMode,TeamSideV4,PlayerAttributes54};
+    #[test]
+    fn a3_opponent_hidden_profiles_do_not_enter_decision_observation() {
+        let input=make_v4_input(4242,SimulationMode::FullEvent,RulesModeV4::Standard);
+        let before=MatchStateV4::from_input(&input);
+        let idx=before.players.iter().position(|p|p.side==TeamSideV4::Home&&!p.is_goalkeeper).unwrap();
+        let mut changed=before.clone();
+        for p in &changed.players {
+            if p.side==TeamSideV4::Away {
+                changed.player_profiles[p.profile_idx].attrs=PlayerAttributes54::uniform(20).unwrap();
+            }
+        }
+        let a=observation(&before,idx);
+        let b=observation(&changed,idx);
+        assert_eq!(a.attrs,b.attrs);
+        assert_eq!(a.players.len(),b.players.len());
+        for (x,y) in a.players.iter().zip(&b.players) {
+            assert_eq!((x.first_touch,x.heading),(y.first_touch,y.heading));
+            assert_eq!(x.pos,y.pos);
+            if x.side==TeamSideV4::Away {assert_eq!((x.first_touch,x.heading),(0,0));}
+        }
+    }
+}

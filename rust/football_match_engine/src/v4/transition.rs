@@ -83,6 +83,10 @@ pub fn verify_authoritative_invariants(state: &MatchStateV4) -> Result<(), Vec<I
         }
     }
 
+    if let Err(error)=verify_uncontrolled_ball(state) {
+        violations.push(InvariantViolation{code:"INV-01",detail:error.to_string()});
+    }
+
     // INV-02: Ball and all players must have strictly finite coordinates & velocities.
     if !is_finite_vec3(state.ball.pos) || !is_finite_vec3(state.ball.vel) {
         violations.push(InvariantViolation {
@@ -101,9 +105,9 @@ pub fn verify_authoritative_invariants(state: &MatchStateV4) -> Result<(), Vec<I
         if !p.fatigue.aerobic.is_finite()
             || !p.fatigue.anaerobic.is_finite()
             || p.fatigue.aerobic < 0.0
-            || p.fatigue.aerobic > 100.5
+            || p.fatigue.aerobic > 100.0
             || p.fatigue.anaerobic < 0.0
-            || p.fatigue.anaerobic > 100.5
+            || p.fatigue.anaerobic > 100.0
         {
             violations.push(InvariantViolation {
                 code: "INV-07",

@@ -572,6 +572,12 @@ mod a4_atomic_api_tests {
         delta.players[1]=row;
         assert!(delta.apply(&mut s.state).is_err());
         assert_eq!(serde_json::to_string(&s.state).unwrap(),baseline);
+        delta.players.truncate(1);
+        for bad in [i16::MIN,-101,101,i16::MAX] {
+            delta.players[0].rating_delta=bad;
+            assert!(delta.apply(&mut s.state).is_err());
+            assert_eq!(serde_json::to_string(&s.state).unwrap(),baseline);
+        }
     }
 
     #[test]
