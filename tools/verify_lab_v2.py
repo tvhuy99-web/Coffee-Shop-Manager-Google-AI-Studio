@@ -96,7 +96,7 @@ for locale in ("values", "values-vi"):
     check(len(strings) == 895, f"{locale} has 895 commentary templates ({len(strings)})")
     commentary[locale] = strings
 
-renderer = KOTLIN / "LabCommentaryEngine.kt"
+renderer = KOTLIN / "match_commentary/LabCommentaryEngine.kt"
 check(renderer.is_file(), "Kotlin commentary renderer present")
 known_variables = set()
 if renderer.is_file():
@@ -141,7 +141,7 @@ check("TtsSettingsActivity::class.java" in main and "SoundSettingsActivity::clas
       "separate TTS and sound settings screens")
 check("LabReferenceMatchActivity::class.java" in main, "match screen wired")
 check("showLogs()" in main and "LabLogStore" in main, "lab logging screen wired")
-check("LabCommentaryEngine.kt" in gradle and "CommentaryVariable.java" not in gradle,
+check("match_commentary/LabCommentaryEngine.kt" in gradle and "CommentaryVariable.java" not in gradle,
       "Gradle commentary validator references Kotlin, not deleted Java")
 check("validateCommentaryTokens" in gradle and "dependsOn(tasks.named(\"validateCommentaryTokens\"))" in gradle,
       "commentary validation still runs as a preBuild dependency")

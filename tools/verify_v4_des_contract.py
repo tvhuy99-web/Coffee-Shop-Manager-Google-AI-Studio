@@ -303,7 +303,7 @@ def main() -> int:
     )
     session_rs = strip_comments_only((RUST_V4 / "session.rs").read_text(encoding="utf-8"))
     state_rs = strip_comments_only((ROOT / "rust/crates/player_condition/src/lib.rs").read_text(encoding="utf-8"))
-    audio_kt = strip_comments_only((KOTLIN_LAB / "LabAudioDirector.kt").read_text(encoding="utf-8"))
+    audio_kt = strip_comments_only((KOTLIN_LAB / "match_audio/LabAudioDirector.kt").read_text(encoding="utf-8"))
 
     check(
         "Zero regression: 0 occurrences of `dt_sec.clamp(1.0, 6.0)` in v4/",
@@ -349,8 +349,8 @@ def main() -> int:
 
     # 7. V4 presentation uses the production coordinator, not the deleted V3 filter.
     ref_activity_kt = (KOTLIN_LAB / "LabReferenceMatchActivity.kt").read_text(encoding="utf-8")
-    coordinator_kt = (KOTLIN_LAB / "LabV4PlaybackCoordinator.kt").read_text(encoding="utf-8")
-    controller_kt = (KOTLIN_LAB / "MatchPlaybackController.kt").read_text(encoding="utf-8")
+    coordinator_kt = (KOTLIN_LAB / "match_playback/LabV4PlaybackCoordinator.kt").read_text(encoding="utf-8")
+    controller_kt = (KOTLIN_LAB / "match_playback/MatchPlaybackController.kt").read_text(encoding="utf-8")
     short_hl_match = re.search(
         r'LabViewingMode\.SHORT_HIGHLIGHTS\s*->\s*\{\s*if\s*\(([^)]*)\)',
         coordinator_kt,
@@ -369,9 +369,9 @@ def main() -> int:
     rng_rs = (root / "rust/football_match_engine/src/rng.rs").read_text()
     diag_rs = (root / "rust/crates/match_telemetry/src/lib.rs").read_text()
     tests_rs = (root / "rust/football_match_engine/src/v4/tests.rs").read_text()
-    ctrl_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/MatchPlaybackController.kt").read_text()
-    ns_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/NarrationScheduler.kt").read_text()
-    tts_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/audio/MatchTtsManager.kt").read_text()
+    ctrl_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/match_playback/MatchPlaybackController.kt").read_text()
+    ns_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/match_commentary/NarrationScheduler.kt").read_text()
+    tts_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/audio/match_commentary/MatchTtsManager.kt").read_text()
     act_kt = (root / "app/src/main/java/pl/mkrstudio/truefootball3/lab/LabReferenceMatchActivity.kt").read_text()
 
     check(
