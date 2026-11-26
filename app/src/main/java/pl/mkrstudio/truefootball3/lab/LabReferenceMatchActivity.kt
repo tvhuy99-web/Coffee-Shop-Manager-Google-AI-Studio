@@ -46,46 +46,20 @@ class LabReferenceMatchActivity : Activity() {
         private const val MAX_SUBSTITUTIONS = 5
     }
 
-    private data class LabNarration(
-        val minute: Int,
-        val displayMinute: String,
-        val homeGoals: Int,
-        val awayGoals: Int,
-        val text: String,
-        val kind: LabEventType,
-        val side: LabTeamSide?,
-        val isWoodwork: Boolean = false,
-        val isPenalty: Boolean = false,
-        val isShootoutScored: Boolean? = null,
-        val simulationBeat: Long = 0L,
-        val gameSecond: Int = 0,
-        val simTimeMs: Long = gameSecond * 1000L
-    )
-
-    private data class RosterEntry(
-        val id: String,
-        val name: String,
-        val position: String
-    ) {
-        val label: String get() = "$name ($position)"
-    }
 
     private val main = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor()
     private val sessionGate = PresentationSessionGate()
     private val records = ArrayList<HashMap<String, Any>>()
-    private val narration = ArrayList<LabNarration>()
-    private val homeOnPitch = ArrayList<RosterEntry>()
-    private val homeBench = ArrayList<RosterEntry>()
-    private val homeRosterIndex = HashMap<String, RosterEntry>()
-    private var homeSubsUsed = 0
-    private var homeWindowsUsed = 0
-    private var intervalSubstitutionAllowed = false
+    private val roster = MatchRosterProjection()
+    private val homeOnPitch get() = roster.homeOnPitch
+    private val homeBench get() = roster.homeBench
+    private val homeSubsUsed get() = roster.homeSubsUsed
+    private val homeWindowsUsed get() = roster.homeWindowsUsed
+    private val intervalSubstitutionAllowed get() = roster.intervalSubstitutionAllowed
     private var commandDialogActive = false
-    private var simulationStepPending = false
 
-    // Legacy V3 playback state
-    private var played = 0
+    // Match presentation state
     private var paused = false
     private var finished = false
     private var cueAdapter = MatchEventCueAdapter()
@@ -491,66 +465,9 @@ class LabReferenceMatchActivity : Activity() {
     }
 
     /** Never trust the app's cached XI after an AI manager has substituted. */
-    private fun syncV4HomeRoster(authoritative: JSONObject) {
-        fun getPlayers(field: String): List<RosterEntry> {
-            val ids = authoritative.optJSONArray(field) ?: return emptyList()
-            return (0 until ids.length()).mapNotNull { idx ->
-                val id = ids.optString(idx)
-                homeRosterIndex[id]
-            }
-        }
-        homeOnPitch.clear()
-        homeOnPitch.addAll(getPlayers("onPitchPlayerIds"))
-        homeBench.clear()
-        homeBench.addAll(getPlayers("availableBenchPlayerIds"))
-        homeSubsUsed = authoritative.optInt("substitutionsUsed", homeSubsUsed)
-        homeWindowsUsed = authoritative.optInt("substitutionWindowsUsed", homeWindowsUsed)
-        intervalSubstitutionAllowed = authoritative.optBoolean("intervalSubstitutionAllowed", false)
-    }
+    private fun syncV4HomeRoster(authoritative: JSONObject) = roster.syncV4HomeRoster(authoritative)
 
-    private fun populateHomeRoster(inputJson: String) {
-        val homeObj = JSONObject(inputJson).optJSONObject("homeTeam") ?: return
-        val lineupArr = homeObj.optJSONArray("lineup")
-        val benchArr = homeObj.optJSONArray("bench")
-        val starters = ArrayList<RosterEntry>()
-        val subs = ArrayList<RosterEntry>()
-        if (lineupArr != null) {
-            for (i in 0 until lineupArr.length()) {
-                val p = lineupArr.getJSONObject(i)
-                starters.add(
-                    RosterEntry(
-                        p.optString("playerId"),
-                        p.optString("displayName"),
-                        p.optString("primaryPosition", "CM")
-                    )
-                )
-            }
-        }
-        if (benchArr != null) {
-            for (i in 0 until benchArr.length()) {
-                val p = benchArr.getJSONObject(i)
-                subs.add(
-                    RosterEntry(
-                        p.optString("playerId"),
-                        p.optString("displayName"),
-                        p.optString("primaryPosition", "CM")
-                    )
-                )
-            }
-        }
-        val applyRoster = Runnable {
-            homeRosterIndex.clear()
-            for (entry in starters + subs) homeRosterIndex[entry.id] = entry
-            homeOnPitch.clear()
-            homeOnPitch.addAll(starters)
-            homeBench.clear()
-            homeBench.addAll(subs)
-            homeSubsUsed = 0
-            homeWindowsUsed = 0
-            intervalSubstitutionAllowed = false
-        }
-        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) applyRoster.run() else main.post(applyRoster)
-    }
+    private fun populateHomeRoster(inputJson: String) = roster.populateHomeRoster(inputJson)
 
     private fun launchMatch() {
         val token = sessionGate.begin(v4MatchId)
@@ -768,82 +685,8 @@ class LabReferenceMatchActivity : Activity() {
     }
 
     private fun updateStatsFromV4Json(root: JSONObject) {
-        val summary = root.optJSONObject("summary")
-        val hs = summary?.optJSONObject("home")
-        val asObj = summary?.optJSONObject("away")
-        val factory = matchFactory
-        statsSummaryText = buildString {
-            appendLine("Động cơ: Rust Engine 4.1 DES (${viewingMode.labelVi}) | Seed: $seed")
-            if (hs != null && asObj != null) {
-                appendLine("Tỷ số chung cuộc: $home ${hs.optInt("goals")} – ${asObj.optInt("goals")} $away")
-                if (summary.optBoolean("wentToShootout", false)) {
-                    appendLine("Luân lưu: ${summary.optInt("shootoutHomeGoals")} – ${summary.optInt("shootoutAwayGoals")}")
-                }
-                appendLine("Kiểm soát bóng: ${"%.1f".format(hs.optDouble("possessionPct"))}% – ${"%.1f".format(asObj.optDouble("possessionPct"))}%")
-                appendLine("Sút (trúng đích): ${hs.optInt("shots")} (${hs.optInt("shotsOnTarget")}) – ${asObj.optInt("shots")} (${asObj.optInt("shotsOnTarget")})")
-                appendLine("Sút chệch/bị chặn: ${hs.optInt("shotsOffTarget")}/${hs.optInt("shotsBlocked")} – ${asObj.optInt("shotsOffTarget")}/${asObj.optInt("shotsBlocked")}")
-                appendLine("Cứu thua: ${hs.optInt("saves")} – ${asObj.optInt("saves")} | Phản lưới nhà: ${hs.optInt("ownGoalsConceded")} – ${asObj.optInt("ownGoalsConceded")}")
-                appendLine("xG: ${"%.2f".format(hs.optDouble("xg"))} – ${"%.2f".format(asObj.optDouble("xg"))}")
-                appendLine("Chuyền thành công: ${hs.optInt("passesCompleted")}/${hs.optInt("passesAttempted")} – ${asObj.optInt("passesCompleted")}/${asObj.optInt("passesAttempted")}")
-                appendLine("Phạt góc: ${hs.optInt("corners")} – ${asObj.optInt("corners")} | Việt vị: ${hs.optInt("offsides")} – ${asObj.optInt("offsides")}")
-                appendLine("Ném biên: ${hs.optInt("throwIns")} – ${asObj.optInt("throwIns")} | Phạm lỗi: ${hs.optInt("fouls")} – ${asObj.optInt("fouls")}")
-                appendLine("Thẻ vàng/đỏ: ${hs.optInt("yellowCards")}/${hs.optInt("redCards")} – ${asObj.optInt("yellowCards")}/${asObj.optInt("redCards")}")
-            }
-            val players = summary?.optJSONArray("players")
-            if (players != null && players.length() > 0) {
-                val sorted = (0 until players.length())
-                    .map { players.getJSONObject(it) }
-                    .sortedByDescending { it.optDouble("rating", 6.0) }
-                appendLine("\nChấm điểm nổi bật:")
-                for (p in sorted.take(6)) {
-                    val pName = factory?.name(p.optString("playerId")) ?: p.optString("playerId")
-                    val teamTag = if (p.optString("side") == "HOME") "Nhà" else "Khách"
-                    val rStr = "%.1f".format(p.optDouble("rating", 6.0))
-                    val distKm = "%.1f".format(p.optDouble("distanceM", 0.0) / 1000.0)
-                    val ownGoalTag = if (p.optInt("ownGoals") > 0) ", ${p.optInt("ownGoals")} phản lưới" else ""
-                    appendLine("  • $pName ($teamTag): $rStr (${p.optInt("goals")}B/${p.optInt("assists")}KT$ownGoalTag • ${distKm}km)")
-                }
-            }
-            appendLine("\nTổng sự kiện: ${root.optInt("eventCount")} | FP: ${root.optString("eventTimelineFingerprint")}")
-        }
+        statsSummaryText = MatchStatsProjection.render(root, home, away, viewingMode, seed, matchFactory?.let { it::name })
         LabLogStore.log("MATCH", "FINAL V4 STATS:\n$statsSummaryText")
-    }
-
-    private fun updateStatsFromRustJson(root: JSONObject) {
-        val stats = root.optJSONObject("statistics")
-        val hs = stats?.optJSONObject("home")
-        val asObj = stats?.optJSONObject("away")
-        statsSummaryText = buildString {
-            appendLine("Động cơ: Rust Engine 3.0 (${viewingMode.labelVi}) | Seed: $seed")
-            appendLine("Tỷ số chung cuộc: $home ${root.optInt("homeGoals")} – ${root.optInt("awayGoals")} $away")
-            if (hs != null && asObj != null) {
-                appendLine("Kiểm soát bóng: ${hs.optDouble("possessionPercent")}% – ${asObj.optDouble("possessionPercent")}%")
-                appendLine("Sút (trúng đích): ${hs.optInt("shots")} (${hs.optInt("shotsOnTarget")}) – ${asObj.optInt("shots")} (${asObj.optInt("shotsOnTarget")})")
-                appendLine("Sút chệch/bị chặn: ${hs.optInt("shotsOffTarget")}/${hs.optInt("shotsBlocked")} – ${asObj.optInt("shotsOffTarget")}/${asObj.optInt("shotsBlocked")}")
-                appendLine("Cứu thua: ${hs.optInt("saves")} – ${asObj.optInt("saves")} | Phản lưới nhà: ${hs.optInt("ownGoalsConceded")} – ${asObj.optInt("ownGoalsConceded")}")
-                appendLine("xG: ${"%.2f".format(hs.optInt("expectedGoalsMilli") / 1000.0)} – ${"%.2f".format(asObj.optInt("expectedGoalsMilli") / 1000.0)}")
-                appendLine("Chuyền thành công: ${hs.optInt("passesCompleted")}/${hs.optInt("passesAttempted")} – ${asObj.optInt("passesCompleted")}/${asObj.optInt("passesAttempted")}")
-                appendLine("Phạt góc: ${hs.optInt("corners")} – ${asObj.optInt("corners")} | Phạm lỗi: ${hs.optInt("fouls")} – ${asObj.optInt("fouls")}")
-                appendLine("Thẻ vàng/đỏ: ${hs.optInt("yellowCards")}/${hs.optInt("redCards")} – ${asObj.optInt("yellowCards")}/${asObj.optInt("redCards")}")
-            }
-            val mom = root.optJSONObject("manOfTheMatch")
-            if (mom != null) {
-                val rStr = "%.1f".format(mom.optInt("ratingTenths", 62) / 10.0)
-                appendLine("Cầu thủ xuất sắc nhất: ${mom.optString("displayName")} ($rStr) — ${mom.optInt("goals")} bàn, ${mom.optInt("assists")} kiến tạo")
-            }
-            val ratings = root.optJSONArray("playerRatings")
-            if (ratings != null && ratings.length() > 0) {
-                appendLine("\nChấm điểm nổi bật:")
-                for (i in 0 until minOf(6, ratings.length())) {
-                    val pr = ratings.getJSONObject(i)
-                    val rStr = "%.1f".format(pr.optInt("ratingTenths", 62) / 10.0)
-                    val teamTag = if (pr.optString("side") == "HOME") "Nhà" else "Khách"
-                    appendLine("  • ${pr.optString("displayName")} ($teamTag, ${pr.optString("primaryPosition")}): $rStr (${pr.optInt("goals")}B/${pr.optInt("assists")}KT)")
-                }
-            }
-            appendLine("\nTổng sự kiện: ${root.optInt("eventCount")} | FP: ${root.optLong("fingerprint")}")
-        }
-        LabLogStore.log("MATCH", "FINAL V3 STATS:\n$statsSummaryText")
     }
 
     private fun estimateStadiumCapacity(clubName: String): Int {

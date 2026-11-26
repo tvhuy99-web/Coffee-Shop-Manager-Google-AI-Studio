@@ -1,12 +1,16 @@
 //! Player Intelligence 4.0: read-only policy, deterministic intentions.
 //! Behavioral policy is versioned separately from the original extraction baseline.
 //! No scheduler, score mutation, ball ownership or fatigue integration here.
+#[path = "../v4/pi_adapter/decision.rs"]
 mod decision;
+#[path = "../v4/pi_adapter/goalkeeper.rs"]
 mod goalkeeper;
 mod intent;
 mod off_ball;
 mod defensive;
+#[path = "../v4/pi_adapter/tackle.rs"]
 mod tackle;
+#[path = "../v4/pi_adapter/pass_forecast.rs"]
 pub(crate) mod pass_forecast;
 pub(crate) use tackle::evaluate_tackle;
 pub(crate) use defensive::{assign_defense, DefensiveRole, DefenderObservation, DefensiveIntent};
