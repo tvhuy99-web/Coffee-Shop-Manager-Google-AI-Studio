@@ -8,3 +8,6 @@ Download `football-match-lab-v1.0-stable-debug` from a successful final L0-L4 ru
 
 ## Frozen phone-test candidate
 Use [Vietnamese phone checklist](PHONE_CHECKLIST_VI.md), commit e540c51, run 45747583976, APK artifact 15083733591. Actual APK hash matches f84c13f. Manual feedback is explicitly separate from L5; a single successful match or fake-adb is not sufficient.
+
+## Current status — supersedes earlier BLOCKED status for project acceptance
+2026-11-26: **ACCEPTED_BY_OWNER**. See [owner acceptance and reported device results](OWNER_ACCEPTANCE_VI.md). The owner requested acceptance after phone testing; formal instrumented L5 remains NOT_FULLY_VERIFIED and individual unreported scenarios remain NOT_RUN. No claim of independently checked installed hash, release approval, or complete device thresholds. Retain the harness for future use; do not require additional device checks for the owner-accepted A8 closure.

@@ -17,3 +17,6 @@ Source: Revision 3, section 14.3. These are proposed decisions and actual implem
 
 ## Updated verified facts (e540c51)
 All 61 original evidence ZIPs archived on evidence/a1-historical at d070818e; run 45615334394 PASS. L0–L4 run 45747583976 PASS 19/19, same gameplay baseline. User narrowed implementation to A-1 through A8; B1–B6 excluded. No inference of approval for ADR-001/002/003/008/009 or device thresholds. Target SDK 29 remains unchanged.
+
+## ADR-009 — owner acceptance exception (2026-11-26)
+Owner explicitly accepted A8 after a phone trial and provided aggregate simulation and replay results. Record the exception as ACCEPTED_BY_OWNER, not a completed instrumented L5 matrix. Device model, numeric thresholds, installed hash and cross-platform bit-exact acceptance were not approved or measured; targetSdk 29 unchanged. No inference of approval for unrelated ADRs or main/release publication.
