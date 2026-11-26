@@ -61,3 +61,12 @@ PASS khi đúng commit, mọi job bắt buộc thành công và bằng chứng p
 ### B1.1 gate
 
 `(cd rust && cargo test --workspace --locked --all-targets b11_ -- --nocapture)` chạy riêng các test không gian, số học, clock, scheduler và invariant mới. Cổng đầy đủ vẫn là workflow L0–L4, không thay bằng lệnh lọc. Xem [WORLD_CONTRACTS](WORLD_CONTRACTS.md#b116--nghiệm-thu) cho scope, giới hạn và rollback; chỉ nghiệm thu trên run đúng candidate.
+
+
+### B1.2 candidate shadow report
+
+`(cd rust/football_match_engine && B12_SHADOW_SEEDS=1000 B12_SHADOW_REPORT_PATH=/tmp/b12-shadow.json cargo test --release --locked --lib b12_shadow_locomotion_report -- --ignored --nocapture)`
+
+`python3 tools/verify_b12_shadow_report.py /tmp/b12-shadow.json /tmp/b12-shadow-summary.json`
+
+L1 chạy hai lệnh tương đương và lưu artifact raw/summary. 1.000 full matches là legacy reference, 1.000 pair chỉ là interval; không phải paired full-match acceptance của gameplay B1.2. Xem [PLAYER_LOCOMOTION](PLAYER_LOCOMOTION.md) cho production gate còn mở. Không sửa golden để bỏ qua gate.
