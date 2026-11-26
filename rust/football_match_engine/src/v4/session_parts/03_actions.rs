@@ -25,8 +25,9 @@ impl MatchSessionV4 {
         let open_outlets=crate::player_intelligence::count_open_outlets(side,idx,pos,&observed,receiving_line);
         self.diagnostics.record_open_outlets(open_outlets);
         let ctx = evaluate_local_context(&self.state,&self.input,side,pos);
-        let mut plan = perceive_evaluate_and_decide_des(&self.state,&self.input,
-            &self.input.timing_model,idx,ctx,&mut self.rng);
+        let experimental=self.uses_locomotion_experiment();
+        let mut plan = crate::player_intelligence::perceive_evaluate_and_decide_with_motion(&self.state,&self.input,
+            &self.input.timing_model,idx,ctx,&mut self.rng,experimental);
         self.diagnostics.record_outlet_choice(open_outlets,matches!(plan.action,PlannedActionV4::HoldAndRecycle));
         // A one-touch intention is a property of this receiver's action,
         // not of the passer who delivered the previous ball.
@@ -41,7 +42,7 @@ impl MatchSessionV4 {
         self.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
             DesEventPayload::ActionExecute{player_id:id.clone(),side})
             .map_err(|e|V4Error::InvalidClock(e.into()))?;
-        let observed_pass_risk=crate::player_intelligence::observe_pass_risk(&self.state,&self.input,idx,ctx,plan.action);
+        let observed_pass_risk=crate::player_intelligence::observe_pass_risk_with_motion(&self.state,&self.input,idx,ctx,plan.action,experimental);
         self.pending_decision=Some(PendingDecisionV4{player_id:id,side,started_at_ms:now,executes_at_ms:at,
             plan,release_at_ms,challenger,observed_pass_risk,final_aim_committed:false,preparation_motion});
         Ok(())
@@ -214,8 +215,9 @@ impl MatchSessionV4 {
         // there is a better compatible ground kick. No reroll of the
         // original action-family decision or the original timing draw.
         let ctx=evaluate_local_context(&self.state,&self.input,side,pos);
+        let experimental=self.uses_locomotion_experiment();
         let release_risk=if pending.observed_pass_risk.is_some() {
-            crate::player_intelligence::observe_pass_risk(&self.state,&self.input,idx,ctx,plan.action)
+            crate::player_intelligence::observe_pass_risk_with_motion(&self.state,&self.input,idx,ctx,plan.action,experimental)
         }else{None};
         if let (Some(initial),Some(release))=(pending.observed_pass_risk,release_risk) {
             self.diagnostics.record_pass_risk_drift(initial,release);
@@ -223,10 +225,10 @@ impl MatchSessionV4 {
         if !plan.is_one_touch && !pending.final_aim_committed &&
             matches!(plan.action,PlannedActionV4::Pass{kind:PassKindV4::Short,..}) {
             self.diagnostics.record_reaim_review();
-            if let Some(reaim)=crate::player_intelligence::reconsider_short_pass(
-                &self.state,&self.input,idx,ctx,plan.action) {
-                let updated_risk=crate::player_intelligence::observe_pass_risk(
-                    &self.state,&self.input,idx,ctx,reaim.action);
+            if let Some(reaim)=crate::player_intelligence::reconsider_short_pass_with_motion(
+                &self.state,&self.input,idx,ctx,plan.action,experimental) {
+                let updated_risk=crate::player_intelligence::observe_pass_risk_with_motion(
+                    &self.state,&self.input,idx,ctx,reaim.action,experimental);
                 self.diagnostics.record_reaim_choice(reaim.delay_ms,release_risk,updated_risk);
                 plan.action=reaim.action;
                 let release_at_ms=now_ms.saturating_add(reaim.delay_ms);

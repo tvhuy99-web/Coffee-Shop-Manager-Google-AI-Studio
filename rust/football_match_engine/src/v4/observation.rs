@@ -12,6 +12,7 @@ pub(crate) struct EngineForecastAdapter<'a> {
     state: &'a MatchStateV4,
     input: &'a MatchInputV4,
     timing: &'a TimingModelConfig,
+    experimental_motion: bool,
     pass_cache: RefCell<Option<(TeamSideV4,u32,PassForecast)>>,
 }
 
@@ -20,7 +21,11 @@ impl<'a> EngineForecastAdapter<'a> {
         Self::with_timing(state,input,&input.timing_model)
     }
     pub(crate) fn with_timing(state:&'a MatchStateV4,input:&'a MatchInputV4,timing:&'a TimingModelConfig)->Self {
-        Self {state,input,timing,pass_cache:RefCell::new(None)}
+        Self::with_motion(state,input,timing,false)
+    }
+    pub(crate) fn with_motion(state:&'a MatchStateV4,input:&'a MatchInputV4,timing:&'a TimingModelConfig,
+        experimental_motion:bool)->Self {
+        Self {state,input,timing,experimental_motion,pass_cache:RefCell::new(None)}
     }
 }
 
@@ -36,7 +41,7 @@ impl SpatialForecastPort for EngineForecastAdapter<'_> {
     }
     fn pass_risk(&self,side:TeamSideV4,awareness:f32,from:Vec2,target_idx:usize,kind:PassKindV4)->f32 {
         let mut cache=self.pass_cache.borrow_mut();
-        if cache.as_ref().map(|(s,a,_)|(*s,*a))!=Some((side,awareness.to_bits())) { *cache=Some((side,awareness.to_bits(),PassForecast::new(self.state,side,awareness))); }
+        if cache.as_ref().map(|(s,a,_)|(*s,*a))!=Some((side,awareness.to_bits())) { *cache=Some((side,awareness.to_bits(),if self.experimental_motion {PassForecast::with_motion(self.state,side,awareness,true)} else {PassForecast::new(self.state,side,awareness)})); }
         cache.as_ref().unwrap().2.lane_risk(self.state,self.input,self.timing,from,target_idx,kind)
     }
     fn carry_endpoint(&self,idx:usize,direction:Vec2,duration_ms:i64)->Vec2 {

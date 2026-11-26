@@ -93,7 +93,7 @@ fn predicted_motion_risk(traj:&BallTrajectory,flight:i64,aerial:bool,
             observed_residual(receiver,xy,at,margin)
         } else {None};
         if let Some(d)=receiver_distance {
-            receive_max=receive_max.max(((receiver.reach_m+margin-d)/(2.0*margin)).clamp(0.0,1.0));
+            receive_max=receive_max.max((1.0-(d-receiver.reach_m).max(0.0)/margin).clamp(0.0,1.0));
         }
         let receiving=receiver_distance.is_some_and(|d|d<=receiver.reach_m);
         for p in &nearby {

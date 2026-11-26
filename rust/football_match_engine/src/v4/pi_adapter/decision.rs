@@ -22,18 +22,32 @@ fn observation(state:&MatchStateV4,idx:usize)->DecisionObservation<'_>{
         personal_confidence_bound:crate::v4::psychology::PERSONAL_CONFIDENCE_BOUND}
 }
 pub fn perceive_evaluate_and_decide_des(state:&MatchStateV4,input:&MatchInputV4,timing:&TimingModelConfig,idx:usize,ctx:LocalSpatialContext,rng:&mut impl RngSampleSource)->DecisionPlanV4{
-    policy::decide_with_forecast(&observation(state,idx),idx,ctx,&EngineForecastAdapter::with_timing(state,input,timing),rng)
+    perceive_evaluate_and_decide_with_motion(state,input,timing,idx,ctx,rng,false)
+}
+pub(crate) fn perceive_evaluate_and_decide_with_motion(state:&MatchStateV4,input:&MatchInputV4,timing:&TimingModelConfig,
+    idx:usize,ctx:LocalSpatialContext,rng:&mut impl RngSampleSource,experimental:bool)->DecisionPlanV4 {
+    policy::decide_with_forecast(&observation(state,idx),idx,ctx,&EngineForecastAdapter::with_motion(state,input,timing,experimental),rng)
 }
 pub fn perceive_evaluate_and_decide(state:&MatchStateV4,input:&MatchInputV4,idx:usize,ctx:LocalSpatialContext,rng:&mut impl RngSampleSource)->PlannedActionV4{
     perceive_evaluate_and_decide_des(state,input,&TimingModelConfig::default(),idx,ctx,rng).action
 }
 pub(crate) fn observe_pass_risk(state:&MatchStateV4,input:&MatchInputV4,idx:usize,ctx:LocalSpatialContext,action:PlannedActionV4)->Option<f32>{
+    observe_pass_risk_with_motion(state,input,idx,ctx,action,false)
+}
+pub(crate) fn observe_pass_risk_with_motion(state:&MatchStateV4,input:&MatchInputV4,idx:usize,ctx:LocalSpatialContext,
+    action:PlannedActionV4,experimental:bool)->Option<f32>{
     state.players.get(idx)?;
-    policy::observe_pass_risk(&observation(state,idx),&EngineForecastAdapter::new(state,input),idx,ctx,action)
+    policy::observe_pass_risk(&observation(state,idx),
+        &EngineForecastAdapter::with_motion(state,input,&input.timing_model,experimental),idx,ctx,action)
 }
 pub(crate) fn reconsider_short_pass(state:&MatchStateV4,input:&MatchInputV4,idx:usize,ctx:LocalSpatialContext,action:PlannedActionV4)->Option<PassReaim>{
+    reconsider_short_pass_with_motion(state,input,idx,ctx,action,false)
+}
+pub(crate) fn reconsider_short_pass_with_motion(state:&MatchStateV4,input:&MatchInputV4,idx:usize,ctx:LocalSpatialContext,
+    action:PlannedActionV4,experimental:bool)->Option<PassReaim>{
     state.players.get(idx)?;
-    policy::reconsider_short_pass(&observation(state,idx),&EngineForecastAdapter::new(state,input),idx,ctx,action)
+    policy::reconsider_short_pass(&observation(state,idx),
+        &EngineForecastAdapter::with_motion(state,input,&input.timing_model,experimental),idx,ctx,action)
 }
 #[cfg(test)]
 pub(crate) fn decision_uncertainty(state:&MatchStateV4,idx:usize,pressure:f32)->f32{

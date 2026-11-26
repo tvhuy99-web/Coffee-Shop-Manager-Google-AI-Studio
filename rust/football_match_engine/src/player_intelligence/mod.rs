@@ -23,7 +23,8 @@ mod on_ball;
 pub(crate) use on_ball::carry_target;
 
 pub use decision::{perceive_evaluate_and_decide, perceive_evaluate_and_decide_des};
-pub(crate) use decision::{observe_pass_risk,reconsider_short_pass};
+pub(crate) use decision::{observe_pass_risk,reconsider_short_pass,perceive_evaluate_and_decide_with_motion,
+    observe_pass_risk_with_motion,reconsider_short_pass_with_motion};
 #[cfg(test)]
 pub(crate) use decision::decision_uncertainty;
 pub use goalkeeper::choose_gk_distribution;
