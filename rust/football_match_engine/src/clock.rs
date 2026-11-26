@@ -191,13 +191,18 @@ impl DesClockState {
             return Err("DES period elapsed exceeded watchdog_max_period_ms");
         }
 
+        // Compute every counter before publishing any of them.
+        let next_live_ms = self.ball_in_play_ms
+            .checked_add(if is_ball_in_play { dt_ms } else { 0 })
+            .ok_or("DES ball_in_play_ms overflow")?;
+        let next_dead_ms = self.ball_out_of_play_ms
+            .checked_add(if is_ball_in_play { 0 } else { dt_ms })
+            .ok_or("DES ball_out_of_play_ms overflow")?;
+
         self.sim_time_ms = next_sim_time_ms;
         self.period_elapsed_ms = next_period_elapsed_ms;
-        if is_ball_in_play {
-            self.ball_in_play_ms = self.ball_in_play_ms.saturating_add(dt_ms);
-        } else {
-            self.ball_out_of_play_ms = self.ball_out_of_play_ms.saturating_add(dt_ms);
-        }
+        self.ball_in_play_ms = next_live_ms;
+        self.ball_out_of_play_ms = next_dead_ms;
         Ok(())
     }
 
@@ -313,6 +318,48 @@ mod tests {
         assert_eq!(clock.sim_time_ms,5_401_300);
         assert_eq!(clock.game_second(),5401);
         assert_eq!(clock.ball_in_play_ms+clock.ball_out_of_play_ms,clock.sim_time_ms);
+    }
+
+    #[test]
+    fn b11_clock_split_zero_and_period_accounting() {
+        let mut whole = DesClockState::default();
+        whole.begin_period(Period::FirstHalf, DEFAULT_HALF_REGULATION_MS);
+        let mut split = whole.clone();
+        whole.advance_ms(1001, true).unwrap();
+        whole.advance_ms(509, false).unwrap();
+        for dt in [1, 100, 333, 567] {
+            split.advance_ms(dt, true).unwrap();
+        }
+        for dt in [0, 9, 500] {
+            split.advance_ms(dt, false).unwrap();
+        }
+        assert_eq!(whole, split);
+        let before = split.clone();
+        split.advance_ms(0, true).unwrap();
+        assert_eq!(split, before);
+        split.begin_period(Period::SecondHalf, DEFAULT_HALF_REGULATION_MS);
+        assert_eq!(split.sim_time_ms, before.sim_time_ms);
+        assert_eq!(split.period_started_at_ms, before.sim_time_ms);
+        assert_eq!(split.period_elapsed_ms, 0);
+        assert_eq!(split.ball_in_play_ms, before.ball_in_play_ms);
+        assert_eq!(split.ball_out_of_play_ms, before.ball_out_of_play_ms);
+    }
+
+    #[test]
+    fn b11_clock_overflow_is_atomic() {
+        let mut clock = DesClockState::default();
+        for live in [true, false] {
+            let mut invalid = clock.clone();
+            if live { invalid.ball_in_play_ms = i64::MAX; }
+            else { invalid.ball_out_of_play_ms = i64::MAX; }
+            let before = invalid.clone();
+            assert!(invalid.advance_ms(1, live).is_err());
+            assert_eq!(invalid, before);
+        }
+        clock.sim_time_ms = i64::MAX;
+        let before = clock.clone();
+        assert!(clock.advance_ms(1, true).is_err());
+        assert_eq!(clock, before);
     }
 
     #[test]

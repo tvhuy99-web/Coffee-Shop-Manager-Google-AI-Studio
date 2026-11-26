@@ -232,7 +232,8 @@ impl EventScheduler {
         }
 
         let insertion_sequence = self.next_sequence;
-        self.next_sequence = self.next_sequence.saturating_add(1);
+        self.next_sequence = self.next_sequence.checked_add(1)
+            .ok_or("DES insertion sequence exhausted")?;
 
         let state_generation = match scope {
             CancellationScope::LivePlayOnly => self.live_play_generation,
@@ -356,6 +357,64 @@ impl EventScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn b11_probe_payload(index: u32) -> DesEventPayload {
+        DesEventPayload::TacticalCommandEffective {
+            command_index: index, side: TeamSideV4::Home,
+        }
+    }
+
+    #[test]
+    fn b11_scheduler_all_priorities_and_fifo_survive_restore() {
+        use EventPriority::*;
+        let priorities = [PhysicsAndBoundary, RuleAndOfficiating, BallStateTransition,
+            DeadBallAndSubstitution, TacticalAndCommand, ActionDecision, PeriodBoundary];
+        let mut sched = EventScheduler::new();
+        for &priority in priorities.iter().rev() {
+            sched.schedule(1201, priority, CancellationScope::Persistent, b11_probe_payload(1)).unwrap();
+            sched.schedule(1201, priority, CancellationScope::Persistent, b11_probe_payload(2)).unwrap();
+        }
+        let earlier = sched.schedule(1200, PeriodBoundary, CancellationScope::Persistent, b11_probe_payload(0)).unwrap();
+        let json = serde_json::to_string(&sched).unwrap();
+        let mut restored: EventScheduler = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.pop_next_valid().unwrap().unwrap().insertion_sequence, earlier);
+        for priority in priorities {
+            for index in [1, 2] {
+                let ev = restored.pop_next_valid().unwrap().unwrap();
+                assert_eq!(ev.event_time_ms, 1201);
+                assert_eq!(ev.event_priority, priority);
+                assert_eq!(ev.payload, b11_probe_payload(index));
+            }
+        }
+        assert!(restored.pop_next_valid().unwrap().is_none());
+    }
+
+    #[test]
+    fn b11_scheduler_cancelled_events_do_not_advance_time_or_watchdog() {
+        let mut sched = EventScheduler::new();
+        for i in 0..100 {
+            sched.schedule(0, EventPriority::PhysicsAndBoundary, CancellationScope::LivePlayOnly, b11_probe_payload(i)).unwrap();
+        }
+        sched.invalidate_live_play();
+        let id = sched.schedule(250, EventPriority::ActionDecision, CancellationScope::Persistent, b11_probe_payload(101)).unwrap();
+        assert_eq!(sched.peek_next_valid_time_ms(), Some(250));
+        assert_eq!(sched.current_time_ms(), 0);
+        assert_eq!(sched.total_popped(), 0);
+        assert_eq!(sched.zero_dt_streak(), 0);
+        assert_eq!(sched.pop_next_valid().unwrap().unwrap().insertion_sequence, id);
+        assert_eq!(sched.total_popped(), 1);
+        assert_eq!(sched.current_time_ms(), 250);
+        assert_eq!(sched.zero_dt_streak(), 0);
+    }
+
+    #[test]
+    fn b11_scheduler_sequence_exhaustion_does_not_insert() {
+        let mut sched = EventScheduler::new();
+        sched.next_sequence = u64::MAX;
+        let before = serde_json::to_string(&sched).unwrap();
+        assert!(sched.schedule(0, EventPriority::ActionDecision, CancellationScope::Persistent, b11_probe_payload(1)).is_err());
+        assert_eq!(serde_json::to_string(&sched).unwrap(), before);
+    }
 
     #[test]
     fn deterministic_ordering_by_time_priority_and_sequence() {
