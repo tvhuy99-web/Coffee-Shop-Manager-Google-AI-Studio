@@ -6,7 +6,7 @@ import org.json.JSONObject
 import pl.mkrstudio.truefootball3.match_audio.MatchAudioManager
 
 /**
- * DES v1.4 simulation-time-anchored audio director.
+ * Simulation-time-anchored audio director.
  *
  * All hysteresis, crowd decay, crowd-rise cooldown, and per-event SFX cooldown timers operate
  * strictly on `simTimeMs: Long` (never wall-clock uptime), guaranteeing

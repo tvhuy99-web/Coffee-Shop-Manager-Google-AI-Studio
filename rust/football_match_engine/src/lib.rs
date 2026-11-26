@@ -1,4 +1,4 @@
-//! Single V4.1 DES engine. V3 sources are archived, not compiled.
+//! Authoritative discrete-event match engine.
 pub mod clock;
 pub mod fingerprints;
 pub mod rng;

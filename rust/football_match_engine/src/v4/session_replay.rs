@@ -1,4 +1,4 @@
-//! Deterministic replay and single/batch simulation entrypoints (extracted from `v4/session.rs` in Phase A4).
+//! Deterministic replay and single/batch simulation entrypoints.
 
 use rayon::prelude::*;
 

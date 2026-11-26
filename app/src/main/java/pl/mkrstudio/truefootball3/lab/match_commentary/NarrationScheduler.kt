@@ -12,7 +12,7 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * DES v1.4 1.0x-Canonical Narration Scheduler & Lookahead WAV Ring-Buffer Manager.
+ * Canonical 1.0x narration scheduler and lookahead WAV ring buffer.
  *
  * Core guarantees:
  * 1. Strict separation between raw [SimulationEvent] and locked [CommentaryCue].

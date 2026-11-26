@@ -1,4 +1,4 @@
-//! Coach Intelligence compatibility module (Phase A3 boundary).
+//! Coach Intelligence integration with the match engine.
 //!
 //! Owns AI manager tactical and substitution decisions (`evaluate_ai_managers`).
 //! Manual substitution execution (`apply_manual_substitution_group`) now lives in

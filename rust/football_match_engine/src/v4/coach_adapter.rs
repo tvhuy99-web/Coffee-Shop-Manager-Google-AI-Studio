@@ -1,6 +1,5 @@
-//! A3 compatibility adapter. Coach proposals currently retain the exact legacy
-//! evaluation and commit order. Separating immutable proposals from commits is
-//! a later step; do not claim the policy is isolated yet.
+//! Coach evaluation adapter preserving evaluation and commit order.
+//! Proposals are not yet separated from state commits.
 use crate::v4::ball_play::EmittedPlayEvent;
 use crate::contracts::MatchInputV4;
 use crate::v4::state::MatchStateV4;

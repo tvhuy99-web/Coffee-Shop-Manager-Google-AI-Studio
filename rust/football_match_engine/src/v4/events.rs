@@ -1,2 +1,2 @@
-//! Compatibility path for canonical A2 contracts.
+//! Re-exports canonical match contracts.
 pub use crate::contracts::events::*;

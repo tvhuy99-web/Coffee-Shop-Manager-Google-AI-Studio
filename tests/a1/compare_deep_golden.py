@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict, streaming A-1 comparison; reports first differing field, never a tolerance gate."""
+"""Strict streaming golden comparison; report the first differing field without tolerance."""
 import argparse
 import copy
 import hashlib

@@ -232,8 +232,8 @@ pub fn decision_uncertainty(state:&DecisionObservation<'_>,idx:usize,pressure_no
     // resistance, determination, leadership and decaying team momentum.
     // Consume that single contextual delta once, rather than charging
     // pressure_load again or treating it as extra physical pressing.
-    // Neutral delta preserves 4.0.19. Keep permanent composure in the
-    // base spatial-pressure term; no direct change to action success.
+    // A neutral contextual delta leaves the base policy unchanged.
+    // Permanent composure affects spatial pressure, not direct action success.
     let contextual=1.0-state.composure_delta.clamp(-0.28,0.25);
     // Personal confidence is residual to shared team context; only
     // observed actor-specific outcomes affect this additional term.

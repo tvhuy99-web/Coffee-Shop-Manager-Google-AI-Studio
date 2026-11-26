@@ -1,4 +1,4 @@
-//! Read-only V4 attacking-chain & DES v1.4 diagnostics.
+//! Read-only attacking-chain and DES diagnostics.
 //!
 //! Independent from the event storage policy: every emitted event is observed
 //! in FullEvent AND FastBatch, so no timeline needs to be retained in memory.
@@ -121,7 +121,7 @@ pub enum DeadBallDiagKind {
     Substitution,
 }
 
-/// Per-category dead-ball duration distributions for DES v1.4 (Section X).
+/// Per-category dead-ball duration distributions.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeadBallDistributionsV4 {
@@ -135,7 +135,7 @@ pub struct DeadBallDistributionsV4 {
     pub substitution: DurationDistributionMs,
 }
 
-/// DES v1.4 match-level timing, event-density, and tactical-delay diagnostics (Section X).
+/// Match timing, event-density and tactical-delay diagnostics.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesMatchDiagnosticsV4 {
@@ -782,7 +782,7 @@ impl MatchDiagnosticsCollectorV4 {
         self.team_mut(side).controlled_ball_samples += 1;
     }
 
-    /// Updates DES v1.4 match clock totals (ball-in-play, out-of-play, added time).
+    /// Updates match clock totals (ball-in-play, out-of-play, added time).
     pub fn record_des_clock_totals(
         &mut self,
         ball_in_play_ms: i64,

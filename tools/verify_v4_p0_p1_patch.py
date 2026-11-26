@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static source-wire safety checks for V4 P0/P1 patch.
+"""Static source-wire safety checks.
 NOT a substitute for `cargo test` or an Android ARM64 device smoke test.
 """
 from pathlib import Path
@@ -51,8 +51,7 @@ chk('P0-2 no fabricated penalty goals', 'if round >= 20' not in sess and
     'shootout_home_goals += 1;\n                break' not in sess and
     'shootout_eligible_order' in sess and
     ordered(sess, 'if round >= MAX_ROUNDS {', 'return Err(V4Error::InvalidInput('))
-# Scope registry checks to the V4 DES implementation; legacy V3 uses
-# a different ABI. Require an actual V4 marker instead of slicing at -1.
+# Require the JNI marker before checking the handle registry.
 marker = re.search(r'// Match Engine V4\.\d+ (?:DES )?Interactive JNI\.', jni)
 section = jni[marker.start():] if marker else ''
 chk('P0-3 V4 handles are NOT raw pointers',

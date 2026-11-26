@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only integration regression checks for V4 P1-2/P1-3/P1-4.
+"""Read-only integration regression checks.
 
 STATIC/STRUCTURAL checks, not a substitute for cargo tests or Android UI QA.
 """

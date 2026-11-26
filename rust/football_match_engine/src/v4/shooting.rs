@@ -821,7 +821,7 @@ pub fn resolve_shot_v4_des(
     }
 }
 
-/// Complete Stage C shot resolver (compatibility wrapper delegating to `resolve_shot_v4_des`).
+/// Shot resolver wrapper delegating to `resolve_shot_v4_des`.
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_shot_v4(
     state: &mut MatchStateV4,

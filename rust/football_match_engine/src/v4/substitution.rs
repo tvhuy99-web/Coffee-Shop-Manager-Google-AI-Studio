@@ -1,7 +1,6 @@
 //! Authoritative substitution validation & atomic execution (Engine/Rules boundary).
 //!
-//! Extracted from `v4/ai_manager.rs` in Phase A3 so manual player substitutions and
-//! substitution-window enforcement belong to Engine/Rules rather than `coach_intelligence`.
+//! Manual substitutions and window enforcement belong to Engine/Rules, not Coach Intelligence.
 
 use crate::v4::ball_play::EmittedPlayEvent;
 use crate::v4::events::{EventMetadataV4, EventTypeV4, HighlightTier};

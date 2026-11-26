@@ -44,7 +44,7 @@ assets = APP / "assets"
 check(not (assets / "competition_data_current").exists(), "no legacy competition_data_current")
 check(not (assets / "competition_data_2025").exists(), "no legacy competition_data_2025")
 
-# Phase 2: 232 England-pyramid clubs, 11 development divisions, 54 fields.
+# Development data contract: 232 clubs, 11 divisions, 54 attributes.
 england_root = assets / "england_v2"
 check((england_root / "manifest.json").is_file(), "England V2 manifest present")
 check((england_root / "clubs.json").is_file(), "England V2 club catalogue present")

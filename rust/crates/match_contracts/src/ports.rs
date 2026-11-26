@@ -1,4 +1,4 @@
-//! Narrow trait ports for Phase A3/A5 crate isolation (ADR-004).
+//! Narrow trait ports for isolated simulation policies.
 //!
 //! `match_contracts` defines only pure query/response DTOs and trait signatures so
 //! `player_intelligence` and `coach_intelligence` can depend strictly on `match_contracts`
@@ -89,9 +89,8 @@ pub struct TackleGeometryForecast {
 
 /// Read-only spatial & timing forecast port implemented by `match_engine`
 /// (delegating authoritative math to `match_physics` and `match_rules`).
-/// Exact legacy spatial query contract, preserving pressure units, index identity
-/// and float operation order. More restrictive observations can be introduced
-/// in B2; A3 must not silently replace the original forecast with approximations.
+/// Preserve pressure units, index identity and float operation order.
+/// Observation restrictions require explicit behavioral changes; do not substitute approximations.
 #[derive(Debug, Clone, Copy)]
 pub struct LocalSpatialContext {
     pub pressure: f32,

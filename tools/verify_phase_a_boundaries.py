@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase A production policy import boundary; no behavioral changes."""
+"""Verify production policy import boundaries."""
 from pathlib import Path
 import re
 root=Path(__file__).resolve().parents[1]

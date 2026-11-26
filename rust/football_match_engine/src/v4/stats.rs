@@ -1,4 +1,4 @@
-//! V4 P2 result/statistics integrity checks independent from the live counters.
+//! Result and statistics integrity checks independent from live counters.
 //! A FastBatch result has no event list and is checked via counter-only invariants.
 use crate::v4::events::{EventTypeV4, MatchEventV4, MatchResultV4, MatchSummaryV4, TeamMatchSummaryV4};
 use crate::v4::spatial::TeamSideV4;

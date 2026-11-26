@@ -1,4 +1,4 @@
-//! Phase A2 internal `contracts` boundary (future `match_contracts` leaf crate).
+//! Engine-facing contracts and canonical shared types.
 //!
 //! Exposes canonical units, typed identifiers, shared V4 DTOs, narrow trait ports,
 //! and `VersionManifest4` without containing simulation formulas or authoritative world state.
@@ -28,8 +28,7 @@ pub use version::{
     VERSION_MANIFEST_SCHEMA,
 };
 
-// Re-export canonical V4 schema DTOs so downstream modules can migrate imports
-// to `crate::contracts::*` before Phase A5 splits `match_contracts` into its own crate.
+// Re-export canonical schema DTOs for engine consumers.
 pub use crate::clock::Period;
 pub use crate::contracts::attributes::{
     GoalkeepingAttributes, HiddenAttributes, MentalAttributes, PhysicalAttributes,

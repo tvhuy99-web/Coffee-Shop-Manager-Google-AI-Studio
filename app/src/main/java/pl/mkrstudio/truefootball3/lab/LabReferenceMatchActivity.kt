@@ -39,8 +39,7 @@ import kotlin.math.abs
 import kotlin.math.roundToLong
 
 /**
- * Unified match screen shared by both Match Engine 3.0 (legacy tick) and Match Engine 4.0 DES v1.4
- * ([MatchPlaybackController] + [NarrationScheduler] + [MatchCheckpointStore]).
+ * DES match screen using [MatchPlaybackController], [NarrationScheduler] and [MatchCheckpointStore].
  */
 class LabReferenceMatchActivity : Activity() {
     companion object {
@@ -79,7 +78,7 @@ class LabReferenceMatchActivity : Activity() {
     private var v4MatchId = ""
     private var statsSummaryText = "Chưa có thống kê trận đấu."
 
-    // DES v1.4 V4 playback state
+    // Match playback state
     private var desRateIndex = 0
     private var ttsHealthStatus: TtsHealthStatus = TtsHealthStatus.HEALTHY
     private var playbackController: MatchPlaybackController? = null

@@ -1,4 +1,4 @@
-//! Interactive command DTOs and command journal records (extracted from `v4/session.rs` in Phase A4).
+//! Interactive command DTOs and command journal records.
 
 use serde::{Deserialize, Serialize};
 

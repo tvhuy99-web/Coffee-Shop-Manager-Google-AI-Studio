@@ -26,15 +26,15 @@ import pl.mkrstudio.truefootball3.lab.LabLogStore
 import pl.mkrstudio.truefootball3.lab.TtsHealthStatus
 
 /**
- * DES v1.4 TTS & pitch-preserving WAV playback manager.
+ * TTS and pitch-preserving WAV playback.
  *
- * Key upgrades over legacy V3/V4 TTS:
+ * Responsibilities:
  * - Dynamic configuration reload via `reloadSettings()`.
  * - Offline cue synthesis via `synthesizeCueToWav(...)` + exact RIFF/WAVE duration parsing
  *   (44-byte header `dataSize / byteRate * 1000` with chunk scan and `MediaMetadataRetriever` fallback).
  * - Pitch-preserving playback via `android.media.MediaPlayer` + `PlaybackParams().setSpeed(rate).setPitch(1.0f)`
  *   supporting `1.0x / 1.25x / 1.5x / 2.0x / 3.0x` smoothly without external `androidx.media3`.
- * - Removed silent circuit breaker (`consecutive >= 3`); transparently reports `TtsHealthStatus`
+ * - Reports `TtsHealthStatus`
  *   (`HEALTHY`, `DEGRADED_BACKLOG`, `BACKEND_ERROR`, `UNAVAILABLE`) via listener without muting TTS.
  */
 class MatchTtsManager(context: Context) {

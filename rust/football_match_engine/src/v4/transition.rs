@@ -1,4 +1,4 @@
-//! Phase A4 transition vocabulary, monotonic commit gate and read-only state verifier.
+//! Transition vocabulary, monotonic commit gate and read-only state verifier.
 //!
 //! Provides runtime and test verification that `MatchStateV4` remains physically and legally
 //! consistent without mutating gameplay state. The public API transaction gate is separate.
@@ -229,7 +229,7 @@ pub(crate) fn goal_counters(s:&MatchStateV4)->[u16;4]{
 }
 
 /// In-flight and loose-ball ownership is never a last-touch alias.
-/// Dead-ball owner fields are left to the legacy restart adapter in Phase A.
+/// The restart adapter owns dead-ball ownership validation.
 pub(crate) fn verify_uncontrolled_ball(state:&MatchStateV4)->Result<(),V4Error>{
     if matches!(state.ball.control,BallControlState::Loose|BallControlState::InFlight) &&
         (state.ball.owner_side.is_some() || state.ball.owner_player_id.is_some()) {

@@ -11,7 +11,7 @@ pub const MAX_ZERO_DT_STREAK: u32 = 64;
 /// Maximum total valid events popped per match before tripping the runaway-simulation guard.
 pub const MAX_TOTAL_POPPED_EVENTS: u64 = 250_000;
 
-/// Deterministic same-millisecond tie-breaking priority levels (DES v1.4 Contract A).
+/// Deterministic same-millisecond tie-breaking priority levels.
 /// Lower numeric value executes first when two events share the exact same `event_time_ms`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(u8)]

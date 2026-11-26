@@ -200,8 +200,7 @@ pub(crate) fn advance_off_ball_movement_with_report(
     let controlled=state.ball.control==BallControlState::Controlled;
     let observed:Vec<_>=state.players.iter().enumerate().filter(|(_,p)|p.on_pitch && !p.sent_off)
         .map(|(idx,p)|ObservedPlayer{idx,side:p.side,pos:p.pos,is_gk:p.is_goalkeeper}).collect();
-    // First choose shape intentions without moving anybody. Keep the
-    // existing RNG draw order for the legacy shape policy.
+    // Choose shape intentions before moving players; preserve RNG draw order.
     let mut targets:Vec<Option<Vec2>>=vec![None;state.players.len()];
     let mut support_order=Vec::new();
     for idx in 0..state.players.len() {
@@ -276,9 +275,8 @@ pub(crate) fn advance_off_ball_movement_with_report(
     }else{Vec::new()};
     for a in &defense {targets[a.idx]=Some(a.target);}
 
-    // Integrate once, using the FINAL destination. Previously dist was
-    // computed before support adjusted target, which could exceed speed
-    // budget or step past the intended destination.
+    // Integrate once using the final destination to enforce the speed budget
+    // and avoid overshooting.
     for (idx,target) in targets.into_iter().enumerate() {
         let Some(target)=target else {
             state.players[idx].last_moved_m=0.0;
