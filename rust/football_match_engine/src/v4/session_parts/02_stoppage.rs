@@ -292,7 +292,7 @@ impl MatchSessionV4 {
 
     /// Deterministic eligible taker for ordinary restarts; kickoff retains
     /// the existing designated striker. Do not select a random distant actor
-    /// after setup. Specialist deliveries are integrated separately.
+    /// after setup. Specialist restarts share the legacy designated-taker selector.
     fn experimental_restart_actor(&self, db: &DeadBallState) -> Option<usize> {
         match db.kind {
             DeadBallKind::GoalCelebration | DeadBallKind::Kickoff =>

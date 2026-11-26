@@ -545,6 +545,34 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
                 _=>return Err(bad("shot block contact identity mismatch")),
             }}
         }
+        if let FlightActionV4::LooseRecovery{origin_side,cause}=&f.action {
+            if matches!(cause.as_str(),"CORNER_DELIVERY"|"FREE_KICK_DELIVERY") {
+                if !experimental || (cause=="CORNER_DELIVERY" && !f.offside_at_launch.is_empty())
+                    || f.resolves_at_ms>f.planned_arrival_ms {
+                    return Err(bad("invalid specialist delivery"));
+                }
+                if let Some(path)=&f.pass_contact_motion {
+                    let ball=f.trajectory.position_at_ms(f.resolves_at_ms);
+                    let elapsed=f.resolves_at_ms-f.trajectory.start_time_ms;
+                    let actor=&p.state.players[f.outcome.next_carrier_idx];
+                    if f.early_interaction.is_some() || path.target!=ball.xy()
+                        || path.candidate.player_id!=actor.player_id || path.candidate.side!=actor.side
+                        || elapsed<path.candidate.reaction_ms || ball.z>path.candidate.playable_height_m
+                        || (actor.is_goalkeeper && actor.side!=*origin_side
+                            && !match_physics::goalkeeper_hand_contact_allowed(actor.side,ball))
+                        || path.candidate.contact_position_toward(path.target,elapsed)
+                            .is_none_or(|pos|pos.distance(path.target)>path.candidate.reach_m+1e-5) {
+                        return Err(bad("invalid specialist delivery witness"));
+                    }
+                } else if let Some(hit)=&f.early_interaction {
+                    if hit.time_ms!=f.resolves_at_ms || hit.boundary.is_none() {
+                        return Err(bad("invalid specialist delivery boundary"));
+                    }
+                } else if f.resolves_at_ms!=f.planned_arrival_ms {
+                    return Err(bad("specialist delivery without contact before arrival"));
+                }
+            }
+        }
         contact_paths.extend(f.pass_contact_motion.iter());
     }
     if let Some(c)=&p.pending_carry {

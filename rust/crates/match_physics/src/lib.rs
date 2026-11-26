@@ -1742,6 +1742,41 @@ mod b12_contact_locomotion_tests {
     }
 
     #[test]
+    fn b12_batch2_delivery_contact_respects_keeper_area_and_reaction() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            let mirror=|x:f32|if side==TeamSideV4::Away{x}else{105.0-x};
+            let sign=if side==TeamSideV4::Away{1.0}else{-1.0};
+            let traj=BallTrajectory{start_time_ms:100,start_pos:Vec3::new(mirror(80.0),34.0,1.4),
+                initial_vel:Vec3::new(sign*20.0,0.0,0.0),gravity_z:0.0,drag:0.0,
+                is_shot:false,is_carrier_dribble:false};
+            let mut p=candidate(mirror(83.0),0.0);
+            p.side=side;
+            p.speed_mps=0.0;
+            p.reaction_ms=0;
+            p.reach_m=0.2;
+            p.playable_height_m=2.6;
+            assert!(find_locomotion_delivery_contact(&traj,&[p.clone()],Some(0),600).is_none());
+            assert!(matches!(find_locomotion_delivery_contact(&traj,&[p.clone()],None,600),
+                Some(LooseBallResolution::Player{..})));
+            p.reaction_ms=500;
+            assert!(find_locomotion_delivery_contact(&traj,&[p.clone()],None,600).is_none());
+            p.pos.x=mirror(92.0);
+            p.reaction_ms=200;
+            let hit=find_locomotion_delivery_contact(&traj,&[p.clone()],Some(0),1000).unwrap();
+            match hit {
+                LooseBallResolution::Player{candidate_idx,time_ms,ball_pos}=>{
+                    assert_eq!(candidate_idx,0);
+                    assert!(time_ms>=300);
+                    assert!(goalkeeper_hand_contact_allowed(side,ball_pos));
+                    assert!(p.contact_position_toward(ball_pos.xy(),time_ms-100).unwrap()
+                        .distance(ball_pos.xy())<=p.reach_m);
+                }
+                _=>panic!("expected legal keeper contact"),
+            }
+        }
+    }
+
+    #[test]
     fn b12_batch1_pass_and_recovery_share_integer_contact_race() {
         for side in [TeamSideV4::Home,TeamSideV4::Away] {
             let mirror=|x:f32|if side==TeamSideV4::Away{x}else{105.0-x};
