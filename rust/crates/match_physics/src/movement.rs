@@ -241,6 +241,8 @@ impl MotionPlan {
         Ok(Self { initial, intent, capability })
     }
 
+    pub fn target(&self) -> Vec2 { self.intent.target }
+
     /// Sample the same plan at elapsed milliseconds. Controller segments are
     /// anchored at the origin/reaction boundary; a partial query evaluates the
     /// same segment rather than changing the integration step or target.

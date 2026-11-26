@@ -178,6 +178,61 @@ pub(crate) fn advance_off_ball_movement_with_report(
     rng: &mut DeterministicRng,
 )->Vec<DefensiveIntent> {
     let dt = dt_sec.max(0.0);
+    let (targets, defense) = select_movement_targets(state, input, possession_side, carrier_idx, dt_sec, rng);
+
+    // Integrate once using the final destination to enforce the speed budget
+    // and avoid overshooting.
+    for (idx,target) in targets.into_iter().enumerate() {
+        let Some(target)=target else {
+            state.players[idx].last_moved_m=0.0;
+            state.players[idx].vel=Vec2::default();
+            continue;
+        };
+        let cur=state.players[idx].pos;
+        let dist=cur.distance(target);
+        let attrs=player_attrs(state,&state.players[idx]);
+        let max_speed_mps=player_max_speed_mps(attrs,&state.players[idx]);
+        let max_step = max_speed_mps * dt;
+        let new_pos = if dt <= 1e-4 {
+            cur
+        } else if dist <= max_step {
+            target
+        } else {
+            let t = max_step / dist;
+            Vec2::new(
+                cur.x + (target.x - cur.x) * t,
+                cur.y + (target.y - cur.y) * t,
+            )
+            .clamp_to_pitch()
+        };
+
+        let moved_m = cur.distance(new_pos);
+        state.players[idx].last_moved_m = moved_m;
+        state.players[idx].target_pos = target;
+        state.players[idx].pos = new_pos;
+        state.players[idx].vel = if dt > 1e-4 {
+            Vec2::new((new_pos.x - cur.x) / dt, (new_pos.y - cur.y) / dt)
+        } else {
+            Vec2::default()
+        };
+        if moved_m > 0.05 {
+            state.players[idx].facing_rad = (new_pos.y - cur.y).atan2(new_pos.x - cur.x);
+        }
+    }
+    defense
+}
+
+/// Select intentions from one immutable world snapshot; shared with the isolated
+/// B1.2 candidate adapter. Legacy integration and RNG draw order are unchanged.
+fn select_movement_targets(
+    state: &MatchStateV4,
+    input: &MatchInputV4,
+    possession_side: TeamSideV4,
+    carrier_idx: usize,
+    dt_sec: f32,
+    rng: &mut DeterministicRng,
+) -> (Vec<Option<Vec2>>, Vec<DefensiveIntent>) {
+    let dt = dt_sec.max(0.0);
     // Scale stochastic target jitter/lapses by sqrt(min(dt, 1.0)) so short DES substeps (< 1s)
     // do not cause players to oscillate or jitter unrealistically.
     let noise_scale = dt.min(1.0).sqrt();
@@ -275,46 +330,129 @@ pub(crate) fn advance_off_ball_movement_with_report(
     }else{Vec::new()};
     for a in &defense {targets[a.idx]=Some(a.target);}
 
-    // Integrate once using the final destination to enforce the speed budget
-    // and avoid overshooting.
-    for (idx,target) in targets.into_iter().enumerate() {
-        let Some(target)=target else {
-            state.players[idx].last_moved_m=0.0;
-            state.players[idx].vel=Vec2::default();
-            continue;
-        };
-        let cur=state.players[idx].pos;
-        let dist=cur.distance(target);
-        let attrs=player_attrs(state,&state.players[idx]);
-        let max_speed_mps=player_max_speed_mps(attrs,&state.players[idx]);
-        let max_step = max_speed_mps * dt;
-        let new_pos = if dt <= 1e-4 {
-            cur
-        } else if dist <= max_step {
-            target
-        } else {
-            let t = max_step / dist;
-            Vec2::new(
-                cur.x + (target.x - cur.x) * t,
-                cur.y + (target.y - cur.y) * t,
-            )
-            .clamp_to_pitch()
-        };
+    (targets, defense)
+}
 
-        let moved_m = cur.distance(new_pos);
-        state.players[idx].last_moved_m = moved_m;
-        state.players[idx].target_pos = target;
-        state.players[idx].pos = new_pos;
-        state.players[idx].vel = if dt > 1e-4 {
-            Vec2::new((new_pos.x - cur.x) / dt, (new_pos.y - cur.y) / dt)
-        } else {
-            Vec2::default()
-        };
-        if moved_m > 0.05 {
-            state.players[idx].facing_rad = (new_pos.y - cur.y).atan2(new_pos.x - cur.x);
+use match_physics::movement::{MotionPlan, MotionState, MotionResult, MovementCapability, MovementIntent};
+use crate::v4::error::V4Error;
+
+/// Candidate paths are explicit. A committed forecast takes precedence over a
+/// newly selected tactical target; no preliminary player displacement is applied.
+/// This is an isolated adapter, not yet the MatchSession production integrator.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CommittedMotion {
+    pub player_idx: usize,
+    pub plan: MotionPlan,
+    pub elapsed_before_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerMotionInterval {
+    pub player_idx: usize,
+    pub start: MotionResult,
+    pub end: MotionResult,
+    pub duration_ms: i64,
+    pub target: Vec2,
+}
+
+fn candidate_motion_error(detail: impl std::fmt::Debug) -> V4Error {
+    V4Error::InvalidInput(format!("B1.2 candidate locomotion: {detail:?}"))
+}
+
+/// Build candidate plans for the live target policy from the same pre-event
+/// state. The caller provides explicit committed contact/carry paths. RNG and
+/// world state are committed only if the entire interval validates.
+pub fn advance_candidate_live_motion(
+    state: &mut MatchStateV4,
+    input: &MatchInputV4,
+    possession_side: TeamSideV4,
+    carrier_idx: usize,
+    duration_ms: i64,
+    rng: &mut DeterministicRng,
+    committed: &[CommittedMotion],
+) -> Result<(Vec<PlayerMotionInterval>, Vec<DefensiveIntent>), V4Error> {
+    if duration_ms <= 0 || duration_ms > match_physics::movement::MAX_MOTION_HORIZON_MS {
+        return Err(candidate_motion_error("invalid live duration"));
+    }
+    let mut next_rng = rng.clone();
+    let dt = match_contracts::units::ms_to_seconds_f32(duration_ms);
+    let (targets, defense) = select_movement_targets(state, input, possession_side, carrier_idx, dt, &mut next_rng);
+    let intents: Vec<_> = targets.into_iter().map(|target| target.map(|target|
+        MovementIntent { target, intensity: 1.0, desired_facing_rad: None, reaction_ms: 0 }
+    )).collect();
+    let rows = advance_candidate_motion(state, &intents, committed, duration_ms)?;
+    *rng = next_rng;
+    Ok((rows, defense))
+}
+
+/// Stage one result per active player, verify every interval, then publish.
+/// For a dead-ball interval the caller supplies low-intensity intents; the
+/// same physical solver is used. Administrative kickoff resets are separate.
+pub fn advance_candidate_motion(
+    state: &mut MatchStateV4,
+    intents: &[Option<MovementIntent>],
+    committed: &[CommittedMotion],
+    duration_ms: i64,
+) -> Result<Vec<PlayerMotionInterval>, V4Error> {
+    if duration_ms <= 0 || duration_ms > match_physics::movement::MAX_MOTION_HORIZON_MS
+        || intents.len() != state.players.len()
+    {
+        return Err(candidate_motion_error("invalid interval or intent count"));
+    }
+    let mut paths = vec![None; state.players.len()];
+    for row in committed {
+        let p = state.players.get(row.player_idx).ok_or_else(|| candidate_motion_error("unknown committed actor"))?;
+        if !p.on_pitch || p.sent_off || row.elapsed_before_ms < 0
+            || paths[row.player_idx].replace(*row).is_some()
+        {
+            return Err(candidate_motion_error("invalid or duplicate committed actor"));
         }
     }
-    defense
+    let mut rows = Vec::new();
+    for (idx, p) in state.players.iter().enumerate() {
+        if !p.on_pitch || p.sent_off {
+            if intents[idx].is_some() { return Err(candidate_motion_error("ineligible actor intent")); }
+            continue;
+        }
+        let current = MotionState { position: p.pos, velocity: p.vel, facing_rad: p.facing_rad };
+        let (plan, elapsed, target) = if let Some(path) = paths[idx] {
+            (path.plan, path.elapsed_before_ms, path.plan.target())
+        } else {
+            let intent = intents[idx].ok_or_else(|| candidate_motion_error("missing active actor intent"))?;
+            let profile = state.player_profiles.get(p.profile_idx)
+                .ok_or_else(|| candidate_motion_error("missing actor profile"))?;
+            let cap = MovementCapability::from_attributes(&profile.attrs.physical, p.fatigue.aerobic, p.fatigue.anaerobic)
+                .map_err(candidate_motion_error)?;
+            (MotionPlan::new(current, intent, cap).map_err(candidate_motion_error)?, 0, intent.target)
+        };
+        let end_ms = elapsed.checked_add(duration_ms).ok_or_else(|| candidate_motion_error("interval overflow"))?;
+        let start = plan.sample_at(elapsed).map_err(candidate_motion_error)?;
+        let end = plan.sample_at(end_ms).map_err(candidate_motion_error)?;
+        if start.state != current {
+            return Err(candidate_motion_error("committed path does not start at authoritative state"));
+        }
+        let distance = end.distance_m - start.distance_m;
+        let roundoff = 32.0 * f32::EPSILON * PITCH_LENGTH_M.max(PITCH_WIDTH_M)
+            + 4.0 * f32::EPSILON * end.distance_m;
+        if !distance.is_finite() || distance < 0.0
+            || start.state.position.distance(end.state.position) > distance + roundoff
+        {
+            return Err(candidate_motion_error("invalid realized path length"));
+        }
+        rows.push(PlayerMotionInterval { player_idx: idx, start, end, duration_ms, target });
+    }
+    for row in &rows {
+        let p = &mut state.players[row.player_idx];
+        p.pos = row.end.state.position;
+        p.vel = row.end.state.velocity;
+        p.facing_rad = row.end.state.facing_rad;
+        p.target_pos = row.target;
+        p.last_moved_m = row.end.distance_m - row.start.distance_m;
+    }
+    for p in &mut state.players {
+        if !p.on_pitch || p.sent_off { p.last_moved_m = 0.0; }
+    }
+    Ok(rows)
 }
 
 /// Legacy fallback lookup of a player's 54 attributes from `MatchInputV4` (lineup + bench).
