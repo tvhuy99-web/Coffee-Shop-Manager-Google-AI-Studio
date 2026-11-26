@@ -39,25 +39,57 @@ def first_diff(a, b, path="$"):
 def digest(v):
     return hashlib.sha256(json.dumps(v, sort_keys=True, default=str).encode()).hexdigest()
 
-def context(row, d):
-    checkpoint = row.get("terminal", {})
-    payload = checkpoint.get("payload", {})
-    path = d[0]
-    # When a retained event differs, identify that event rather than just final clock.
-    event = None
-    if path.startswith("$.result.events["):
-        try:
-            event = row["result"]["events"][int(path.split("[", 1)[1].split("]", 1)[0])]
-        except (IndexError, KeyError, ValueError):
-            pass
+def field_owner(path):
+    """Identify the owning subsystem of the differing field, not its root cause."""
+    fields = (
+        (".payload.rng", "engine_rng"),
+        (".payload.scheduler", "engine_scheduler"),
+        (".payload.pendingFlight", "engine_physics_adapter"),
+        (".payload.pendingCarry", "engine_physics_adapter"),
+        (".payload.pendingDecision", "engine_pi_adapter"),
+        (".payload.pendingSubstitutions", "engine_rules_adapter"),
+        (".payload.pendingTacticalCommands", "engine_tactics_adapter"),
+        (".payload.appliedCommands", "engine_command_ledger"),
+        (".payload.state.desClock", "engine_clock"),
+        (".payload.state.ball", "engine_world_ball"),
+        (".payload.state.players", "engine_world_players"),
+        (".payload.state", "engine_world"),
+        (".payload.diagnostics", "match_telemetry"),
+        (".payload.input", "match_contracts_input"),
+        (".result.diagnostics", "match_telemetry"),
+        (".result.events", "engine_event_journal"),
+        (".result.summary", "engine_result_projection"),
+        (".externalCommands", "engine_command_ledger"),
+        (".markers", "engine_checkpoint_marker"),
+    )
+    return next((owner for prefix, owner in fields if prefix in path), "unclassified")
+
+def context(row, d, actual_row=None):
+    def evidence(source):
+        checkpoint = source.get("initial" if d[0].startswith("$.initial") else "terminal", {})
+        payload = checkpoint.get("payload", {})
+        event = None
+        if d[0].startswith("$.result.events["):
+            try:
+                event = source["result"]["events"][int(d[0].split("[", 1)[1].split("]", 1)[0])]
+            except (IndexError, KeyError, ValueError):
+                pass
+        return {
+            "eventSequence": event.get("sequence") if event else payload.get("nextEventSequence"),
+            "simTimeMs": event.get("simTimeMs") if event else checkpoint.get("simTimeMs"),
+            "rngDigest": digest(payload.get("rng")),
+            "pendingAction": repr(payload.get("pendingFlight") or payload.get("pendingDecision") or payload.get("pendingCarry"))[:400],
+            "snapshotScope": "initial" if d[0].startswith("$.initial") else "terminal",
+        }
+    left = evidence(row)
     return {
         "scenario": row.get("scenario"), "seed": row.get("seed"),
-        "fieldPath": path, "expected": repr(d[1])[:400], "actual": repr(d[2])[:400],
-        "eventSequence": event.get("sequence") if event else payload.get("nextEventSequence"),
-        "simTimeMs": event.get("simTimeMs") if event else checkpoint.get("simTimeMs"),
-        "rngDigest": digest(payload.get("rng")),
-        "pendingAction": repr(payload.get("pendingFlight") or payload.get("pendingDecision") or payload.get("pendingCarry"))[:400],
-        "module": "unclassified; investigate first differing field",
+        "fieldPath": d[0], "expected": repr(d[1])[:400], "actual": repr(d[2])[:400],
+        **left,
+        "expectedContext": left,
+        "actualContext": evidence(actual_row) if actual_row is not None else None,
+        "module": field_owner(d[0]),
+        "moduleAttribution": "field ownership only; causal transition requires trace investigation",
     }
 
 def check_same(a, b):
@@ -117,7 +149,7 @@ def main():
                 first_row = a
             d = check_same(a, b)
             if d:
-                print(json.dumps(context(a, d), ensure_ascii=False))
+                print(json.dumps(context(a, d, b), ensure_ascii=False))
                 raise SystemExit("A1_DEEP_DIVERGENCE")
             if ref is not None:
                 old = ref[i]
@@ -154,6 +186,10 @@ def main():
             payload[field] = None
         d = check_same(first_row, changed)
         assert d and d[0].startswith("$.terminal.payload." + field), d
+        diagnostic = context(first_row, d, changed)
+        assert diagnostic["module"] != "unclassified", diagnostic
+        assert diagnostic["expectedContext"]["rngDigest"] == digest(first_row["terminal"]["payload"]["rng"])
+        assert diagnostic["actualContext"]["rngDigest"] == digest(changed["terminal"]["payload"]["rng"])
     print(json.dumps({"marker":"A1_DEEP_PARITY","scenario":args.scenario,"rows":len(seen),
                       "mismatches":0,"coveredMarkers":sorted(markers),"negativeControls":4,
                       "firstSha256":hashlib.sha256(args.first.read_bytes()).hexdigest(),

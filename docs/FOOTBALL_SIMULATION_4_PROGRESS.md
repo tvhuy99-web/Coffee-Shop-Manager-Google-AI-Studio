@@ -95,3 +95,6 @@ A7 L0–L4 đạt trên ứng viên này. Không tuyên bố tất cả mục c�
 
 ## A8 — Quyết định nghiệm thu chủ dự án (2026-11-26)
 Chủ dự án đã thử điện thoại, đánh giá khá ổn và yêu cầu xác nhận A8 thành công. Trạng thái A8: **ACCEPTED_BY_OWNER**; hồ sơ [OWNER_ACCEPTANCE_VI](evidence/a8/OWNER_ACCEPTANCE_VI.md). FastBatch 100/100 trong 20613 ms, Seed-Replay 100%; 20 trận Bournemouth–Chelsea trong 10304 ms, thống kê nguyên văn lưu trong hồ sơ. L5 đo đầy đủ vẫn NOT_FULLY_VERIFIED (ngoại lệ do chủ dự án chấp nhận), không tuyên bố release. Mốc code đã nghiệm thu e540c51; tài liệu d5226322 CI 45748853837 19/19 PASS. Giữ nguyên PI 4.0.28, không triển khai Gói 5–6. Các nợ kiến trúc/ADR đã ghi ở trên không tự động được xóa bởi xác nhận A8.
+
+## Rà soát cuối Revision 3
+Mốc d7980f2 đã tích hợp và CI 45750744347 19/19 PASS. A3–A5 đã tách session và di chuyển white-box fixture; A6 namespace đã hoàn thành. Bảng đối chiếu chi tiết từng chặng và INV-01..12: [PHASE_A_FINAL_REVIEW_VI](evidence/PHASE_A_FINAL_REVIEW_VI.md). Bổ sung kiểm thử external Cargo, dữ liệu PI đối thủ, flight delta sai miền, first-divergence owner context. Chờ CI mới; không tự đánh dấu PASS. Phạm vi không đổi: Gói 1–4, A8 owner accepted, không triển khai B, không main/release.
