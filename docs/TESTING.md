@@ -70,3 +70,8 @@ PASS khi đúng commit, mọi job bắt buộc thành công và bằng chứng p
 `python3 tools/verify_b12_shadow_report.py /tmp/b12-shadow.json /tmp/b12-shadow-summary.json`
 
 L1 chạy hai lệnh tương đương và lưu artifact raw/summary. 1.000 full matches là legacy reference, 1.000 pair chỉ là interval; không phải paired full-match acceptance của gameplay B1.2. Xem [PLAYER_LOCOMOTION](PLAYER_LOCOMOTION.md) cho production gate còn mở. Không sửa golden để bỏ qua gate.
+
+
+### B1.2 hybrid full-match experiment
+
+Workflow riêng `B1.2 experimental locomotion evidence` chạy 1.000 cặp full matches, shard 0..3 mỗi shard 250. Test-only exp1 có identity riêng, release không chọn được và không restore checkpoint exp1. `tools/verify_b12_experiment_report.py evidence` tổng hợp đủ shard, lưu lỗi và paired distributions; không thay L0–L4 hoặc gate production. Cặp thất bại vẫn xuất raw artifact. Cross-mode exp1 chạy riêng trên shard 0; checkpoint resume trong L1. Phạm vi hybrid và giới hạn xem PLAYER_LOCOMOTION.

@@ -1,0 +1,71 @@
+name: B1.2 experimental locomotion evidence
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'rust/**'
+      - 'tools/verify_b12_experiment_report.py'
+      - '.github/workflows/b12-locomotion-experiment.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: b12-experiment-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  paired:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'feature/b1-1-world-contracts'
+    name: B1.2 hybrid pairs (shard ${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Paired full matches (250 unique seeds per shard)
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          (
+            cd rust/football_match_engine
+            B12_EXPERIMENT_SHARD=${{ matrix.shard }} B12_EXPERIMENT_COUNT=250 B12_EXPERIMENT_REPORT_PATH="$GITHUB_WORKSPACE/evidence/b12-exp-${{ matrix.shard }}.json" cargo test --release --locked --lib b12_experiment_paired_report -- --ignored --nocapture
+          ) 2>&1 | tee evidence/b12-exp-${{ matrix.shard }}.log
+      - name: Experimental cross-mode consistency
+        if: always() && matrix.shard == 0
+        run: |
+          set -euo pipefail
+          cd rust/football_match_engine
+          cargo test --release --locked --lib b12_experiment_cross_mode -- --ignored --nocapture
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: b12-experiment-shard-${{ matrix.shard }}
+          path: evidence/
+          if-no-files-found: error
+  summary:
+    name: B1.2 hybrid experiment evidence summary
+    needs: paired
+    if: always() && !cancelled() && needs.paired.result != 'skipped'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: b12-experiment-shard-*
+          merge-multiple: true
+          path: evidence
+      - name: Validate all 1000 pairs and summarize
+        run: python3 tools/verify_b12_experiment_report.py evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: b12-experiment-summary
+          path: evidence/b12-experiment-summary.json
+          if-no-files-found: error
