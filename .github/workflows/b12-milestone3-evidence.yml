@@ -6,6 +6,10 @@ on:
     paths:
       - 'rust/tests/engine/v4_tests.rs'
       - 'tools/b12_tracking_reference.py'
+      - 'tools/compare_b12_tracking.py'
+      - 'rust/football_match_engine/src/v4/movement.rs'
+      - 'rust/football_match_engine/src/v4/session_parts/01_world.rs'
+      - 'rust/football_match_engine/src/v4/session_tests.rs'
       - '.github/workflows/b12-milestone3-evidence.yml'
   workflow_dispatch:
 permissions:
@@ -78,7 +82,7 @@ jobs:
   tracking_reference:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'feature/b1-1-world-contracts'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Verify parser fixtures
@@ -89,6 +93,15 @@ jobs:
           mkdir -p evidence "$RUNNER_TEMP/metrica"
           python3 tools/b12_tracking_reference.py --download "$RUNNER_TEMP/metrica" evidence/tracking-reference.json
           git rev-parse HEAD > evidence/commit.txt
+      - name: Observe candidate at identical 5 Hz and compare distributions
+        run: |
+          set -euo pipefail
+          (
+            cd rust/football_match_engine
+            cargo test --release --locked --lib b12_tracking_probe_gap_period_and_jump -- --nocapture
+            B12_TRACKING_CANDIDATE_PATH="$GITHUB_WORKSPACE/evidence/tracking-candidate.json" cargo test --release --locked --lib b12_tracking_candidate_population -- --ignored --nocapture
+          ) 2>&1 | tee evidence/tracking-candidate.log
+          python3 tools/compare_b12_tracking.py evidence/tracking-reference.json evidence/tracking-candidate.json evidence/tracking-comparison.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

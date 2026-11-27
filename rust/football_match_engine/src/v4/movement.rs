@@ -494,6 +494,8 @@ fn integrate_experimental_actor_with_facing(
         let span = remaining.min(match_physics::movement::MAX_MOTION_HORIZON_MS);
         let plan = MotionPlan::new(current, intent, cap).map_err(candidate_motion_error)?;
         let (result,load)=sample_experimental_motion(&plan,span)?;
+        #[cfg(test)]
+        tracking_probe::record_relative(player,&plan,duration_ms-remaining,span)?;
         workload.add(load);
         let bound = plan.maximum_path_speed_mps() * match_contracts::units::ms_to_seconds_f32(span);
         let eps = 32.0 * f32::EPSILON * PITCH_LENGTH_M.max(PITCH_WIDTH_M) + 4.0 * f32::EPSILON * bound;
@@ -545,6 +547,8 @@ pub(crate) fn commit_experimental_contact(
         return Err(candidate_motion_error("committed contact path budget"));
     }
     crate::v4::transition::verify_motion_budget(player.pos,end.state.position,bound,&player.player_id)?;
+    #[cfg(test)]
+    tracking_probe::record(player,&plan,path.started_at_ms,before_ms,now_ms)?;
     player.pos=end.state.position;
     player.vel=end.state.velocity;
     player.facing_rad=end.state.facing_rad;
@@ -1265,5 +1269,123 @@ mod b12_experimental_workload_tests {
         record_experimental_motion(&mut row,first).unwrap();
         assert!(record_experimental_motion(&mut row,tail).is_err());
         assert_eq!(row,Some(first));
+    }
+}
+
+
+/// Diagnostic-only observations of the actual committed continuous paths.
+/// Neither clock nor event queue is advanced to create an observation.
+#[cfg(test)]
+pub(crate) mod tracking_probe {
+    use super::*;
+    use std::{cell::RefCell,collections::BTreeMap};
+    use serde_json::{json,Value};
+
+    #[derive(Default)]
+    struct Actor {
+        is_goalkeeper:bool,
+        previous:Option<(String,i64,Vec2)>,
+        velocity:Option<(f64,f64,f64)>,
+        samples:u64,gaps:u64,outliers:u64,
+        distance:f64,seconds:f64,
+        speed:Vec<f64>,accel:Vec<f64>,tangent:Vec<f64>,
+    }
+    impl Actor {
+        fn observe(&mut self,period:&str,ms:i64,pos:Vec2)->Result<(),V4Error>{
+            if !pos.x.is_finite()||!pos.y.is_finite(){return Err(candidate_motion_error("nonfinite tracking sample"));}
+            self.samples+=1;
+            let previous=self.previous.replace((period.to_owned(),ms,pos));
+            let Some((old_period,old_ms,old_pos))=previous else{
+                self.gaps+=1;self.velocity=None;return Ok(());
+            };
+            if old_period==period && ms<=old_ms{
+                return Err(candidate_motion_error("duplicate or reversed tracking sample"));
+            }
+            if old_period!=period || ms-old_ms!=200{
+                self.gaps+=1;self.velocity=None;return Ok(());
+            }
+            let vx=(pos.x as f64-old_pos.x as f64)/0.2;
+            let vy=(pos.y as f64-old_pos.y as f64)/0.2;
+            let speed=vx.hypot(vy);
+            if speed>12.0{
+                self.outliers+=1;self.velocity=None;return Ok(());
+            }
+            self.distance+=speed*0.2;
+            self.seconds+=0.2;
+            self.speed.push(speed);
+            if let Some((ox,oy,os))=self.velocity.replace((vx,vy,speed)){
+                self.accel.push((vx-ox).hypot(vy-oy)/0.2);
+                self.tangent.push((speed-os).abs()/0.2);
+            }
+            Ok(())
+        }
+    }
+    #[derive(Default)]
+    struct Recorder {
+        interval:Option<(i64,String)>,
+        actors:BTreeMap<(String,String),Actor>,
+    }
+    thread_local!{static REC:RefCell<Option<Recorder>>=RefCell::new(None);}
+    pub(crate) fn begin(){REC.with(|r|{assert!(r.borrow().is_none());*r.borrow_mut()=Some(Recorder::default());});}
+    pub(crate) fn enabled()->bool{REC.with(|r|r.borrow().is_some())}
+    pub(crate) struct Interval;
+    impl Drop for Interval{
+        fn drop(&mut self){REC.with(|r|if let Some(rec)=r.borrow_mut().as_mut(){rec.interval=None;});}
+    }
+    pub(crate) fn interval(start:i64,period:String)->Interval{
+        REC.with(|r|if let Some(rec)=r.borrow_mut().as_mut(){rec.interval=Some((start,period));});
+        Interval
+    }
+    pub(super) fn record_relative(p:&PlayerRuntimeStateV4,plan:&MotionPlan,offset:i64,span:i64)->Result<(),V4Error>{
+        let start=REC.with(|r|r.borrow().as_ref().and_then(|x|x.interval.as_ref().map(|v|v.0)));
+        if let Some(start)=start{record(p,plan,start+offset,start+offset,start+offset+span)?;}
+        Ok(())
+    }
+    pub(super) fn record(p:&PlayerRuntimeStateV4,plan:&MotionPlan,origin:i64,from:i64,to:i64)->Result<(),V4Error>{
+        REC.with(|r|{
+            let mut cell=r.borrow_mut();
+            let Some(rec)=cell.as_mut() else{return Ok(());};
+            let Some((_,period))=rec.interval.as_ref() else{return Ok(());};
+            if !p.on_pitch||p.sent_off{return Ok(());}
+            let row=rec.actors.entry((format!("{:?}",p.side),p.player_id.clone())).or_default();
+            row.is_goalkeeper=p.is_goalkeeper;
+            // Half-open (from,to]: a boundary sample belongs to the
+            // preceding committed path, before the event is dispatched.
+            let mut at=(from.div_euclid(200)+1)*200;
+            while at<=to{
+                let pos=plan.sample_position_at(at-origin).map_err(candidate_motion_error)?;
+                row.observe(period,at,pos)?;
+                at+=200;
+            }
+            Ok(())
+        })
+    }
+    fn quantiles(mut a:Vec<f64>)->Value{
+        if a.is_empty(){return json!({"n":0});}
+        a.sort_by(f64::total_cmp);
+        let n=a.len();
+        let median=if n%2==0{(a[n/2-1]+a[n/2])*0.5}else{a[n/2]};
+        let q=|p:f64|a[((p*n as f64).ceil() as usize).max(1)-1];
+        json!({"n":n,"p50":median,"p90":q(0.90),"p95":q(0.95),"p99":q(0.99),"max":a[n-1]})
+    }
+    pub(crate) fn finish()->Vec<Value>{
+        REC.with(|r|r.borrow_mut().take().expect("tracking enabled").actors.into_iter()
+            .map(|((side,id),a)|json!({"side":side,"player_id":id,"is_goalkeeper":a.is_goalkeeper,
+                "samples":a.samples,"gaps":a.gaps,"outlier_intervals":a.outliers,
+                "observed_s":a.seconds,"distance_m":a.distance,
+                "speed_mps":quantiles(a.speed),"vector_acceleration_mps2":quantiles(a.accel),
+                "absolute_tangential_acceleration_mps2":quantiles(a.tangent)})).collect())
+    }
+
+    #[test]
+    fn b12_tracking_probe_gap_period_and_jump(){
+        let mut a=Actor::default();
+        for (period,ms,x) in [("1",200,10.0),("1",400,10.4),("1",600,10.8),
+            ("1",1000,11.0),("1",1200,11.4),("2",1400,30.0),("2",1600,60.0)]{
+            a.observe(period,ms,Vec2::new(x,34.0)).unwrap();
+        }
+        assert_eq!((a.speed.len(),a.accel.len(),a.gaps,a.outliers),(3,1,3,1));
+        assert!((a.distance-1.2).abs()<1e-5);
+        assert!(a.observe("2",1600,Vec2::new(60.0,34.0)).is_err());
     }
 }

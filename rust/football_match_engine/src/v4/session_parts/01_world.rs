@@ -26,6 +26,14 @@ impl MatchSessionV4 {
         let experimental = self.uses_locomotion_experiment();
         let now_ms = self.state.des_clock.sim_time_ms;
         let before_ms = now_ms - dt_ms;
+        #[cfg(test)]
+        let _tracking_interval=if experimental && crate::v4::movement::tracking_probe::enabled(){
+            let period=match self.stage{
+                HalfStageV4::InHalf{period,..}=>format!("{period:?}"),
+                _=>return Err(V4Error::InvalidInput("tracking interval outside period".into())),
+            };
+            Some(crate::v4::movement::tracking_probe::interval(before_ms,period))
+        }else{None};
         let mut motion_loads=if experimental {vec![None;self.state.players.len()]} else {Vec::new()};
 
         if is_ball_in_play {

@@ -1825,6 +1825,34 @@ mod locomotion_full_match_experiment {
     }
 
     #[test]
+    #[ignore = "external-reference observation of actual committed paths"]
+    fn b12_tracking_candidate_population(){
+        use crate::v4::movement::tracking_probe;
+        let mut matches=Vec::new();
+        for index in 0..8{
+            let (input,cohort)=fixture(index,SimulationMode::FastBatch);
+            let seed=input.seed;
+            let reference=run(input.clone(),true);
+            assert_eq!(reference["ok"],true);
+            tracking_probe::begin();
+            let observed=run(input,true);
+            let players=tracking_probe::finish();
+            assert_eq!(observed["ok"],true);
+            let mut a=reference.as_object().unwrap().clone();
+            let mut b=observed.as_object().unwrap().clone();
+            for key in ["wall_ms","shot_probe_ms"]{a.remove(key);b.remove(key);}
+            assert_eq!(a,b,"tracking must not alter the full match report");
+            assert!(players.len()>=22 && players.iter().all(|p|p["samples"].as_u64().unwrap()>0));
+            matches.push(json!({"seed":seed,"cohort":cohort,"fingerprint":observed["fingerprint"],"players":players}));
+        }
+        let report=json!({"schema":1,"behavior_id":LOCOMOTION_EXPERIMENT_ID,
+            "sampling_hz":5,"speed_outlier_mps":12,"matches":matches,
+            "limitations":"Exact sampled committed positions, includes stoppages, no interpolation across periods or inactive gaps. Eight synthetic fixtures; no attribute/role equivalence with anonymized Metrica."});
+        let path=std::env::var("B12_TRACKING_CANDIDATE_PATH").expect("set B12_TRACKING_CANDIDATE_PATH");
+        std::fs::write(path,serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    }
+
+    #[test]
     #[ignore = "test-only scoped cost measurement"]
     fn b12_batch3_cost_profile(){
         let mut rows=Vec::new();

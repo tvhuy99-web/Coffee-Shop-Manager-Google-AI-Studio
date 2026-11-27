@@ -19,7 +19,7 @@ on:
         default: full
 
 env:
-  B12_PAIRS_PER_SHARD: ${{ github.event_name == 'workflow_dispatch' && (inputs.evidence_tier == 'smoke' && '12' || inputs.evidence_tier == 'integration' && '50' || '250') || (github.event.pull_request.draft && '50' || '250') }}
+  B12_PAIRS_PER_SHARD: ${{ github.event_name == 'workflow_dispatch' && (inputs.evidence_tier == 'smoke' && '12' || inputs.evidence_tier == 'integration' && '50' || '250') || '250' }}
 
 permissions:
   contents: read
@@ -73,7 +73,7 @@ jobs:
     if: needs.preflight.result == 'success'
     name: B1.2 hybrid pairs (shard ${{ matrix.shard }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -89,7 +89,8 @@ jobs:
             B12_EXPERIMENT_SHARD=${{ matrix.shard }} B12_EXPERIMENT_COUNT="$B12_PAIRS_PER_SHARD" B12_EXPERIMENT_REPORT_PATH="$GITHUB_WORKSPACE/evidence/b12-exp-${{ matrix.shard }}.json" cargo test --release --locked --lib b12_experiment_paired_report -- --ignored --nocapture
           ) 2>&1 | tee evidence/b12-exp-${{ matrix.shard }}.log
       - name: Same-runner exact parity and timing against frozen Mốc 2
-        if: env.B12_PAIRS_PER_SHARD != '250'
+        # Compare every pair, including the full development gate.
+        if: success()
         run: |
           set -euo pipefail
           # Frozen source, detached worktree only (no new branch).
