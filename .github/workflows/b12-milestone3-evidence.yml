@@ -75,12 +75,33 @@ jobs:
         with:
           name: b12-cost-profile
           path: evidence/
+  tracking_reference:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'feature/b1-1-world-contracts'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify parser fixtures
+        run: python3 tools/b12_tracking_reference.py --self-test
+      - name: Download pinned public Metrica tracking, verify Git blob hashes, measure
+        run: |
+          set -euo pipefail
+          mkdir -p evidence "$RUNNER_TEMP/metrica"
+          python3 tools/b12_tracking_reference.py --download "$RUNNER_TEMP/metrica" evidence/tracking-reference.json
+          git rev-parse HEAD > evidence/commit.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: b12-tracking-reference
+          path: evidence/
+          if-no-files-found: error
   summary:
     if: always() && !cancelled() && needs.attribute_audit.result != 'skipped'
-    needs: [attribute_audit, cost_profile]
+    needs: [attribute_audit, cost_profile, tracking_reference]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every evidence job
         run: |
           test "${{ needs.attribute_audit.result }}" = success
           test "${{ needs.cost_profile.result }}" = success
+          test "${{ needs.tracking_reference.result }}" = success
