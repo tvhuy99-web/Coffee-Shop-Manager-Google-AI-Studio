@@ -437,8 +437,12 @@ pub(crate) fn integrate_experimental_tactical_intents(
             continue;
         };
         let attrs=*player_attrs(state,&state.players[idx]);
-        let (bound,load)=integrate_experimental_actor_with_facing(&mut state.players[idx],&attrs,row.target,
-            row.requested_speed,row.facing_rad,duration_ms)?;
+        // A committed contact has its own full-capability plan and never
+        // passes through this unreserved tactical integration.
+        let urgent=row.role==Some(match_contracts::event_types::DefensiveRole::Press)
+            || row.requested_speed.is_none();
+        let (bound,load)=integrate_experimental_actor_with_effort(&mut state.players[idx],&attrs,row.target,
+            row.requested_speed,row.facing_rad,duration_ms,urgent)?;
         budgets[idx]=bound;
         record_experimental_motion(&mut loads[idx],load)?;
         if let Some(role)=row.role{
@@ -480,10 +484,34 @@ fn integrate_experimental_actor_with_facing(
     desired_facing_rad: Option<f32>,
     duration_ms: i64,
 ) -> Result<(f32,ExperimentalMotionLoad), V4Error> {
-    let cap = MovementCapability::from_attributes(&attrs.physical, player.fatigue.aerobic,
+    // Existing restart/setup execution and focused full-capability callers.
+    integrate_experimental_actor_with_effort(player,attrs,target,requested_speed,
+        desired_facing_rad,duration_ms,true)
+}
+
+/// Unreserved tactical movement requests a fraction of available
+/// translational effort. Maximal reach remains a physical capability,
+/// not the default expenditure for every routine shape adjustment.
+/// The 0.5 floor is a calibration hypothesis, not a fitted percentile.
+fn tactical_effort_cap(mut cap:MovementCapability,intensity:f32,urgent:bool)->MovementCapability{
+    if !urgent{
+        let effort=intensity.clamp(0.5,1.0);
+        cap.acceleration_mps2*=effort;
+        cap.braking_mps2*=effort;
+        cap.lateral_mps2*=effort;
+    }
+    cap
+}
+
+fn integrate_experimental_actor_with_effort(
+    player:&mut PlayerRuntimeStateV4,attrs:&PlayerAttributes54,target:Vec2,
+    requested_speed:Option<f32>,desired_facing_rad:Option<f32>,duration_ms:i64,urgent:bool,
+)->Result<(f32,ExperimentalMotionLoad),V4Error>{
+    let capability=MovementCapability::from_attributes(&attrs.physical,player.fatigue.aerobic,
         player.fatigue.anaerobic).map_err(candidate_motion_error)?;
-    let intent = MovementIntent { target, intensity: requested_speed.map_or(1.0, |v|
-        (v / cap.max_speed_mps).clamp(0.0, 1.0)), desired_facing_rad, reaction_ms: 0 };
+    let intensity=requested_speed.map_or(1.0,|v|(v/capability.max_speed_mps).clamp(0.0,1.0));
+    let cap=tactical_effort_cap(capability,intensity,urgent);
+    let intent=MovementIntent{target,intensity,desired_facing_rad,reaction_ms:0};
     let mut current = MotionState { position: player.pos, velocity: player.vel, facing_rad: player.facing_rad };
     let mut remaining = duration_ms;
     let mut distance = 0.0_f32;
@@ -1058,6 +1086,28 @@ mod b12_experimental_workload_tests {
     use super::*;
     use crate::v4::state::TacticalPhaseV4::*;
     use match_contracts::event_types::DefensiveRole::*;
+
+    #[test]
+    fn b12_batch3_tactical_effort_is_submaximal_without_reducing_physical_speed(){
+        let cap=MovementCapability{max_speed_mps:8.0,acceleration_mps2:4.0,
+            braking_mps2:6.0,lateral_mps2:5.0,body_turn_radps:4.0};
+        let routine=tactical_effort_cap(cap,0.25,false);
+        assert_eq!(routine.max_speed_mps,cap.max_speed_mps);
+        assert_eq!(routine.body_turn_radps,cap.body_turn_radps);
+        assert_eq!((routine.acceleration_mps2,routine.braking_mps2,routine.lateral_mps2),(2.0,3.0,2.5));
+        assert_eq!(tactical_effort_cap(cap,0.25,true),cap);
+        assert_eq!(tactical_effort_cap(cap,1.0,false),cap);
+        for sign in [-1.0,1.0]{
+            let origin=MotionState{position:Vec2::new(52.5,34.0),velocity:Vec2::default(),facing_rad:0.0};
+            let intent=MovementIntent{target:Vec2::new(52.5+sign*20.0,34.0),intensity:0.5,
+                desired_facing_rad:None,reaction_ms:0};
+            let a=MotionPlan::new(origin,intent,cap).unwrap().sample_at(500).unwrap();
+            let b=MotionPlan::new(origin,intent,routine).unwrap().sample_at(500).unwrap();
+            assert!(b.state.position.distance(origin.position)<a.state.position.distance(origin.position));
+            assert!(b.state.velocity.x.abs()<a.state.velocity.x.abs());
+            assert!(b.distance_m<=routine.max_speed_mps*0.5);
+        }
+    }
 
     #[test]
     fn b12_tactical_speed_is_local_to_distance_and_responsibility() {

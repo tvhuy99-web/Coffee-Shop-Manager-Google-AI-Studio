@@ -252,7 +252,7 @@ pub struct MatchSessionSnapshotV4 {
     pub(crate) tactical_intents: Option<crate::v4::movement::TacticalIntentBatch>,
 }
 
-pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-batch2-specialist-shots";
+pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-batch3-tactical-effort";
 
 /// One live action may reserve actors until its exclusive resolution or
 /// cancellation. Check cheap ownership/time structure both at event commit

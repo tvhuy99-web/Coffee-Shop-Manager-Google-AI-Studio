@@ -27,7 +27,7 @@ def summarize(rows):
     return result
 
 def main():
-    ref,candidate,out=map(Path,sys.argv[1:])
+    ref,candidate,out=map(Path,sys.argv[1:4])
     r=json.loads(ref.read_text())
     c=json.loads(candidate.read_text())
     assert r["sampling_hz"]==c["sampling_hz"]==5
@@ -46,6 +46,17 @@ def main():
                            "Both include stoppages; exclude gaps and >12 m/s jumps.",
                            "Period reset and sample phase may differ; no inferred sprint episode.",
                            "Eight synthetic games and two real games are not sufficient for a universal fit."]}
+    if len(sys.argv)==5:
+        before=json.loads(Path(sys.argv[4]).read_text())
+        assert before["behavior_id"]=="b1.2-batch2-specialist-shots"
+        assert before["sampling_hz"]==5 and before["speed_outlier_mps"]==12
+        assert [(m["seed"],m["cohort"]) for m in before["matches"]]==[(m["seed"],m["cohort"]) for m in c["matches"]]
+        rows=[p for m in before["matches"] for p in m["players"]]
+        report["before_effort"]=summarize(rows)
+        report["before_effort_outfield"]=summarize([p for p in rows if not p["is_goalkeeper"]])
+        report["before_effort_keeper"]=summarize([p for p in rows if p["is_goalkeeper"]])
+        report["before_effort_behavior_id"]=before["behavior_id"]
+        report["before_effort_sha"]="7426c802b44faeff6fbadc9cc27ed7e872984daf"
     out.write_text(json.dumps(report,indent=2,allow_nan=False))
     print(json.dumps(report,indent=2))
 

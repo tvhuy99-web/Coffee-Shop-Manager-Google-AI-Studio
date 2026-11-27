@@ -101,7 +101,15 @@ jobs:
             cargo test --release --locked --lib b12_tracking_probe_gap_period_and_jump -- --nocapture
             B12_TRACKING_CANDIDATE_PATH="$GITHUB_WORKSPACE/evidence/tracking-candidate.json" cargo test --release --locked --lib b12_tracking_candidate_population -- --ignored --nocapture
           ) 2>&1 | tee evidence/tracking-candidate.log
-          python3 tools/compare_b12_tracking.py evidence/tracking-reference.json evidence/tracking-candidate.json evidence/tracking-comparison.json
+          # Compare a frozen pre-calibration behavior on the same eight
+          # fixtures, using its own non-invasive 5 Hz recorder.
+          git fetch --no-tags --depth=1 origin 7426c802b44faeff6fbadc9cc27ed7e872984daf
+          git worktree add --detach "$RUNNER_TEMP/b12-calibration-reference" 7426c802b44faeff6fbadc9cc27ed7e872984daf
+          (
+            cd "$RUNNER_TEMP/b12-calibration-reference/rust/football_match_engine"
+            B12_TRACKING_CANDIDATE_PATH="$GITHUB_WORKSPACE/evidence/tracking-before-effort.json" cargo test --release --locked --lib b12_tracking_candidate_population -- --ignored --nocapture
+          ) 2>&1 | tee evidence/tracking-before-effort.log
+          python3 tools/compare_b12_tracking.py evidence/tracking-reference.json evidence/tracking-candidate.json evidence/tracking-comparison.json evidence/tracking-before-effort.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

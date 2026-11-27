@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
 
-BEHAVIOR = "b1.2-batch2-specialist-shots"
+BEHAVIOR = "b1.2-batch3-tactical-effort"
 COHORTS = ["reference", "balanced", "strong_away", "high_press"]
 FIELDS = ["home_goals", "away_goals", "shots", "passes", "completed_passes",
           "fouls", "live_ms", "dead_ms", "events", "wall_ms",
@@ -128,7 +128,7 @@ def main(directory, pairs_per_shard=250):
                   "Distributions are conditional on successful pairs; failures are retained.",
                   "Legacy interval counters and experiment threshold crossing counts are reported separately; neither is a validated sprint episode metric.",
                   "Pass diagnostic counters retain their existing definitions; not disjoint causes and not forced to sum to pass attempts.",
-                  "No outcome target or threshold is used to tune gameplay."],
+                  "Unreserved routine tactical movement uses submaximal translational effort; pressing, keeper guarding, restart setup and committed contacts retain full capability. No outcome target or threshold is used to tune gameplay."],
     }
     # Derive rates from pooled exposure, not the mean of match-level ratios.
     # None means unmeasured/no denominator, never a fabricated zero rate.
