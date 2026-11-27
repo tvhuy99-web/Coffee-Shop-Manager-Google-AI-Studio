@@ -57,3 +57,45 @@ L5: model/OS/ABI/RAM, APK hash, voice, mode/rate; 1.0x–3.0x, render/thread sta
 ## Quyết định nghiệm thu
 
 PASS khi đúng commit, mọi job bắt buộc thành công và bằng chứng phù hợp. QUEUED/RUNNING, CANCELLED, SKIPPED hoặc thiếu log không phải PASS. Nếu CI thất bại, giữ nguyên gate, xác định lỗi nguồn hay môi trường rồi sửa nhỏ và chạy lại. Không công bố production release chỉ vì có Debug APK.
+
+### B1.1 gate
+
+`(cd rust && cargo test --workspace --locked --all-targets b11_ -- --nocapture)` chạy riêng các test không gian, số học, clock, scheduler và invariant mới. Cổng đầy đủ vẫn là workflow L0–L4, không thay bằng lệnh lọc. Xem [WORLD_CONTRACTS](WORLD_CONTRACTS.md#b116--nghiệm-thu) cho scope, giới hạn và rollback; chỉ nghiệm thu trên run đúng candidate.
+
+
+### B1.2 candidate shadow report
+
+`(cd rust/football_match_engine && B12_SHADOW_SEEDS=1000 B12_SHADOW_REPORT_PATH=/tmp/b12-shadow.json cargo test --release --locked --lib b12_shadow_locomotion_report -- --ignored --nocapture)`
+
+`python3 tools/verify_b12_shadow_report.py /tmp/b12-shadow.json /tmp/b12-shadow-summary.json`
+
+L1 chạy hai lệnh tương đương và lưu artifact raw/summary. 1.000 full matches là legacy reference, 1.000 pair chỉ là interval; không phải paired full-match acceptance của gameplay B1.2. Xem [PLAYER_LOCOMOTION](PLAYER_LOCOMOTION.md) cho production gate còn mở. Không sửa golden để bỏ qua gate.
+
+
+### B1.2 hybrid full-match experiment
+
+Workflow riêng `B1.2 experimental locomotion evidence` chạy 1.000 cặp full matches, shard 0..3 mỗi shard 250. Test-only exp1 có identity riêng, release không chọn được và không restore checkpoint exp1. `tools/verify_b12_experiment_report.py evidence` tổng hợp đủ shard, lưu lỗi và paired distributions; không thay L0–L4 hoặc gate production. Cặp thất bại vẫn xuất raw artifact. Cross-mode exp1 chạy riêng trên shard 0; checkpoint resume trong L1. Phạm vi hybrid và giới hạn xem PLAYER_LOCOMOTION.
+
+
+Exp2 supersedes exp1 for the full-match experiment; same seed population and separate behavior ID. The workflow additionally replays four known exp1 failure seeds. All failure rows remain mandatory evidence. No change to required golden reference or acceptance thresholds.
+
+
+Exp3 changes the test-only behavior ID to `b1.2-measured-workload-exp3`, retaining all paired seeds and strict failure gates. Reports distinguish legacy interval counters from threshold-entry counters; no paired delta between non-equivalent counters. Measured workload and tactical speed requests have independent Rust tests; paired exp3 combines both hypotheses.
+
+
+Exp4 changes test-only behavior ID to `b1.2-observed-pass-forecast-exp4`, retains Exp3 physical workload and pace policy, adds isolated observed-motion pass forecast tests and reports existing pass diagnostics per pair. Same 1000 paired seeds and unchanged production L0–L4; report still explicitly blocks production. Legacy and experimental forecasts do not share hidden capabilities.
+
+
+Exp5 changes test-only ID to `b1.2-shot-block-locomotion-exp5` and adds actual reserved shot-block path checkpoint/restore regression and paired possession/shot/carry/tackle diagnostics. No change to golden references. The new test verifies path execution, not full shot aftermath physics.
+
+
+Exp5r1 retries the same 1000 pairs after the failed Exp5 handoff (821/1000). Four recorded Exp5 failure seeds run in shard 0 independently of the paired test result. Experimental identity is `b1.2-shot-block-handoff-exp5r1`; no change to production manifest or golden fixtures. Failure diagnostics remain mandatory.
+
+
+Exp5r2 adds mandatory shot-contact preflight before the 1000-pair workflow: atomic accepted/declined contact tests, actual reserved path/restore test, and eight recorded failing seed replays. If preflight fails the population is not run; no completion claim or summary accepted without all 1000 pairs. Legacy L0–L4 remains independently required.
+
+
+Exp5r3 retains the mandatory preflight and adds `b12_exp5_parry_ends_one_flight_then_schedules_recovery`: actual DES save, independent loose-ball race, no owner during recovery, preserved offside snapshot, checkpoint/restore parity. The previous preflight stopped at compile-time E0308; no paired results existed for Exp5r2. Run full legacy L0–L4 independently and all 1000 experiment pairs only after focused regressions pass.
+
+
+Exp6 preflight retains existing shot-block and eight recorded failure-seed regressions, updates separated-parry regression for early actual save contact, and adds keeper reach/hand-contact geometry and held-save ownership tests. Experimental ID `b1.2-goalkeeper-contact-exp6`. Complete paired report adds total saves without changing production diagnostics schema or golden references.

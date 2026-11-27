@@ -83,6 +83,41 @@ impl TwoPoolFatigueState {
         self.distance_m += dist;
     }
 
+    /// Experimental measured motion workload. Uses the existing two energy
+    /// pools and drain coefficients; no per-DES-call sprint increment.
+    /// Caller supplies actual high-speed time and path distance (SI).
+    /// Net anaerobic change within the interval is an approximation: saturation
+    /// with alternating recovery/drain is not generally split invariant.
+    pub fn apply_measured_motion(
+        &mut self, dt: f32, distance: f32, high_s: f32, high_distance: f32,
+        high_entries: u32, sprint_entries: u32, dead_ball: bool,
+        stamina: u8, natural_fitness: u8,
+    ) -> Result<(), &'static str> {
+        if ![dt,distance,high_s,high_distance].iter().all(|v|v.is_finite() && *v>=0.0)
+            || high_s>dt+0.0001 || high_distance>distance+0.01 {
+            return Err("invalid measured motion workload");
+        }
+        let high_s=high_s.min(dt);
+        let high_distance=high_distance.min(distance);
+        if dead_ball {
+            self.apply_interval(dt,distance,false,true,stamina,natural_fitness);
+            return Ok(());
+        }
+        let stam=normalize_attr(stamina);
+        let nat=normalize_attr(natural_fitness);
+        let efficiency=1.24-stam*0.52;
+        let base=(distance*0.0021+dt*0.0038)*efficiency;
+        let extra=(high_s*0.011+high_distance*0.0014)*efficiency;
+        let drain=(high_s*0.85+high_distance*0.16)*(1.20-stam*0.35);
+        let recovery=(dt-high_s)*(0.24+nat*0.38);
+        self.aerobic=(self.aerobic-base-extra).clamp(5.0,100.0);
+        self.anaerobic=(self.anaerobic+recovery-drain).clamp(0.0,100.0);
+        self.distance_m+=distance;
+        self.high_intensity_actions=self.high_intensity_actions.saturating_add(high_entries);
+        self.sprint_count=self.sprint_count.saturating_add(sprint_entries);
+        Ok(())
+    }
+
     pub fn apply_half_time_recovery(&mut self, natural_fitness: u8) {
         let nat = normalize_attr(natural_fitness);
         self.aerobic = (self.aerobic + 5.0 + nat * 7.0).clamp(5.0, 100.0);
@@ -167,5 +202,33 @@ mod tests {
         assert!(s.aerobic>=5.0 && s.aerobic<=100.0 && s.anaerobic<=100.0);
         s.apply_interval(1000000.0,1000000.0,true,false,1,1);
         assert_eq!(s.aerobic,5.0);assert_eq!(s.anaerobic,0.0);
+    }
+}
+
+
+#[cfg(test)]
+mod b12_measured_workload_tests {
+    use super::*;
+
+    #[test]
+    fn b12_measured_workload_separates_speed_entries_from_interval_count() {
+        let mut one=TwoPoolFatigueState::from_condition(90);
+        let mut split=one;
+        one.anaerobic=70.0;
+        split.anaerobic=70.0;
+        one.apply_measured_motion(2.0,12.0,1.5,10.0,1,1,false,12,12).unwrap();
+        split.apply_measured_motion(1.0,5.0,0.5,3.0,1,0,false,12,12).unwrap();
+        split.apply_measured_motion(1.0,7.0,1.0,7.0,0,1,false,12,12).unwrap();
+        assert_eq!((one.sprint_count,one.high_intensity_actions),(1,1));
+        assert_eq!((split.sprint_count,split.high_intensity_actions),(1,1));
+        assert!((one.aerobic-split.aerobic).abs()<1e-4);
+        assert!((one.anaerobic-split.anaerobic).abs()<1e-4);
+        assert_eq!(one.distance_m,split.distance_m);
+        let before=one;
+        assert!(one.apply_measured_motion(1.0,2.0,2.0,2.0,0,0,false,12,12).is_err());
+        assert_eq!(one,before);
+        one.apply_measured_motion(2.0,3.0,0.0,0.0,0,0,true,12,12).unwrap();
+        assert_eq!(one.sprint_count,1);
+        assert_eq!(one.distance_m,15.0);
     }
 }

@@ -65,8 +65,8 @@ pub struct PendingFlightSnapshotV4 {
     pub counter_delta: FlightCounterDeltaV4,
     pub won_corner: bool,
     pub early_interaction: Option<EarlyInteractionHit>,
-    // Optional for existing development snapshots. Final release must version
-    // the changed engine behaviour before promising replay compatibility.
+    // Reserved contact path for pass, recovery, or experimental shot block.
+    // Preserve the existing serialized key for exact legacy compatibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) pass_contact_motion: Option<crate::v4::interaction::PassContactMotion>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -193,6 +193,8 @@ pub struct PendingDecisionV4 {
     pub final_aim_committed: bool,
     #[serde(default)]
     pub challenger: Option<crate::v4::interaction::PassContactMotion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation_motion: Option<crate::v4::interaction::PassContactMotion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,6 +243,89 @@ pub struct MatchSessionSnapshotV4 {
     /// Physical follow-through/recovery after a committed tackle.
     #[serde(default)]
     pub tackle_ready_at: std::collections::BTreeMap<String,i64>,
+    /// Absent for all shipped behavior; legacy canonical JSON remains identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locomotion_experiment_id: Option<String>,
+    /// Experimental off-ball intentions survive passive clock interruptions.
+    /// Absent in legacy checkpoints, preserving their canonical bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tactical_intents: Option<crate::v4::movement::TacticalIntentBatch>,
+}
+
+pub(crate) const LOCOMOTION_EXPERIMENT_ID: &str = "b1.2-batch3-tactical-effort";
+
+/// One live action may reserve actors until its exclusive resolution or
+/// cancellation. Check cheap ownership/time structure both at event commit
+/// and restore. Full path/state equality remains a restore-time check and
+/// is checked during actual world integration, not resampled every event.
+pub(crate) fn verify_experimental_motion_lifetime(
+    state: &MatchStateV4,
+    flight: Option<&PendingFlightSnapshotV4>,
+    decision: Option<&PendingDecisionV4>,
+    carry: Option<&PendingCarryV4>,
+) -> Result<(), V4Error> {
+    let bad=|detail:&str| V4Error::InvalidInput(format!("B1.2 motion lifetime: {detail}"));
+    let now=state.des_clock.sim_time_ms;
+    let count=usize::from(flight.is_some())+usize::from(decision.is_some())+usize::from(carry.is_some());
+    if count>1 || (count>0 && state.dead_ball.is_some()) {
+        return Err(bad("overlapping live actions or dead-ball reservation"));
+    }
+    let mut reserved=Vec::with_capacity(2);
+    let mut path_ok=|path:&crate::v4::interaction::PassContactMotion, start:i64, end:i64| -> Result<(),V4Error> {
+        if start>now || end<now || path.started_at_ms!=start
+            || end.checked_sub(start).is_none_or(|span|span<=0 || span>match_physics::movement::MAX_MOTION_HORIZON_MS)
+            || path.candidate.locomotion.is_none() {
+            return Err(bad("invalid motion interval or model"));
+        }
+        let idx=state.players.iter().position(|p|p.player_id==path.candidate.player_id
+            && p.side==path.candidate.side && p.on_pitch && !p.sent_off)
+            .ok_or_else(||bad("reserved actor not active"))?;
+        if reserved.contains(&idx) {return Err(bad("actor reserved twice"));}
+        reserved.push(idx);
+        Ok(())
+    };
+    if let Some(f)=flight {
+        // A pending recovery owns a trajectory without claiming that the
+        // ball is a deliberate pass or shot. Both are uncontrolled states.
+        let expected_control=match f.action {
+            FlightActionV4::LooseRecovery{..}=>crate::v4::state::BallControlState::Loose,
+            _=>crate::v4::state::BallControlState::InFlight,
+        };
+        if f.trajectory.start_time_ms>now || f.resolves_at_ms<now
+            || state.ball.control!=expected_control {
+            return Err(bad("invalid flight lifetime"));
+        }
+        if let Some(path)=&f.pass_contact_motion {
+            path_ok(path,f.trajectory.start_time_ms,f.resolves_at_ms)?;
+        }
+    }
+    if let Some(d)=decision {
+        if d.started_at_ms>now || d.executes_at_ms<now || d.executes_at_ms>d.release_at_ms {
+            return Err(bad("invalid decision lifetime"));
+        }
+        let path=d.preparation_motion.as_ref().ok_or_else(||bad("missing preparation reservation"))?;
+        if path.candidate.player_id!=d.player_id || path.candidate.side!=d.side {
+            return Err(bad("preparation actor mismatch"));
+        }
+        path_ok(path,d.started_at_ms,d.executes_at_ms)?;
+        if let Some(chase)=&d.challenger {
+            if chase.candidate.side==d.side {return Err(bad("same-side preparation challenger"));}
+            path_ok(chase,d.started_at_ms,d.executes_at_ms)?;
+        }
+    }
+    if let Some(c)=carry {
+        let actor=state.players.get(c.carrier_idx).ok_or_else(||bad("invalid carry index"))?;
+        if actor.player_id!=c.motion.candidate.player_id || actor.side!=c.motion.candidate.side {
+            return Err(bad("carry actor mismatch"));
+        }
+        let start=c.motion.started_at_ms;
+        path_ok(&c.motion,start,c.resolves_at_ms)?;
+        if let Some(chase)=&c.challenger {
+            if chase.candidate.side==actor.side {return Err(bad("same-side carry challenger"));}
+            path_ok(chase,start,c.resolves_at_ms)?;
+        }
+    }
+    Ok(())
 }
 
 /// Self-verifying versioned DES v1.4 match checkpoint envelope.
@@ -282,6 +367,14 @@ pub fn compute_checkpoint_checksum(payload_json: &str) -> String {
 
 /// Validates checkpoint integrity, schema/protocol compatibility, ruleset identity, and checksum.
 pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
+    if let Some(id) = ckpt.payload.locomotion_experiment_id.as_deref() {
+        if !cfg!(test) || id != LOCOMOTION_EXPERIMENT_ID || ckpt.engine_version != id {
+            return Err(V4Error::InvalidInput(format!("unsupported locomotion experiment: {id}")));
+        }
+    }
+    if ckpt.payload.locomotion_experiment_id.is_none() && ckpt.engine_version == LOCOMOTION_EXPERIMENT_ID {
+        return Err(V4Error::InvalidInput("missing locomotion experiment identity".into()));
+    }
     if ckpt.checkpoint_schema_version != CHECKPOINT_SCHEMA_VERSION_V4 {
         return Err(V4Error::InvalidInput(format!(
             "unsupported checkpoint schema version: expected {}, got {}",
@@ -352,6 +445,7 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
     crate::v4::transition::verify_roster_profiles(&p.state,&p.input)?;
     crate::v4::transition::verify_uncontrolled_ball(&p.state)?;
     p.scheduler.validate_snapshot().map_err(bad)?;
+    crate::v4::transition::verify_scheduler_clock(&p.state, &p.scheduler)?;
     if p.next_event_sequence!=p.stats.event_count {return Err(bad("event sequence mismatch"));}
     if p.stats.carrier_idx>=p.state.players.len() || p.stats.last_passer_idx.is_some_and(|i|i>=p.state.players.len()) {
         return Err(bad("carrier or passer index out of roster"));
@@ -380,6 +474,135 @@ pub fn verify_checkpoint(ckpt: &MatchCheckpointV4) -> Result<(), V4Error> {
             PlannedActionV4::Pass{target_idx,..} if target_idx>=p.state.players.len()=>return Err(bad("pending pass target out of roster")),
             PlannedActionV4::Dribble{defender_idx:Some(i)} if i>=p.state.players.len()=>return Err(bad("pending defender index out of roster")),
             _=>{}
+        }
+    }
+    let experimental = p.locomotion_experiment_id.is_some();
+    if experimental {
+        verify_experimental_motion_lifetime(&p.state,p.pending_flight.as_ref(),
+            p.pending_decision.as_ref(),p.pending_carry.as_ref())?;
+    }
+    if let Some(batch)=&p.tactical_intents {
+        if !experimental || p.state.dead_ball.is_some() || p.half_stage.is_break()
+            || matches!(p.half_stage,HalfStageV4::PreMatch|HalfStageV4::FullTime|HalfStageV4::PenaltyShootout) {
+            return Err(bad("tactical intentions outside experimental live play"));
+        }
+        let reserved=crate::v4::movement::experimental_reserved_actors(&p.state,
+            p.pending_flight.as_ref(),p.pending_decision.as_ref(),p.pending_carry.as_ref());
+        batch.validate(&p.state,&reserved,ckpt.sim_time_ms)?;
+    }
+    let mut contact_paths = Vec::new();
+    if let Some(f)=&p.pending_flight {
+        if experimental && matches!(f.action,FlightActionV4::Shot{..}) {
+            // A shot with a parry must end at its own arrival, not
+            // include a recursively resolved follow-up shot.
+            if f.ball_after.control==crate::v4::state::BallControlState::Loose {
+                let parries=f.outcome.events.iter().filter(|ev|ev.kind==crate::v4::events::EventTypeV4::Rebound).count();
+                if parries!=1 || f.resolves_at_ms>f.planned_arrival_ms
+                    || f.early_interaction.is_some() || f.pass_contact_motion.is_none()
+                    || f.ball_after.owner_side.is_some() || f.ball_after.owner_player_id.is_some() {
+                    return Err(bad("invalid separated parry flight"));
+                }
+            }
+            let block=f.early_interaction.as_ref().filter(|h|h.kind==crate::v4::interaction::InteractionKind::ShotBlocked);
+            let block_event=f.outcome.events.iter().any(|ev|ev.kind==crate::v4::events::EventTypeV4::Block);
+            if block.is_some()!=block_event {
+                return Err(bad("experimental shot block event/contact mismatch"));
+            }
+            let saves:Vec<_>=f.outcome.events.iter().filter(|ev|ev.kind==crate::v4::events::EventTypeV4::Save).collect();
+            if !saves.is_empty() {
+                if saves.len()!=1 || block_event || f.early_interaction.is_some() {
+                    return Err(bad("invalid experimental save event"));
+                }
+                let path=f.pass_contact_motion.as_ref().ok_or_else(||bad("missing save path"))?;
+                let actor=p.state.players.iter().find(|a|a.player_id==path.candidate.player_id && a.side==path.candidate.side)
+                    .ok_or_else(||bad("unknown saving keeper"))?;
+                let ball=f.trajectory.position_at_ms(f.resolves_at_ms);
+                let elapsed=f.resolves_at_ms-f.trajectory.start_time_ms;
+                let predicted=path.candidate.contact_position_toward(path.target,elapsed)
+                    .ok_or_else(||bad("invalid save path"))?;
+                if !actor.is_goalkeeper || !actor.on_pitch || actor.sent_off
+                    || saves[0].actor.as_deref()!=Some(actor.player_id.as_str()) || saves[0].ball_pos!=ball
+                    || path.started_at_ms!=f.trajectory.start_time_ms || path.target!=ball.xy()
+                    || elapsed<path.candidate.reaction_ms || f.resolves_at_ms>f.planned_arrival_ms
+                    || ball.z>path.candidate.playable_height_m
+                    || !match_physics::goalkeeper_hand_contact_allowed(actor.side,ball)
+                    || predicted.distance(path.target)>path.candidate.reach_m+1e-5 {
+                    return Err(bad("unreachable or inconsistent save"));
+                }
+            } else {match (block,f.pass_contact_motion.as_ref()) {
+                (Some(hit),Some(path)) if hit.defender_id.as_deref()==Some(path.candidate.player_id.as_str())
+                    && hit.time_ms==f.resolves_at_ms && path.target==hit.ball_pos.xy()
+                    && path.started_at_ms==f.trajectory.start_time_ms => {
+                    let predicted=path.candidate.contact_position_toward(path.target,hit.time_ms-path.started_at_ms)
+                        .ok_or_else(||bad("invalid shot block path"))?;
+                    if hit.defender_side!=Some(path.candidate.side)
+                        || hit.ball_pos.z>path.candidate.playable_height_m
+                        || predicted.distance(path.target)>path.candidate.reach_m+1e-5 {
+                        return Err(bad("unreachable shot block"));
+                    }
+                }
+                (None,None)=>{}
+                _=>return Err(bad("shot block contact identity mismatch")),
+            }}
+        }
+        if let FlightActionV4::LooseRecovery{origin_side,cause}=&f.action {
+            if matches!(cause.as_str(),"CORNER_DELIVERY"|"FREE_KICK_DELIVERY") {
+                if !experimental || (cause=="CORNER_DELIVERY" && !f.offside_at_launch.is_empty())
+                    || f.resolves_at_ms>f.planned_arrival_ms {
+                    return Err(bad("invalid specialist delivery"));
+                }
+                if let Some(path)=&f.pass_contact_motion {
+                    let ball=f.trajectory.position_at_ms(f.resolves_at_ms);
+                    let elapsed=f.resolves_at_ms-f.trajectory.start_time_ms;
+                    let actor=&p.state.players[f.outcome.next_carrier_idx];
+                    if f.early_interaction.is_some() || path.target!=ball.xy()
+                        || path.candidate.player_id!=actor.player_id || path.candidate.side!=actor.side
+                        || elapsed<path.candidate.reaction_ms || ball.z>path.candidate.playable_height_m
+                        || (actor.is_goalkeeper && actor.side!=*origin_side
+                            && !match_physics::goalkeeper_hand_contact_allowed(actor.side,ball))
+                        || path.candidate.contact_position_toward(path.target,elapsed)
+                            .is_none_or(|pos|pos.distance(path.target)>path.candidate.reach_m+1e-5) {
+                        return Err(bad("invalid specialist delivery witness"));
+                    }
+                } else if let Some(hit)=&f.early_interaction {
+                    if hit.time_ms!=f.resolves_at_ms || hit.boundary.is_none() {
+                        return Err(bad("invalid specialist delivery boundary"));
+                    }
+                } else if f.resolves_at_ms!=f.planned_arrival_ms {
+                    return Err(bad("specialist delivery without contact before arrival"));
+                }
+            }
+        }
+        contact_paths.extend(f.pass_contact_motion.iter());
+    }
+    if let Some(c)=&p.pending_carry {
+        contact_paths.push(&c.motion);
+        contact_paths.extend(c.challenger.iter());
+    }
+    if let Some(d)=&p.pending_decision {
+        if d.preparation_motion.is_some()!=experimental {
+            return Err(bad("preparation path identity mismatch"));
+        }
+        if d.preparation_motion.as_ref().is_some_and(|m|m.candidate.player_id!=d.player_id) {
+            return Err(bad("preparation path actor mismatch"));
+        }
+        contact_paths.extend(d.preparation_motion.iter());
+        contact_paths.extend(d.challenger.iter());
+    }
+    for path in contact_paths {
+        if path.candidate.locomotion.is_some()!=experimental {
+            return Err(bad("contact path identity mismatch"));
+        }
+        if experimental {
+            let plan=path.experimental_plan().map_err(|_|bad("invalid experimental contact path"))?
+                .ok_or_else(||bad("missing experimental path"))?;
+            let elapsed=ckpt.sim_time_ms.checked_sub(path.started_at_ms).ok_or_else(||bad("contact path time overflow"))?;
+            let sampled=plan.sample_at(elapsed).map_err(|_|bad("invalid contact path time"))?;
+            let actor=p.state.players.iter().find(|a|a.player_id==path.candidate.player_id && a.side==path.candidate.side)
+                .ok_or_else(||bad("unknown contact actor"))?;
+            if sampled.state.position!=actor.pos || sampled.state.velocity!=actor.vel || sampled.state.facing_rad!=actor.facing_rad {
+                return Err(bad("contact path differs from authoritative state"));
+            }
         }
     }
     crate::v4::transition::verify_clock_accounting(&p.state,p.stats.home_possession_ms,p.stats.away_possession_ms)?;

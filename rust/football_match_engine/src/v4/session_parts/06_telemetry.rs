@@ -193,7 +193,7 @@ impl MatchSessionV4 {
         MatchResultV4 {
             ok: true,
             protocol_version: ENGINE_PROTOCOL_VERSION_V4 as i32,
-            engine_version: ENGINE_VERSION_V4.to_string(),
+            engine_version: self.runtime_behavior_label(),
             event_schema_version: EVENT_SCHEMA_VERSION_V4 as i32,
             match_id: self.input.match_id.clone(),
             seed: self.input.seed,

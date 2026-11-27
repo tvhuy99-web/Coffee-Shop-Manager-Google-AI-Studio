@@ -659,7 +659,7 @@ fn resolve_aerial_duel(
     (rng.next_double() as f32) < win_prob
 }
 
-fn pick_planned_or_best_specialist<F>(
+pub(crate) fn pick_planned_or_best_specialist<F>(
     state: &MatchStateV4,
     input: &MatchInputV4,
     side: TeamSideV4,

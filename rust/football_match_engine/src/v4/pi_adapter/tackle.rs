@@ -104,7 +104,7 @@ fn forecast_second_ball(state:&MatchStateV4,carrier_idx:usize,def_idx:usize,reac
                 let speed=(p.vel.x*p.vel.x+p.vel.y*p.vel.y).sqrt();
                 PassReachCandidate{player_id:p.player_id.clone(),side:p.side,pos:p.pos,velocity:p.vel,
                     speed_mps:6.5f32.max(speed).min(9.0),acceleration_mps2:4.0,
-                    agility:0.65,reaction_ms:220,reach_m:1.0,playable_height_m:1.2}
+                    agility:0.65,reaction_ms:220,reach_m:1.0,playable_height_m:1.2,locomotion:None}
             }
         }).collect();
     let trajectory=BallTrajectory{start_time_ms:0,start_pos:spot,initial_vel:vel,gravity_z:9.81,
@@ -297,7 +297,7 @@ mod second_ball_tests {
             is_shot:false,is_carrier_dribble:false};
         let p=|id:&str,side,x|PassReachCandidate{player_id:id.into(),side,pos:Vec2::new(x,34.0),
             velocity:Vec2::default(),speed_mps:6.5,acceleration_mps2:4.0,agility:0.65,
-            reaction_ms:220,reach_m:1.0,playable_height_m:1.2};
+            reaction_ms:220,reach_m:1.0,playable_height_m:1.2,locomotion:None};
         let mut players=vec![p("D",TeamSideV4::Home,53.0),p("A",TeamSideV4::Away,45.0)];
         let home=loose_recovery_prior(&traj,&players,TeamSideV4::Home);
         let away=loose_recovery_prior(&traj,&players,TeamSideV4::Away);

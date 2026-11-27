@@ -23,6 +23,18 @@ impl MatchSessionV4 {
         }
 
         update_in_match_psychology(&mut self.state, &self.input, game_sec, dt_sec);
+        let experimental = self.uses_locomotion_experiment();
+        let now_ms = self.state.des_clock.sim_time_ms;
+        let before_ms = now_ms - dt_ms;
+        #[cfg(test)]
+        let _tracking_interval=if experimental && crate::v4::movement::tracking_probe::enabled(){
+            let period=match self.stage{
+                HalfStageV4::InHalf{period,..}=>format!("{period:?}"),
+                _=>return Err(V4Error::InvalidInput("tracking interval outside period".into())),
+            };
+            Some(crate::v4::movement::tracking_probe::interval(before_ms,period))
+        }else{None};
+        let mut motion_loads=if experimental {vec![None;self.state.players.len()]} else {Vec::new()};
 
         if is_ball_in_play {
             let prev_positions: Vec<Vec2> = self.state.players.iter().map(|p| p.pos).collect();
@@ -31,28 +43,46 @@ impl MatchSessionV4 {
                     crate::v4::movement::player_max_speed_mps(crate::v4::movement::player_attrs(&self.state,p),p)*dt_sec
                 } else {0.0}
             }).collect();
-            let defense=advance_off_ball_movement_with_report(
-                &mut self.state,
-                &self.input,
-                self.possession_side,
-                self.carrier_idx,
-                dt_sec,
-                &mut self.rng,
-            );
+            // The experiment reserves every committed path before
+            // integrating other actors. No preliminary displacement for those actors.
+            let reserved=if experimental {
+                crate::v4::movement::experimental_reserved_actors(&self.state,
+                    self.pending_flight.as_ref(),self.pending_decision.as_ref(),self.pending_carry.as_ref())
+            }else{Vec::new()};
+            let defense = if experimental {
+                if self.tactical_intents.is_none(){
+                    self.tactical_intents=Some(crate::v4::movement::plan_experimental_tactical_intents(
+                        &self.state,&self.input,self.possession_side,self.carrier_idx,before_ms,
+                        &mut self.rng,&reserved)?);
+                }
+                let batch=self.tactical_intents.as_ref().ok_or_else(||
+                    V4Error::InvalidInput("missing tactical intent batch".into()))?;
+                crate::v4::movement::integrate_experimental_tactical_intents(&mut self.state,
+                    batch,dt_ms,&reserved,&mut budgets,&mut motion_loads)?
+            } else {
+                advance_off_ball_movement_with_report(&mut self.state, &self.input,
+                    self.possession_side, self.carrier_idx, dt_sec, &mut self.rng)
+            };
             // Keep the predicted contact participant on the same motion
             // path used by the resolver, including across unrelated DES events.
             if let Some(motion) = self.pending_flight.as_ref().and_then(|f| f.pass_contact_motion.as_ref()) {
                 let now = self.state.des_clock.sim_time_ms;
                 if let Some((idx, p)) = self.state.players.iter_mut().enumerate()
                     .find(|(_, p)| p.player_id == motion.candidate.player_id && p.on_pitch && !p.sent_off) {
-                    let old = prev_positions[idx];
-                    let next = motion.position_at(now);
-                    budgets[idx]=motion.candidate.speed_mps.max(0.0)*dt_sec;
-                    p.pos = next;
-                    p.target_pos = motion.target;
-                    p.vel = Vec2::new((next.x - old.x) / dt_sec, (next.y - old.y) / dt_sec);
-                    if old.distance(next) > 0.05 {
-                        p.facing_rad = (next.y - old.y).atan2(next.x - old.x);
+                    if experimental {
+                        let (bound,load)=crate::v4::movement::commit_experimental_contact(p,motion,before_ms,now)?;
+                        budgets[idx]=bound;
+                        crate::v4::movement::record_experimental_motion(&mut motion_loads[idx],load)?;
+                    } else {
+                        let old = prev_positions[idx];
+                        let next = motion.position_at(now);
+                        budgets[idx]=motion.candidate.speed_mps.max(0.0)*dt_sec;
+                        p.pos = next;
+                        p.target_pos = motion.target;
+                        p.vel = Vec2::new((next.x - old.x) / dt_sec, (next.y - old.y) / dt_sec);
+                        if old.distance(next) > 0.05 {
+                            p.facing_rad = (next.y - old.y).atan2(next.x - old.x);
+                        }
                     }
                 }
             }
@@ -63,28 +93,40 @@ impl MatchSessionV4 {
                 let idx = carry.carrier_idx;
                 let p = &mut self.state.players[idx];
                 if p.on_pitch && !p.sent_off && p.player_id == carry.motion.candidate.player_id {
-                    let old = prev_positions[idx];
-                    let next = carry.motion.position_at(self.state.des_clock.sim_time_ms.min(carry.resolves_at_ms));
-                    budgets[idx]=carry.motion.candidate.speed_mps.max(0.0)*dt_sec;
-                    p.pos = next;
-                    p.target_pos = carry.motion.target;
-                    p.vel = Vec2::new((next.x-old.x)/dt_sec, (next.y-old.y)/dt_sec);
-                    if old.distance(next)>0.05 { p.facing_rad=(next.y-old.y).atan2(next.x-old.x); }
-                    self.state.ball.pos=Vec3::ground(next.x,next.y);
+                    if experimental {
+                        let (bound,load)=crate::v4::movement::commit_experimental_contact(p,&carry.motion,before_ms,now_ms.min(carry.resolves_at_ms))?;
+                        budgets[idx]=bound;
+                        crate::v4::movement::record_experimental_motion(&mut motion_loads[idx],load)?;
+                    } else {
+                        let old = prev_positions[idx];
+                        let next = carry.motion.position_at(self.state.des_clock.sim_time_ms.min(carry.resolves_at_ms));
+                        budgets[idx]=carry.motion.candidate.speed_mps.max(0.0)*dt_sec;
+                        p.pos = next;
+                        p.target_pos = carry.motion.target;
+                        p.vel = Vec2::new((next.x-old.x)/dt_sec, (next.y-old.y)/dt_sec);
+                        if old.distance(next)>0.05 { p.facing_rad=(next.y-old.y).atan2(next.x-old.x); }
+                    }
+                    self.state.ball.pos=Vec3::ground(p.pos.x,p.pos.y);
                     self.state.ball.vel=Vec3::new(p.vel.x,p.vel.y,0.0);
                 }
                 if let Some(chase)=carry.challenger.as_ref() {
                     if let Some((di,def))=self.state.players.iter_mut().enumerate().find(|(_,p)|
                         p.player_id==chase.candidate.player_id && p.on_pitch && !p.sent_off) {
-                        let old=prev_positions[di];
-                        let next=chase.position_at(self.state.des_clock.sim_time_ms.min(carry.resolves_at_ms));
-                        budgets[di]=chase.candidate.speed_mps.max(0.0)*dt_sec;
-                        def.pos=next; def.target_pos=chase.target;
-                        def.vel=Vec2::new((next.x-old.x)/dt_sec,(next.y-old.y)/dt_sec);
-                        if old.distance(next)>0.05 {def.facing_rad=(next.y-old.y).atan2(next.x-old.x);}
+                        if experimental {
+                            let (bound,load)=crate::v4::movement::commit_experimental_contact(def,chase,before_ms,now_ms.min(carry.resolves_at_ms))?;
+                            budgets[di]=bound;
+                            crate::v4::movement::record_experimental_motion(&mut motion_loads[di],load)?;
+                        } else {
+                            let old=prev_positions[di];
+                            let next=chase.position_at(self.state.des_clock.sim_time_ms.min(carry.resolves_at_ms));
+                            budgets[di]=chase.candidate.speed_mps.max(0.0)*dt_sec;
+                            def.pos=next; def.target_pos=chase.target;
+                            def.vel=Vec2::new((next.x-old.x)/dt_sec,(next.y-old.y)/dt_sec);
+                            if old.distance(next)>0.05 {def.facing_rad=(next.y-old.y).atan2(next.x-old.x);}
+                        }
                     }
                 }
-                if carry.shielding {
+                if carry.shielding && !experimental {
                     // Face away from the actual challenger so the body can
                     // protect the ball; do not change the ball position here.
                     if let Some(chase)=carry.challenger.as_ref() {
@@ -96,25 +138,63 @@ impl MatchSessionV4 {
                     }
                 }
             }
+            // In the experiment the preparing actor brakes along the same
+            // reserved path used by the contest prediction.
+            if experimental {
+                if let Some(path)=self.pending_decision.as_ref().and_then(|d|d.preparation_motion.as_ref()) {
+                    if let Some((idx,p))=self.state.players.iter_mut().enumerate().find(|(_,p)|
+                        p.player_id==path.candidate.player_id && p.on_pitch && !p.sent_off) {
+                        let (bound,load)=crate::v4::movement::commit_experimental_contact(p,path,before_ms,now_ms)?;
+                        budgets[idx]=bound;
+                        crate::v4::movement::record_experimental_motion(&mut motion_loads[idx],load)?;
+                        self.state.ball.pos=Vec3::ground(p.pos.x,p.pos.y);
+                        self.state.ball.vel=Vec3::new(p.vel.x,p.vel.y,0.0);
+                    }
+                }
+            }
             // Preparation contests use the same committed contact path
             // as carries. No extra movement or fatigue at resolution.
             if let Some(chase)=self.pending_decision.as_ref().and_then(|p|p.challenger.as_ref()) {
                 if let Some((di,def))=self.state.players.iter_mut().enumerate()
                     .find(|(_,p)|p.player_id==chase.candidate.player_id && p.on_pitch && !p.sent_off) {
-                    let old=prev_positions[di];
-                    let next=chase.position_at(self.state.des_clock.sim_time_ms);
-                    budgets[di]=chase.candidate.speed_mps.max(0.0)*dt_sec;
-                    def.pos=next;
-                    def.target_pos=chase.target;
-                    def.vel=Vec2::new((next.x-old.x)/dt_sec,(next.y-old.y)/dt_sec);
-                    if old.distance(next)>0.05 {def.facing_rad=(next.y-old.y).atan2(next.x-old.x);}
+                    if experimental {
+                        let (bound,load)=crate::v4::movement::commit_experimental_contact(def,chase,before_ms,now_ms)?;
+                        budgets[di]=bound;
+                        crate::v4::movement::record_experimental_motion(&mut motion_loads[di],load)?;
+                    } else {
+                        let old=prev_positions[di];
+                        let next=chase.position_at(self.state.des_clock.sim_time_ms);
+                        budgets[di]=chase.candidate.speed_mps.max(0.0)*dt_sec;
+                        def.pos=next;
+                        def.target_pos=chase.target;
+                        def.vel=Vec2::new((next.x-old.x)/dt_sec,(next.y-old.y)/dt_sec);
+                        if old.distance(next)>0.05 {def.facing_rad=(next.y-old.y).atan2(next.x-old.x);}
+                    }
                 }
             }
             for (idx, p) in self.state.players.iter_mut().enumerate() {
                 if let Some(prev) = prev_positions.get(idx) {
                     crate::v4::transition::verify_motion_budget(*prev,p.pos,budgets[idx],&p.player_id)?;
-                    p.last_moved_m = prev.distance(p.pos);
+                    if !experimental {
+                        p.last_moved_m = prev.distance(p.pos);
+                    } else if !p.on_pitch || p.sent_off {
+                        p.last_moved_m = 0.0;
+                    }
                 }
+            }
+            // The settled/held control interval has no separate reserved
+            // path. Preserve its contact offset and height relative to the
+            // actual owner; do not leave a controlled ball behind while
+            // the owner moves, or pick a different owner by carrier_idx.
+            if experimental && self.pending_flight.is_none() && self.pending_carry.is_none()
+                && self.pending_decision.is_none() && self.state.ball.control==BallControlState::Controlled {
+                let idx=crate::v4::movement::experimental_controlled_actor(&self.state)
+                    .ok_or_else(||V4Error::InvalidInput("controlled interval has no active owner".into()))?;
+                let p=&self.state.players[idx];
+                let prev=prev_positions[idx];
+                self.state.ball.pos=Vec3::new(self.state.ball.pos.x+(p.pos.x-prev.x),
+                    self.state.ball.pos.y+(p.pos.y-prev.y),self.state.ball.pos.z).clamp_to_pitch();
+                self.state.ball.vel=Vec3::new(p.vel.x,p.vel.y,0.0);
             }
             // Measure the realized movement after physical contact path
             // overrides, rather than the preliminary tactical displacement.
@@ -133,10 +213,15 @@ impl MatchSessionV4 {
                 }
             }
         } else {
+            self.tactical_intents=None;
             // NHIỆM VỤ 6: Simulate purposeful low-intensity dead-ball movement (celebration,
             // returning to own half for kickoff, entering box for corner/FK, forming wall).
             let db_ctx = self.state.dead_ball.as_ref().map(|db| (db.kind, db.phase, db.restart_side, db.restart_spot));
-            for p in &mut self.state.players {
+            let restart_targets=if experimental {
+                self.state.dead_ball.as_ref().map(|db|self.experimental_restart_targets(db))
+            }else{None};
+            let profiles = &self.state.player_profiles;
+            for (idx,p) in self.state.players.iter_mut().enumerate() {
                 if !p.on_pitch || p.sent_off {
                     p.last_moved_m = 0.0;
                     continue;
@@ -171,6 +256,21 @@ impl MatchSessionV4 {
                 } else {
                     (prev, 0.0f32)
                 };
+                if experimental {
+                    let attrs = &profiles.get(p.profile_idx).ok_or_else(||
+                        V4Error::InvalidInput("missing experiment actor profile".into()))?.attrs;
+                    let target = if p.is_goalkeeper {
+                        db_ctx.map_or(target, |(kind, _, restart_side, spot)|
+                            crate::v4::movement::experimental_keeper_restart_target(
+                                p.side, kind, restart_side, spot.xy()))
+                    } else { target };
+                    let (target,walk_speed_mps)=restart_targets.as_ref()
+                        .and_then(|rows|rows[idx]).unwrap_or((target,walk_speed_mps));
+                    let (_,load)=crate::v4::movement::integrate_experimental_actor(p, attrs, target,
+                        Some(walk_speed_mps), dt_ms)?;
+                    crate::v4::movement::record_experimental_motion(&mut motion_loads[idx],load)?;
+                    continue;
+                }
                 let max_step = walk_speed_mps * dt_sec;
                 let delta = Vec2::new(target.x - prev.x, target.y - prev.y);
                 let dist = (delta.x * delta.x + delta.y * delta.y).sqrt();
@@ -193,11 +293,12 @@ impl MatchSessionV4 {
                 self.state.ball.vel.z=0.0;
             }
         }
-        self.update_interval_fatigue(dt_sec, self.possession_side, !is_ball_in_play);
+        self.update_interval_fatigue(dt_sec, self.possession_side, !is_ball_in_play, &motion_loads)?;
 
         if is_ball_in_play {
             let avg_wr = self.team_avg_work_rate(self.possession_side);
             let ball_pos_now = self.state.ball.pos;
+            let prior_phases=(self.state.home.phase,self.state.away.phase);
             let phase_events = update_tactical_phases(
                 &mut self.state,
                 self.possession_side,
@@ -206,6 +307,9 @@ impl MatchSessionV4 {
                 dt_ms,
                 avg_wr,
             );
+            if prior_phases!=(self.state.home.phase,self.state.away.phase){
+                self.tactical_intents=None;
+            }
             if !phase_events.is_empty() {
                 let poss = self.possession_side;
                 self.flush_play_events(phase_events, poss);

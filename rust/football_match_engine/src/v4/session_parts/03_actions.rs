@@ -25,8 +25,9 @@ impl MatchSessionV4 {
         let open_outlets=crate::player_intelligence::count_open_outlets(side,idx,pos,&observed,receiving_line);
         self.diagnostics.record_open_outlets(open_outlets);
         let ctx = evaluate_local_context(&self.state,&self.input,side,pos);
-        let mut plan = perceive_evaluate_and_decide_des(&self.state,&self.input,
-            &self.input.timing_model,idx,ctx,&mut self.rng);
+        let experimental=self.uses_locomotion_experiment();
+        let mut plan = crate::player_intelligence::perceive_evaluate_and_decide_with_motion(&self.state,&self.input,
+            &self.input.timing_model,idx,ctx,&mut self.rng,experimental);
         self.diagnostics.record_outlet_choice(open_outlets,matches!(plan.action,PlannedActionV4::HoldAndRecycle));
         // A one-touch intention is a property of this receiver's action,
         // not of the passer who delivered the previous ball.
@@ -36,19 +37,24 @@ impl MatchSessionV4 {
         } else { 0 };
         let now = self.state.des_clock.sim_time_ms;
         let release_at_ms = now.saturating_add(plan.decision_delay_ms.max(1)).saturating_add(settle);
+        let preparation_motion = self.uses_locomotion_experiment().then(|| self.preparation_motion(idx));
         let (at,challenger)=self.preparation_contest(idx,release_at_ms);
         self.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
             DesEventPayload::ActionExecute{player_id:id.clone(),side})
             .map_err(|e|V4Error::InvalidClock(e.into()))?;
-        let observed_pass_risk=crate::player_intelligence::observe_pass_risk(&self.state,&self.input,idx,ctx,plan.action);
+        let observed_pass_risk=crate::player_intelligence::observe_pass_risk_with_motion(&self.state,&self.input,idx,ctx,plan.action,experimental);
         self.pending_decision=Some(PendingDecisionV4{player_id:id,side,started_at_ms:now,executes_at_ms:at,
-            plan,release_at_ms,challenger,observed_pass_risk,final_aim_committed:false});
+            plan,release_at_ms,challenger,observed_pass_risk,final_aim_committed:false,preparation_motion});
         Ok(())
     }
 
     /// A defender finishing a tackle must recover before committing to
     /// another tackle. This does not prevent movement, screening or
     /// pass interception; it is a separate action readiness clock.
+    fn contact_candidate(&self, idx: usize, aerial: bool) -> crate::v4::interaction::PassReachCandidate {
+        pass_reach_candidate_for_motion(&self.state,idx,aerial,self.uses_locomotion_experiment())
+    }
+
     fn tackle_candidates(&self,side:TeamSideV4,end:i64)->Vec<crate::v4::interaction::PassReachCandidate> {
         let now=self.state.des_clock.sim_time_ms;
         self.state.players.iter().enumerate().filter(|(_,p)|p.on_pitch && !p.sent_off
@@ -56,7 +62,7 @@ impl MatchSessionV4 {
             .filter_map(|(i,p)|{
                 let ready=self.tackle_ready_at.get(&p.player_id).copied().unwrap_or(now);
                 let remaining=ready.saturating_sub(now).max(0);
-                let mut candidate=pass_reach_candidate(&self.state,i,false);
+                let mut candidate=self.contact_candidate(i,false);
                 // A recovering player cannot actively chase/attempt a
                 // second tackle until recovery plus the new reaction.
                 candidate.reaction_ms=candidate.reaction_ms.saturating_add(remaining);
@@ -99,14 +105,18 @@ impl MatchSessionV4 {
         best
     }
 
-    fn preparation_contest(&mut self,idx:usize,release:i64)->(i64,Option<PassContactMotion>) {
+    fn preparation_motion(&self, idx: usize) -> PassContactMotion {
         let now=self.state.des_clock.sim_time_ms;
-        let mut carrier=pass_reach_candidate(&self.state,idx,false);
+        let mut carrier=self.contact_candidate(idx,false);
         carrier.speed_mps=0.0;
         carrier.reaction_ms=0;
-        carrier.velocity=Vec2::default();
+        if !self.uses_locomotion_experiment() { carrier.velocity=Vec2::default(); }
         let pos=carrier.pos;
-        let motion=PassContactMotion{candidate:carrier,target:pos,started_at_ms:now};
+        PassContactMotion{candidate:carrier,target:pos,started_at_ms:now}
+    }
+
+    fn preparation_contest(&mut self,idx:usize,release:i64)->(i64,Option<PassContactMotion>) {
+        let motion=self.preparation_motion(idx);
         match self.choose_committed_tackle(idx,&motion,release) {
             // Exact tie goes to the already prepared release.
             Some((_,at,chase)) if at<release=>(at,Some(chase)),
@@ -205,8 +215,9 @@ impl MatchSessionV4 {
         // there is a better compatible ground kick. No reroll of the
         // original action-family decision or the original timing draw.
         let ctx=evaluate_local_context(&self.state,&self.input,side,pos);
+        let experimental=self.uses_locomotion_experiment();
         let release_risk=if pending.observed_pass_risk.is_some() {
-            crate::player_intelligence::observe_pass_risk(&self.state,&self.input,idx,ctx,plan.action)
+            crate::player_intelligence::observe_pass_risk_with_motion(&self.state,&self.input,idx,ctx,plan.action,experimental)
         }else{None};
         if let (Some(initial),Some(release))=(pending.observed_pass_risk,release_risk) {
             self.diagnostics.record_pass_risk_drift(initial,release);
@@ -214,20 +225,21 @@ impl MatchSessionV4 {
         if !plan.is_one_touch && !pending.final_aim_committed &&
             matches!(plan.action,PlannedActionV4::Pass{kind:PassKindV4::Short,..}) {
             self.diagnostics.record_reaim_review();
-            if let Some(reaim)=crate::player_intelligence::reconsider_short_pass(
-                &self.state,&self.input,idx,ctx,plan.action) {
-                let updated_risk=crate::player_intelligence::observe_pass_risk(
-                    &self.state,&self.input,idx,ctx,reaim.action);
+            if let Some(reaim)=crate::player_intelligence::reconsider_short_pass_with_motion(
+                &self.state,&self.input,idx,ctx,plan.action,experimental) {
+                let updated_risk=crate::player_intelligence::observe_pass_risk_with_motion(
+                    &self.state,&self.input,idx,ctx,reaim.action,experimental);
                 self.diagnostics.record_reaim_choice(reaim.delay_ms,release_risk,updated_risk);
                 plan.action=reaim.action;
                 let release_at_ms=now_ms.saturating_add(reaim.delay_ms);
+                let preparation_motion = self.uses_locomotion_experiment().then(|| self.preparation_motion(idx));
                 let (at,challenger)=self.preparation_contest(idx,release_at_ms);
                 self.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
                     DesEventPayload::ActionExecute{player_id:player_id.into(),side})
                     .map_err(|e|V4Error::InvalidClock(e.into()))?;
                 self.pending_decision=Some(PendingDecisionV4{
                     player_id:player_id.into(),side,started_at_ms:now_ms,executes_at_ms:at,
-                    plan,release_at_ms,challenger,observed_pass_risk:updated_risk,final_aim_committed:true,
+                    plan,release_at_ms,challenger,observed_pass_risk:updated_risk,final_aim_committed:true,preparation_motion,
                 });
                 return Ok(());
             }
@@ -309,7 +321,7 @@ impl MatchSessionV4 {
             let idx = flight.outcome.next_carrier_idx;
             let p = &self.state.players[idx];
             let attrs = *lookup_attrs(&self.input, p);
-            let profile = pass_reach_candidate(&self.state, idx, h.ball_pos.z > 0.8);
+            let profile = self.contact_candidate(idx,h.ball_pos.z > 0.8);
             let incoming = flight.trajectory.velocity_at_ms(now_ms);
             let speed = (incoming.x * incoming.x + incoming.y * incoming.y + incoming.z * incoming.z).sqrt();
             let skill = normalize_attr(attrs.technical.first_touch) * 0.45
@@ -363,6 +375,18 @@ impl MatchSessionV4 {
             if let Some(hit) = flight.early_interaction.as_ref() {
                 return self.finish_loose_ball_boundary(origin_side, &cause, hit);
             }
+            if matches!(cause.as_str(),"CORNER_DELIVERY"|"FREE_KICK_DELIVERY") {
+                if flight.pass_contact_motion.is_none() {
+                    return self.start_pass_recovery(origin_side,flight.offside_at_launch,"SET_PIECE_RECOVERY");
+                }
+                return self.finish_experimental_delivery_contact(origin_side,flight.outcome.next_carrier_idx,
+                    &flight.offside_at_launch,&cause);
+            }
+            if cause=="CLEARANCE_AIRBORNE" {
+                // A flight with no selected receiver is not a completed
+                // pass. Start recovery from the actually integrated landing.
+                return self.start_pass_recovery(origin_side,flight.offside_at_launch,"CLEARANCE_RECOVERY");
+            }
             let idx = flight.outcome.next_carrier_idx;
             if !self.state.players[idx].on_pitch || self.state.players[idx].sent_off {
                 return self.start_pass_recovery(origin_side, flight.offside_at_launch, &cause);
@@ -389,6 +413,25 @@ impl MatchSessionV4 {
                 EventMetadataV4 { cause: Some(cause.into()), ..EventMetadataV4::default() });
             return self.start_pass_recovery(origin_side, offside, cause);
         }
+        // A parried experimental shot ends at the save. Only then, from
+        // live committed positions, schedule the separate loose-ball race.
+        // The save's counter delta and events are committed exactly once.
+        if self.uses_locomotion_experiment() && matches!(&flight.action,FlightActionV4::Shot{..})
+            && flight.ball_after.control==BallControlState::Loose {
+            let FlightActionV4::Shot{shooter_idx}=flight.action else {unreachable!()};
+            let origin_side=self.state.players[shooter_idx].side;
+            if !flight.outcome.events.iter().any(|e|e.kind==EventTypeV4::Rebound)
+                || flight.ball_after.owner_side.is_some() || flight.ball_after.owner_player_id.is_some() {
+                return Err(V4Error::InvalidInput("invalid experimental shot rebound".into()));
+            }
+            flight.counter_delta.apply(&mut self.state)?;
+            self.state.ball=flight.ball_after;
+            self.flush_play_events(flight.outcome.events,origin_side);
+            self.emit(EventTypeV4::LooseBall,HighlightTier::None,None,
+                self.state.ball.last_touch_side,self.state.ball.last_touch_player_id.clone(),None,
+                EventMetadataV4{cause:Some("SHOT_REBOUND_LOOSE".into()),..EventMetadataV4::default()});
+            return self.start_pass_recovery(origin_side,flight.offside_at_launch,"SHOT_REBOUND_LOOSE");
+        }
         flight.counter_delta.apply(&mut self.state)?;
         self.state.ball = flight.ball_after;
         match flight.action {
@@ -414,12 +457,153 @@ impl MatchSessionV4 {
     }
 
 
+    /// Schedule a real corner or non-direct delivery from the awarded
+    /// restart spot. The specialist was physically prepared by the dead
+    /// ball integrator. No player placement and no completed pass at launch.
+    fn schedule_experimental_set_piece_delivery(&mut self,db:&DeadBallState,taker:usize)->Result<(),V4Error>{
+        let side=db.restart_side;
+        let now=self.state.des_clock.sim_time_ms;
+        let spot=db.restart_spot.xy();
+        let corner=db.kind==DeadBallKind::Corner;
+        let target=if corner {
+            Vec2::new(if side==TeamSideV4::Home{PITCH_LENGTH_M-8.0}else{8.0},
+                (34.0+(self.rng.next_double() as f32-0.5)*10.0).clamp(24.0,44.0))
+        }else{
+            // A delivery seeks an existing teammate rather than assigning
+            // possession to a distant specialist. Stable ID breaks ties.
+            self.state.players.iter().enumerate().filter(|(i,p)|*i!=taker
+                && p.side==side && p.on_pitch && !p.sent_off && !p.is_goalkeeper)
+                .min_by(|(_,a),(_,b)|{
+                    let cost=|p:&crate::v4::state::PlayerRuntimeStateV4|
+                        distance_to_attacking_goal(side,p.pos)+0.35*p.pos.distance(spot);
+                    cost(a).total_cmp(&cost(b)).then_with(||a.player_id.cmp(&b.player_id))
+                }).map(|(_,p)|p.pos).ok_or_else(||V4Error::InvalidInput("missing free kick delivery teammate".into()))?
+        };
+        let duration=estimate_ball_flight_ms(&self.input.timing_model,spot.distance(target),
+            BallFlightKind::SetPieceDelivery,self.input.match_environment.weather,
+            self.input.match_environment.pitch_quality,&mut self.rng).max(1);
+        let arrival=now.saturating_add(duration);
+        let trajectory=crate::v4::ball_play::build_pass_trajectory(PassKindV4::Cross,spot,target,now,duration);
+        let mut indices=Vec::new();
+        let mut candidates=Vec::new();
+        let mut keeper_hand_idx=None;
+        for (idx,p) in self.state.players.iter().enumerate(){
+            if idx==taker || !p.on_pitch || p.sent_off{continue;}
+            let candidate=if p.is_goalkeeper && p.side!=side {
+                let c=crate::v4::goalkeeper::shot_contact_candidate(&self.state,idx)
+                    .ok_or_else(||V4Error::InvalidInput("missing delivery keeper profile".into()))?;
+                keeper_hand_idx=Some(candidates.len());
+                c
+            }else{self.contact_candidate(idx,true)};
+            indices.push(idx);
+            candidates.push(candidate);
+        }
+        let (idx,at,motion,boundary)=match match_physics::find_locomotion_delivery_contact(
+            &trajectory,&candidates,keeper_hand_idx,arrival){
+            Some(LooseBallResolution::Player{candidate_idx,time_ms,ball_pos})=>(
+                indices[candidate_idx],time_ms,Some(PassContactMotion{
+                    candidate:candidates[candidate_idx].clone(),target:ball_pos.xy(),started_at_ms:now}),None),
+            Some(LooseBallResolution::Boundary(h))=>(taker,h.time_ms.max(now+1),None,Some(h)),
+            None=>(taker,arrival,None,None),
+        };
+        let offside_at_launch=if corner{Vec::new()}else{
+            self.state.players.iter().enumerate().filter(|(i,p)|*i!=taker
+                && p.on_pitch && !p.sent_off && p.side==side && is_receiver_offside(&self.state,side,spot,p.pos))
+                .map(|(_,p)|p.player_id.clone()).collect()
+        };
+        let id=self.state.players[taker].player_id.clone();
+        self.possession_side=side;
+        self.carrier_idx=taker;
+        self.last_passer_idx=None;
+        self.state.ball.pos=trajectory.start_pos;
+        self.state.ball.vel=trajectory.initial_vel;
+        self.state.ball.control=BallControlState::Loose;
+        self.state.ball.owner_side=None;
+        self.state.ball.owner_player_id=None;
+        self.state.ball.last_touch_side=Some(side);
+        self.state.ball.last_touch_player_id=Some(id.clone());
+        let cause=if corner{"CORNER_DELIVERY"}else{"FREE_KICK_DELIVERY"};
+        self.pending_flight=Some(PendingFlightSnapshotV4{
+            trajectory,planned_arrival_ms:arrival,resolves_at_ms:at,
+            action:FlightActionV4::LooseRecovery{origin_side:side,cause:cause.into()},
+            outcome:crate::v4::ball_play::BallPlayOutcome{next_side:self.state.players[idx].side,
+                next_carrier_idx:idx,stoppage_seconds:0,events:Vec::new()},
+            ball_after:self.state.ball.clone(),counter_delta:FlightCounterDeltaV4::between(&self.state,&self.state),
+            won_corner:false,early_interaction:boundary,pass_contact_motion:motion,offside_at_launch,
+        });
+        self.scheduler.schedule(at,EventPriority::PhysicsAndBoundary,CancellationScope::LivePlayOnly,
+            DesEventPayload::EarlyInteractionResolved{interaction_tag:cause.into(),actor_id:None})
+            .map_err(|e|V4Error::InvalidClock(e.into()))?;
+        self.emit(if corner{EventTypeV4::Corner}else{EventTypeV4::FreeKick},
+            HighlightTier::Extended,None,Some(side),Some(id),None,
+            EventMetadataV4{free_kick_executed:(!corner).then_some(true),cause:Some(cause.into()),
+                ..EventMetadataV4::default()});
+        Ok(())
+    }
+
+    /// Technical resolution happens only at the witnessed contact. Reuse
+    /// the existing first-touch/claim models; a rejected contact cannot
+    /// grant ownership or place a player at the ball.
+    fn finish_experimental_delivery_contact(&mut self,origin:TeamSideV4,idx:usize,
+        offside:&[String],cause:&str)->Result<(),V4Error>{
+        let p=&self.state.players[idx];
+        if !p.on_pitch || p.sent_off{return self.start_pass_recovery(origin,offside.to_vec(),"SET_PIECE_RECOVERY");}
+        let side=p.side;
+        let id=p.player_id.clone();
+        let pos=p.pos;
+        let spot=self.state.ball.pos;
+        let incoming=self.state.ball.vel;
+        if side==origin && offside.contains(&id){
+            return self.finish_pass_recovery(origin,idx,offside,cause);
+        }
+        let attrs=*lookup_attrs(&self.input,p);
+        let hand=p.is_goalkeeper && side!=origin && match_physics::goalkeeper_hand_contact_allowed(side,spot);
+        let controlled=if hand {
+            let team=if side==TeamSideV4::Home{&self.input.home_team}else{&self.input.away_team};
+            let height=team.lineup.iter().chain(team.bench.iter()).find(|a|a.player_id==id)
+                .map(|a|a.height_cm).ok_or_else(||V4Error::InvalidInput("missing delivery keeper height".into()))?;
+            match crate::v4::goalkeeper::resolve_gk_aerial_claim(&attrs,height,true,spot.z,&self.input,&mut self.rng){
+                crate::v4::goalkeeper::GkAerialOutcome::Claimed=>{
+                    self.emit(EventTypeV4::GoalkeeperClaim,HighlightTier::Extended,None,Some(side),Some(id.clone()),None,
+                        EventMetadataV4{cause:Some(cause.into()),..EventMetadataV4::default()});
+                    true
+                }
+                crate::v4::goalkeeper::GkAerialOutcome::PunchedClear=>{
+                    self.emit(EventTypeV4::GoalkeeperPunch,HighlightTier::Extended,None,Some(side),Some(id.clone()),None,
+                        EventMetadataV4{cause:Some(cause.into()),..EventMetadataV4::default()});
+                    false
+                }
+                crate::v4::goalkeeper::GkAerialOutcome::StayedOnLine=>{
+                    // No touch: preserve the launch last-touch identity.
+                    return self.start_pass_recovery(origin,offside.to_vec(),"SET_PIECE_RECOVERY");
+                }
+            }
+        }else{
+            let skill=normalize_attr(attrs.technical.first_touch)*0.45+
+                normalize_attr(attrs.technical.technique)*0.30+normalize_attr(attrs.mental.composure)*0.25;
+            let energy=(p.fatigue.aerobic*0.6+p.fatigue.anaerobic*0.4)/100.0;
+            let speed=(incoming.x*incoming.x+incoming.y*incoming.y+incoming.z*incoming.z).sqrt();
+            let profile=self.contact_candidate(idx,true);
+            let pressure=evaluate_local_context(&self.state,&self.input,side,spot.xy()).pressure/100.0;
+            let chance=contact_control_probability(skill,normalize_attr(attrs.physical.balance),energy,
+                speed,spot.z,pos.distance(spot.xy())/profile.reach_m.max(0.1),pressure);
+            (self.rng.next_double() as f32)<chance
+        };
+        if controlled{return self.finish_pass_recovery(origin,idx,offside,cause);}
+        self.state.ball.vel=blocked_ball_velocity(incoming,pos,spot);
+        self.state.ball.last_touch_side=Some(side);
+        self.state.ball.last_touch_player_id=Some(id.clone());
+        self.emit(EventTypeV4::LooseBall,HighlightTier::None,None,Some(side),Some(id),None,
+            EventMetadataV4{cause:Some(cause.into()),..EventMetadataV4::default()});
+        self.start_pass_recovery(origin,offside.to_vec(),"SET_PIECE_RECOVERY")
+    }
+
     /// Both teams pursue the actual rolling/descending ball.
     fn start_pass_recovery(&mut self, origin_side: TeamSideV4, offside_at_launch: Vec<String>, cause: &str) -> Result<(), V4Error> {
         let now = self.state.des_clock.sim_time_ms;
         let indices: Vec<_> = self.state.players.iter().enumerate()
             .filter(|(_,p)| p.on_pitch && !p.sent_off).map(|(i,_)| i).collect();
-        let candidates: Vec<_> = indices.iter().map(|&i| pass_reach_candidate(&self.state,i,true)).collect();
+        let candidates: Vec<_> = indices.iter().map(|&i| self.contact_candidate(i,true)).collect();
         let trajectory = BallTrajectory { start_time_ms:now, start_pos:self.state.ball.pos,
             initial_vel:self.state.ball.vel, gravity_z:9.81, drag:1.6, is_shot:false,is_carrier_dribble:false };
         let resolution = find_moving_ball_recovery(&trajectory,&candidates)
@@ -482,7 +666,7 @@ impl MatchSessionV4 {
         if cause=="TACKLE_CONTACT_LOOSE" {
             self.diagnostics.record_tackle_loose_recovery(side==origin_side);
         }
-        if cause=="TACKLE_CONTACT_LOOSE" && side!=origin_side {
+        if matches!(cause,"TACKLE_CONTACT_LOOSE"|"SHOT_REBOUND_LOOSE"|"CLEARANCE_RECOVERY"|"PENALTY_REBOUND_LOOSE"|"CORNER_DELIVERY"|"FREE_KICK_DELIVERY"|"SET_PIECE_RECOVERY") && side!=origin_side {
             let avg_wr=self.team_avg_work_rate(side);
             let ball=self.state.ball.pos;
             let phase_events=update_tactical_phases(&mut self.state,origin_side,side,ball,0,avg_wr);
@@ -623,26 +807,127 @@ impl MatchSessionV4 {
     /// CRITICAL-01: Schedules a shot in-flight so `Goal`/`Save`/`ShotOffTarget` occurs at
     /// `t_shot + shot_flight_ms` (or early `ShotBlocked` at `t_block`), never at `t_shot`.
     fn schedule_shot_flight(&mut self, shooter_idx: usize, assist_idx: Option<usize>, shot_kind: Option<ShotKindV4>) -> Result<(), V4Error> {
+        self.schedule_shot_with_restart(shooter_idx,assist_idx,shot_kind,None)
+    }
+
+    fn schedule_shot_with_restart(&mut self,shooter_idx:usize,assist_idx:Option<usize>,
+        shot_kind:Option<ShotKindV4>,restart:Option<(DeadBallKind,Vec2,bool)>)->Result<(),V4Error>{
         let now = self.state.des_clock.sim_time_ms;
         let side = self.state.players[shooter_idx].side;
         let mut resolved = self.state.clone();
-        let shot = resolve_shot_v4_des(&mut resolved, &self.input, &self.input.timing_model,
-            shooter_idx, assist_idx, shot_kind, false, &mut self.rng);
+        let experimental=self.uses_locomotion_experiment();
+        let shot = crate::v4::shooting::resolve_shot_with_restart(&mut resolved, &self.input, &self.input.timing_model,
+            shooter_idx, assist_idx, shot_kind, false, experimental,restart, &mut self.rng);
+        use crate::v4::shooting::ShotContactResolution;
+        let is_block_event=shot.outcome.events.iter().any(|ev|ev.kind==EventTypeV4::Block);
+        let save_event=shot.outcome.events.iter().find(|ev|ev.kind==EventTypeV4::Save);
+        // Decompose the single accepted witness exactly once, only when
+        // publishing the backwards-compatible pending-flight fields.
+        let (early_interaction,block_motion)=match shot.early_interaction {
+            ShotContactResolution::CommittedBlock(opportunity)=>{
+                let hit=opportunity.hit;
+                let path=opportunity.motion;
+                let actor=self.state.players.iter().find(|p|p.player_id==path.candidate.player_id && p.side==path.candidate.side)
+                    .ok_or_else(||V4Error::InvalidInput("missing shot blocker".into()))?;
+                let end=path.experimental_plan().map_err(|e|V4Error::InvalidInput(format!("invalid shot block plan: {e:?}")))?
+                    .ok_or_else(||V4Error::InvalidInput("missing shot block locomotion".into()))?
+                    .sample_at(hit.time_ms-now).map_err(|e|V4Error::InvalidInput(format!("invalid shot block sample: {e:?}")))?;
+                let residual=end.state.position.distance(hit.ball_pos.xy());
+                if !experimental || !is_block_event || hit.kind!=InteractionKind::ShotBlocked
+                    || !actor.on_pitch || actor.sent_off || actor.pos!=path.candidate.pos
+                    || actor.vel!=path.candidate.velocity
+                    || path.candidate.locomotion.is_none_or(|m|m.facing_rad!=actor.facing_rad)
+                    || hit.defender_id.as_deref()!=Some(actor.player_id.as_str())
+                    || hit.defender_side!=Some(actor.side) || path.started_at_ms!=now
+                    || path.target!=hit.ball_pos.xy() || hit.ball_pos.z>path.candidate.playable_height_m
+                    || hit.time_ms!=now.saturating_add(shot.flight_ms.max(1))
+                    || residual>path.candidate.reach_m+1e-5
+                {
+                    return Err(V4Error::InvalidInput(format!(
+                        "shot block witness mismatch actor={} start={} hit={} predicted_residual={} sampled_residual={} reach={} target={:?} origin={:?} block_event={}",
+                        actor.player_id,now,hit.time_ms,hit.distance_m,residual,path.candidate.reach_m,path.target,path.candidate.pos,is_block_event)));
+                }
+                (Some(hit),Some(path))
+            }
+            ShotContactResolution::CommittedSave(contact)=>{
+                let path=contact.motion;
+                let actor=self.state.players.iter().find(|p|p.player_id==path.candidate.player_id && p.side==path.candidate.side)
+                    .ok_or_else(||V4Error::InvalidInput("missing saving goalkeeper".into()))?;
+                let elapsed=contact.time_ms-now;
+                let terminal=path.experimental_plan().map_err(|e|V4Error::InvalidInput(format!("invalid save plan: {e:?}")))?
+                    .ok_or_else(||V4Error::InvalidInput("missing save locomotion".into()))?
+                    .sample_at(elapsed).map_err(|e|V4Error::InvalidInput(format!("invalid save sample: {e:?}")))?;
+                if !experimental || is_block_event || !actor.is_goalkeeper || !actor.on_pitch || actor.sent_off
+                    || actor.side!=side.opposite() || actor.pos!=path.candidate.pos || actor.vel!=path.candidate.velocity
+                    || path.candidate.locomotion.is_none_or(|m|m.facing_rad!=actor.facing_rad)
+                    || path.started_at_ms!=now || elapsed!=shot.flight_ms || elapsed<path.candidate.reaction_ms
+                    || elapsed>shot.planned_flight_ms || path.target!=contact.ball_pos.xy()
+                    || contact.ball_pos!=shot.trajectory.position_at_ms(contact.time_ms)
+                    || contact.ball_pos.z>path.candidate.playable_height_m
+                    || !match_physics::goalkeeper_hand_contact_allowed(actor.side,contact.ball_pos)
+                    || terminal.state.position.distance(path.target)>path.candidate.reach_m+1e-5
+                    || save_event.is_none_or(|ev|ev.actor.as_deref()!=Some(actor.player_id.as_str()) || ev.ball_pos!=contact.ball_pos)
+                {
+                    return Err(V4Error::InvalidInput(format!("save witness mismatch actor={} at={} ball={:?}",actor.player_id,contact.time_ms,contact.ball_pos)));
+                }
+                // A save uses ShotArrival at its actual contact time. No
+                // outfield ShotBlocked tag is fabricated for goalkeepers.
+                (None,Some(path))
+            }
+            ShotContactResolution::LegacyHit(hit)=>{
+                if experimental {
+                    return Err(V4Error::InvalidInput(format!("legacy shot contact in experimental resolver: {:?}",hit.kind)));
+                }
+                (Some(hit),None)
+            }
+            ShotContactResolution::None=>{
+                if experimental && (is_block_event || save_event.is_some()) {
+                    return Err(V4Error::InvalidInput("experimental shot contact event without committed witness".into()));
+                }
+                (None,None)
+            }
+        };
         let delta = FlightCounterDeltaV4::between(&self.state, &resolved);
         self.state.next_highlight_sequence_id = resolved.next_highlight_sequence_id;
+        // A deliberate save does not reset Law 11. Keep the shot-launch
+        // positions of other attackers for subsequent rebound involvement.
+        let offside_at_launch=if experimental && resolved.ball.control==BallControlState::Loose {
+            let shooter_pos=self.state.players[shooter_idx].pos;
+            self.state.players.iter().enumerate().filter(|(i,p)|*i!=shooter_idx
+                && p.on_pitch && !p.sent_off && p.side==side
+                && is_receiver_offside(&self.state,side,shooter_pos,p.pos))
+                .map(|(_,p)|p.player_id.clone()).collect()
+        } else {Vec::new()};
         let flight = PendingFlightSnapshotV4 {
             trajectory: shot.trajectory,
             planned_arrival_ms: now.saturating_add(shot.planned_flight_ms.max(1)),
             resolves_at_ms: now.saturating_add(shot.flight_ms.max(1)),
             action: FlightActionV4::Shot { shooter_idx },
             outcome: shot.outcome, ball_after: resolved.ball, counter_delta: delta,
-            won_corner: shot.won_corner, early_interaction: shot.early_interaction,
-            pass_contact_motion: None,
-            offside_at_launch: Vec::new(),
+            won_corner: shot.won_corner, early_interaction,
+            pass_contact_motion: block_motion,
+            offside_at_launch,
         };
+        let (target_y_mm,target_z_mm)=if restart.is_some(){
+            let target=flight.trajectory.position_at_ms(flight.planned_arrival_ms);
+            ((target.y*1000.0).round() as i32,(target.z*1000.0).round() as i32)
+        }else{(34_000,1_100)};
         let payload = DesEventPayload::ShotArrival { shooter_id: self.state.players[shooter_idx].player_id.clone(), side,
-            target_y_mm: 34_000, target_z_mm: 1_100 };
-        self.install_flight(flight, payload, shooter_idx)
+            target_y_mm, target_z_mm };
+        self.install_flight(flight, payload, shooter_idx)?;
+        if let Some((kind,_,_))=restart {
+            let penalty=kind==DeadBallKind::PenaltyKick;
+            let id=self.state.players[shooter_idx].player_id.clone();
+            if penalty {
+                self.emit(EventTypeV4::PenaltyAwarded,HighlightTier::GoalKey,None,Some(side),Some(id.clone()),None,
+                    EventMetadataV4{in_box:Some(true),..EventMetadataV4::default()});
+            }
+            self.emit(if penalty{EventTypeV4::PenaltyKick}else{EventTypeV4::FreeKick},
+                HighlightTier::Extended,None,Some(side),Some(id),None,
+                EventMetadataV4{in_box:penalty.then_some(true),free_kick_executed:(!penalty).then_some(true),
+                    ..EventMetadataV4::default()});
+        }
+        Ok(())
     }
 
     fn handle_shot_arrival(&mut self) -> Result<(), V4Error> {
@@ -675,9 +960,10 @@ impl MatchSessionV4 {
                 let is_one_touch = plan.is_one_touch;
                 if is_one_touch { self.diagnostics.record_one_touch_pass(); }
                 let mut resolved = self.state.clone();
-                let pass = execute_pass_and_first_touch_des(&mut resolved, &self.input, &self.input.timing_model,
+                let experimental = self.uses_locomotion_experiment();
+                let pass = execute_pass_and_first_touch_des_with_motion(&mut resolved, &self.input, &self.input.timing_model,
                     carrier_idx, target_idx, kind, distance_m, progress_gain_m, lane_risk, interceptor_idx,
-                    carrier_ctx, is_one_touch, &mut self.rng);
+                    carrier_ctx, is_one_touch, experimental, &mut self.rng);
                 let delta = FlightCounterDeltaV4::between(&self.state, &resolved);
                 self.state.next_highlight_sequence_id = resolved.next_highlight_sequence_id;
                 let trajectory = pass.trajectory.ok_or_else(|| V4Error::InvalidClock("missing pass trajectory".into()))?;
@@ -691,7 +977,7 @@ impl MatchSessionV4 {
                     Some(target_idx)
                 } else { None };
                 let pass_contact_motion = contact_idx.map(|idx| PassContactMotion {
-                    candidate: pass_reach_candidate(&self.state, idx, kind.is_aerial()),
+                    candidate: self.contact_candidate(idx,kind.is_aerial()),
                     target: trajectory.position_at_ms(now.saturating_add(pass.elapsed_ms.max(1))).xy(),
                     started_at_ms: now,
                 });
@@ -750,6 +1036,42 @@ impl MatchSessionV4 {
                     self.input.match_environment.pitch_quality,
                     &mut self.rng,
                 );
+                if self.uses_locomotion_experiment(){
+                    let now=self.state.des_clock.sim_time_ms;
+                    let trajectory=crate::v4::ball_play::build_pass_trajectory(
+                        PassKindV4::Long,carrier_pos,clear_pos.xy(),now,flight_ms.max(1));
+                    let arrival=now.saturating_add(flight_ms.max(1));
+                    let boundary=match_physics::find_earliest_ball_interaction(&trajectory,&[],now,arrival);
+                    let at=boundary.as_ref().map_or(arrival,|h|h.time_ms.max(now+1));
+                    let offside_at_launch=self.state.players.iter().enumerate()
+                        .filter(|(i,p)|*i!=carrier_idx && p.on_pitch && !p.sent_off && p.side==att_side
+                            && is_receiver_offside(&self.state,att_side,carrier_pos,p.pos))
+                        .map(|(_,p)|p.player_id.clone()).collect();
+                    self.state.ball.pos=trajectory.start_pos;
+                    self.state.ball.vel=trajectory.initial_vel;
+                    self.state.ball.control=BallControlState::Loose;
+                    self.state.ball.owner_side=None;
+                    self.state.ball.owner_player_id=None;
+                    self.state.ball.last_touch_side=Some(att_side);
+                    self.state.ball.last_touch_player_id=Some(carrier_id.clone());
+                    let flight=PendingFlightSnapshotV4{
+                        trajectory,planned_arrival_ms:arrival,resolves_at_ms:at,
+                        action:FlightActionV4::LooseRecovery{origin_side:att_side,cause:"CLEARANCE_AIRBORNE".into()},
+                        outcome:crate::v4::ball_play::BallPlayOutcome{next_side:att_side,next_carrier_idx:carrier_idx,
+                            stoppage_seconds:0,events:Vec::new()},
+                        ball_after:self.state.ball.clone(),
+                        counter_delta:FlightCounterDeltaV4::between(&self.state,&self.state),
+                        won_corner:false,early_interaction:boundary,pass_contact_motion:None,offside_at_launch,
+                    };
+                    self.scheduler.schedule(at,EventPriority::PhysicsAndBoundary,CancellationScope::LivePlayOnly,
+                        DesEventPayload::EarlyInteractionResolved{interaction_tag:"CLEARANCE_AIRBORNE".into(),actor_id:None})
+                        .map_err(|e|V4Error::InvalidClock(e.into()))?;
+                    self.pending_flight=Some(flight);
+                    self.emit(EventTypeV4::Clearance,HighlightTier::None,None,Some(att_side),Some(carrier_id),None,
+                        EventMetadataV4{pressure:Some(carrier_ctx.pressure.round() as u8),
+                            ..EventMetadataV4::default()});
+                    return Ok((att_side,carrier_idx,false,0));
+                }
                 self.state.ball.pos = clear_pos;
                 let g_sec = self.state.des_clock.game_second();
                 let mut meta = EventMetadataV4 {
@@ -789,7 +1111,7 @@ impl MatchSessionV4 {
 
     fn start_carry_intent(&mut self,idx:usize,intent:CarryIntentV4,is_hold:bool)->Result<(),V4Error>{
         let now=self.state.des_clock.sim_time_ms;
-        let mut candidate=pass_reach_candidate(&self.state,idx,false);
+        let mut candidate=self.contact_candidate(idx,false);
         candidate.speed_mps*=if intent.shielding{0.42}else{0.88};
         candidate.reaction_ms=0;
         let target=carry_target(candidate.pos,candidate.speed_mps,intent);

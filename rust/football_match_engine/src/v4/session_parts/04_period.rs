@@ -10,6 +10,7 @@ impl MatchSessionV4 {
         self.pending_flight = None;
         self.pending_decision = None;
         self.pending_carry = None;
+        self.tactical_intents=None;
         self.state.dead_ball = None;
 
         match period {
@@ -290,7 +291,12 @@ impl MatchSessionV4 {
     /// Executes the post-celebration Kickoff once `DeadBallKind::GoalCelebration` finishes
     /// `ExecutingRestart` (strictly later in `sim_time_ms` than the `Goal` event).
     fn restart_after_goal_kickoff(&mut self, kickoff_side: TeamSideV4) -> usize {
-        self.reset_kickoff_positions(kickoff_side);
+        // At a new period the initial layout is an explicit boundary.
+        // A goal within a period is not: experimental actors have already
+        // approached their legal setup positions during the dead ball.
+        if !self.uses_locomotion_experiment() {
+            self.reset_kickoff_positions(kickoff_side);
+        }
         let kicker = self.kickoff_carrier_index(kickoff_side);
         let kicker_id = self.state.players[kicker].player_id.clone();
         self.state.ball.pos = Vec3::center_spot();

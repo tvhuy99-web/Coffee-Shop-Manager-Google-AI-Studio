@@ -255,7 +255,7 @@ mod pi_defense_commitment_tests {
         let ctx=evaluate_local_context(&s.state,&s.input,side,s.state.players[car].pos);
         let plan=perceive_evaluate_and_decide_des(&s.state,&s.input,&s.input.timing_model,car,ctx,&mut s.rng);
         s.pending_decision=Some(PendingDecisionV4{player_id:id.clone(),side,started_at_ms:now,
-            executes_at_ms:at,plan,release_at_ms:release,challenger:chase,observed_pass_risk:None,final_aim_committed:false});
+            executes_at_ms:at,plan,release_at_ms:release,challenger:chase,observed_pass_risk:None,final_aim_committed:false,preparation_motion:None});
         s.scheduler.schedule(at,EventPriority::ActionDecision,CancellationScope::LivePlayOnly,
             DesEventPayload::ActionExecute{player_id:id.clone(),side}).unwrap();
         let ck=s.export_checkpoint().unwrap();
@@ -643,6 +643,69 @@ mod a4_atomic_api_tests {
     }
 
     #[test]
+    fn b11_checkpoint_rejects_period_and_scheduler_corruption() {
+        let mut s = new_session();
+        s.start_next_period().unwrap();
+        s.advance_steps(20).unwrap();
+        let original = s.export_checkpoint().unwrap();
+        assert!(MatchSessionV4::from_checkpoint(original.clone()).is_ok());
+        for mode in 0..5 {
+            let mut bad = original.clone();
+            match mode {
+                0 => bad.payload.state.des_clock.period_started_at_ms += 1,
+                1 => bad.payload.state.des_clock.period_elapsed_ms += 1,
+                2 => bad.payload.state.des_clock.announced_added_ms = -1,
+                3 => bad.payload.state.des_clock.additional_added_ms = i64::MAX,
+                _ => bad.payload.scheduler.advance_cursor_to(bad.sim_time_ms + 1).unwrap(),
+            }
+            bad.checksum_hex = compute_checkpoint_checksum(&serde_json::to_string(&bad.payload).unwrap());
+            assert!(MatchSessionV4::from_checkpoint(bad).is_err(), "corruption mode {mode}");
+        }
+    }
+
+    #[test]
+    fn b11_rejected_period_commit_preserves_session_and_rng() {
+        let mut s = new_session();
+        s.start_next_period().unwrap();
+        let before = snapshot(&s);
+        let result = s.transact(|candidate| {
+            candidate.state.des_clock.period_elapsed_ms += 1;
+            candidate.rng.next_double();
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(snapshot(&s), before);
+        let result = s.transact(|candidate| {
+            let invalid_cursor = candidate.sim_time_ms() + 1;
+            candidate.scheduler.advance_cursor_to(invalid_cursor)
+                .map_err(|e| V4Error::InvalidClock(e.into()))?;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(snapshot(&s), before);
+    }
+
+    #[test]
+    fn b11_read_only_invariants_detect_invalid_world_without_repair() {
+        use crate::v4::transition::verify_authoritative_invariants;
+        let mut s = new_session();
+        s.start_next_period().unwrap();
+        assert!(verify_authoritative_invariants(&s.state).is_ok());
+        s.state.players[0].fatigue.aerobic = 100.25;
+        s.state.players[0].fatigue.distance_m = -1.0;
+        s.state.ball.control = BallControlState::Loose;
+        assert!(s.state.ball.owner_player_id.is_some());
+        let before = serde_json::to_string(&s.state).unwrap();
+        let errors = verify_authoritative_invariants(&s.state).unwrap_err();
+        assert!(errors.iter().any(|e| e.code == "INV-01"));
+        assert!(errors.iter().any(|e| e.code == "INV-07"));
+        assert_eq!(serde_json::to_string(&s.state).unwrap(), before);
+        s.state.players[0].facing_rad = f32::NAN;
+        let errors = verify_authoritative_invariants(&s.state).unwrap_err();
+        assert!(errors.iter().any(|e| e.code == "INV-02"));
+    }
+
+    #[test]
     fn a4_result_closes_once_and_rejects_post_match_commands(){
         let mut s=new_session();
         let result=s.run_to_full_time().unwrap();
@@ -864,4 +927,1031 @@ mod a4_atomic_api_tests {
         assert!(failure_seen,"scheduler watchdog must fail");
     }
 
+}
+
+
+#[cfg(test)]
+mod locomotion_calibration_tests {
+    use super::*;
+    use crate::v4::input::{RulesModeV4, SimulationMode};
+    use crate::v4::movement::{advance_candidate_live_motion, advance_off_ball_movement_with_report};
+    use crate::v4::tests::{make_v4_input_teams, make_v4_team};
+    use serde_json::{json, Value};
+    use std::time::Instant;
+
+    // Compare the isolated live-motion adapters, not two full-match engines.
+    // Run the unchanged reference session to full time; sample its world once
+    // per seed. The candidate copy never feeds back into that match.
+    fn shadow_pair(index: usize) -> Value {
+        let seed = 104729_i64 + index as i64 * 7907;
+        let (name, hl, al, press) = match index % 4 {
+            0 => ("reference", 14, 12, None),
+            1 => ("balanced", 14, 14, None),
+            2 => ("strong_away", 12, 14, None),
+            _ => ("high_press", 14, 12, Some(85)),
+        };
+        let mut home = make_v4_team("H", "HOME_V4", hl);
+        let mut away = make_v4_team("A", "AWAY_V4", al);
+        if let Some(press) = press {
+            home.team_instructions.pressing_intensity = press;
+            away.team_instructions.pressing_intensity = press;
+        }
+        let input = make_v4_input_teams(seed, SimulationMode::FastBatch, RulesModeV4::Standard, home, away);
+        let mut session = MatchSessionV4::new(input).unwrap();
+        let requested_ms = ((index / 4) % 6) as i64 * 900_000;
+        let interval_ms = [250_i64, 500, 1000, 2000][(index / 24) % 4];
+        let began = Instant::now();
+        // Only choose a live controlled snapshot. No real pending contact
+        // path is supplied: this report measures tactical locomotion alone.
+        let mut steps = 0;
+        loop {
+            if session.sim_time_ms() >= requested_ms
+                && matches!(session.stage, HalfStageV4::InHalf { .. })
+                && session.state.dead_ball.is_none()
+                && session.state.ball.control == BallControlState::Controlled
+            {
+                break;
+            }
+            assert!(!session.is_full_time(), "no live sample for seed {seed}");
+            assert!(steps < 100_000, "snapshot watchdog for seed {seed}");
+            session.step_one_des_event(true).unwrap();
+            session.completed_beats += 1;
+            steps += 1;
+        }
+        let before = session.state.clone();
+        let now = session.sim_time_ms();
+        let original_rng = session.rng.state();
+        let mut legacy = before.clone();
+        let mut candidate = before.clone();
+        let mut legacy_rng = session.rng.clone();
+        let mut candidate_rng = session.rng.clone();
+        let dt = match_contracts::units::ms_to_seconds_f32(interval_ms);
+        let start = Instant::now();
+        advance_off_ball_movement_with_report(&mut legacy, &session.input, session.possession_side,
+            session.carrier_idx, dt, &mut legacy_rng);
+        let legacy_us = start.elapsed().as_secs_f64() * 1e6;
+        let start = Instant::now();
+        let attempt = advance_candidate_live_motion(&mut candidate, &session.input, session.possession_side,
+            session.carrier_idx, interval_ms, &mut candidate_rng, &[]);
+        let candidate_us = start.elapsed().as_secs_f64() * 1e6;
+        let mut players = Vec::new();
+        let mut failure = None;
+        match attempt {
+            Ok((rows, _)) => {
+                assert_eq!(legacy_rng.state(), candidate_rng.state(), "RNG mismatch seed {seed}");
+                assert_eq!(rows.len(), before.players.iter().filter(|p| p.on_pitch && !p.sent_off).count());
+                for row in rows {
+                    let p = &before.players[row.player_idx];
+                    let a = &legacy.players[row.player_idx];
+                    let b = &candidate.players[row.player_idx];
+                    assert_eq!(a.target_pos, b.target_pos, "target mismatch seed {seed}");
+                    let speed = |v: Vec2| v.x.hypot(v.y);
+                    players.push(json!({
+                        "id": p.player_id, "side": p.side, "slot": p.slot_id, "goalkeeper": p.is_goalkeeper,
+                        "initial_speed_mps": speed(p.vel), "aerobic": p.fatigue.aerobic,
+                        "anaerobic": p.fatigue.anaerobic, "legacy_distance_m": a.last_moved_m,
+                        "candidate_distance_m": row.distance_m(), "legacy_terminal_speed_proxy_mps": speed(a.vel),
+                        "candidate_terminal_speed_mps": speed(b.vel), "acceleration_load_mps": row.acceleration_load_mps(),
+                        "candidate_aerobic_delta": b.fatigue.aerobic-p.fatigue.aerobic,
+                        "candidate_anaerobic_delta": b.fatigue.anaerobic-p.fatigue.anaerobic,
+                        "candidate_outside_pitch": b.pos.x<0.0 || b.pos.x>PITCH_LENGTH_M
+                            || b.pos.y<0.0 || b.pos.y>match_contracts::spatial::PITCH_WIDTH_M
+                    }));
+                }
+            }
+            Err(err) => failure = Some(format!("{err:?}")),
+        }
+        // Observational harness must not mutate the baseline session.
+        assert_eq!(session.rng.state(), original_rng);
+        assert_eq!(session.sim_time_ms(), now);
+        assert_eq!(session.state, before);
+        let result = session.run_to_full_time().unwrap();
+        let baseline_players: Vec<_> = session.state.players.iter().map(|p| json!({
+            "id": p.player_id, "side": p.side, "slot": p.slot_id, "goalkeeper": p.is_goalkeeper,
+            "distance_m": p.fatigue.distance_m, "legacy_sprint_counter": p.fatigue.sprint_count,
+            "aerobic": p.fatigue.aerobic, "anaerobic": p.fatigue.anaerobic,
+        })).collect();
+        json!({
+            "seed": seed, "cohort": name, "requested_ms": requested_ms, "sample_ms": now,
+            "interval_ms": interval_ms, "legacy_adapter_us": legacy_us, "candidate_adapter_us": candidate_us,
+            "baseline_session_wall_ms_including_probe": began.elapsed().as_secs_f64()*1e3,
+            "baseline_timeline_fingerprint": result.event_timeline_fingerprint,
+            "failure": failure, "players": players, "baseline_players": baseline_players
+        })
+    }
+
+    #[test]
+    fn b12_shadow_report_smoke() {
+        let row = shadow_pair(0);
+        assert!(row["failure"].is_null());
+        assert_eq!(row["players"].as_array().unwrap().len(), 22);
+        assert_eq!(row["baseline_players"].as_array().unwrap().len(), 22);
+    }
+
+    #[test]
+    #[ignore = "release-mode paired interval evidence; run explicitly in L1"]
+    fn b12_shadow_locomotion_report() {
+        let n = std::env::var("B12_SHADOW_SEEDS").ok().map(|s| s.parse::<usize>().unwrap()).unwrap_or(1000);
+        assert!((1..=10_000).contains(&n));
+        let rows: Vec<_> = (0..n).map(shadow_pair).collect();
+        let failures = rows.iter().filter(|r| !r["failure"].is_null()).count();
+        let report = json!({
+            "schema": 1, "scope": "reference_full_matches_plus_paired_live_intervals",
+            "candidate_full_matches": 0, "paired_intervals": n, "reference_full_matches": n,
+            "failures": failures, "rows": rows
+        });
+        if let Ok(path) = std::env::var("B12_SHADOW_REPORT_PATH") {
+            std::fs::write(path, serde_json::to_vec(&report).unwrap()).unwrap();
+        }
+        println!("B12_SHADOW_SUMMARY seeds={n} failures={failures} candidate_full_matches=0");
+        assert_eq!(failures, 0, "inspect report for candidate failures");
+    }
+}
+
+
+#[cfg(test)]
+mod locomotion_full_match_experiment {
+    use super::*;
+    use crate::v4::checkpoint::LOCOMOTION_EXPERIMENT_ID;
+    use crate::v4::input::{SimulationMode, RulesModeV4};
+    use crate::v4::tests::{make_v4_input, make_v4_input_teams, make_v4_team};
+    use serde_json::{json, Value};
+    use std::time::Instant;
+
+    #[test]
+    fn b12_experiment_checkpoint_identity_and_resume() {
+        let input = make_v4_input(12051, SimulationMode::FastBatch, RulesModeV4::Standard);
+        let legacy = MatchSessionV4::new(input.clone()).unwrap().export_checkpoint().unwrap();
+        assert!(legacy.payload.locomotion_experiment_id.is_none());
+        assert!(!serde_json::to_string(&legacy).unwrap().contains("locomotionExperimentId"));
+        let mut candidate = MatchSessionV4::new_locomotion_experiment(input).unwrap();
+        candidate.advance_steps(25).unwrap();
+        let checkpoint = candidate.export_checkpoint().unwrap();
+        assert_eq!(checkpoint.engine_version, LOCOMOTION_EXPERIMENT_ID);
+        assert_eq!(checkpoint.payload.locomotion_experiment_id.as_deref(), Some(LOCOMOTION_EXPERIMENT_ID));
+        let mut invalid = checkpoint.clone();
+        invalid.payload.locomotion_experiment_id = None;
+        invalid.checksum_hex = compute_checkpoint_checksum(&serde_json::to_string(&invalid.payload).unwrap());
+        assert!(MatchSessionV4::from_checkpoint(invalid).is_err());
+        let mut invalid = checkpoint.clone();
+        invalid.payload.locomotion_experiment_id = Some("unknown".into());
+        invalid.checksum_hex = compute_checkpoint_checksum(&serde_json::to_string(&invalid.payload).unwrap());
+        assert!(MatchSessionV4::from_checkpoint(invalid).is_err());
+        let encoded = serde_json::to_string(&checkpoint).unwrap();
+        let mut resumed = MatchSessionV4::from_checkpoint(serde_json::from_str(&encoded).unwrap()).unwrap();
+        assert!(resumed.uses_locomotion_experiment());
+        candidate.advance_steps(25).unwrap();
+        resumed.advance_steps(25).unwrap();
+        assert_eq!(candidate.export_checkpoint().unwrap().checksum_hex, resumed.export_checkpoint().unwrap().checksum_hex);
+    }
+
+    #[test]
+    fn b12_batch2_controlled_settle_follows_actual_owner() {
+        let input=make_v4_input(12056,SimulationMode::FastBatch,RulesModeV4::Standard);
+        let mut s=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+        s.step_one_des_event(true).unwrap();
+        s.scheduler.invalidate_live_play();
+        let side=s.possession_side;
+        let idx=s.kickoff_carrier_index(side);
+        let start=Vec2::new(50.0,34.0);
+        s.state.players[idx].pos=start;
+        s.state.players[idx].vel=Vec2::new(2.0,0.0);
+        s.state.ball.pos=Vec3::new(50.25,34.0,0.2);
+        s.finish_pass_recovery(side,idx,&[],"SET_PIECE_RECOVERY").unwrap();
+        let ball=s.state.ball.pos;
+        let now=s.sim_time_ms();
+        s.schedule_test_clock_probe(now+100).unwrap();
+        s.step_one_des_event(true).unwrap();
+        assert_eq!(s.sim_time_ms(),now+100);
+        let p=&s.state.players[idx];
+        assert_eq!(s.state.ball.owner_player_id.as_deref(),Some(p.player_id.as_str()));
+        assert!(p.pos.distance(start)>0.01);
+        assert_eq!(s.state.ball.pos,Vec3::new(ball.x+(p.pos.x-start.x),ball.y+(p.pos.y-start.y),ball.z));
+        assert_eq!(s.state.ball.vel,Vec3::new(p.vel.x,p.vel.y,0.0));
+    }
+
+    #[test]
+    fn b12_batch2_specialist_shots_commit_only_at_resolution() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            for kind in [DeadBallKind::PenaltyKick,DeadBallKind::DirectFreeKick] {
+                let input=make_v4_input(12055,SimulationMode::FastBatch,RulesModeV4::Standard);
+                let mut s=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+                s.step_one_des_event(true).unwrap();
+                let spot=if kind==DeadBallKind::PenaltyKick{
+                    let p=crate::v4::spatial::penalty_spot(side);Vec3::ground(p.x,p.y)
+                }else{Vec3::ground(if side==TeamSideV4::Home{84.0}else{21.0},34.0)};
+                let shots=s.state.team_state(side).shots;
+                s.open_dead_ball(kind,side,spot,false,false).unwrap();
+                for _ in 0..60{
+                    s.step_one_des_event(true).unwrap();
+                    if s.state.dead_ball.is_none(){break;}
+                }
+                assert!(s.state.dead_ball.is_none());
+                let f=s.pending_flight.as_ref().expect("scheduled specialist shot");
+                assert!(matches!(f.action,FlightActionV4::Shot{..}));
+                assert_eq!(f.trajectory.start_pos.xy(),spot.xy());
+                assert_eq!(s.state.team_state(side).shots,shots);
+                assert_eq!(s.state.ball.control,BallControlState::InFlight);
+                assert!(s.state.ball.owner_player_id.is_none());
+                assert!(s.state.players[s.carrier_idx].pos.distance(spot.xy())<=0.75);
+                let at=f.resolves_at_ms;
+                let ck=s.export_checkpoint().unwrap();
+                let mut restored=MatchSessionV4::from_checkpoint(ck).unwrap();
+                for current in [&mut s,&mut restored] {
+                    for _ in 0..100{
+                        if current.sim_time_ms()>=at{break;}
+                        current.step_one_des_event(true).unwrap();
+                    }
+                    assert_eq!(current.sim_time_ms(),at);
+                    assert_eq!(current.state.team_state(side).shots,shots+1);
+                }
+                assert_eq!(s.export_checkpoint().unwrap().checksum_hex,restored.export_checkpoint().unwrap().checksum_hex);
+            }
+        }
+    }
+
+    #[test]
+    fn b12_batch2_specialist_delivery_has_no_player_teleport() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            for kind in [DeadBallKind::Corner,DeadBallKind::IndirectFreeKick] {
+                let input=make_v4_input(12054,SimulationMode::FastBatch,RulesModeV4::Standard);
+                let mut s=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+                s.step_one_des_event(true).unwrap();
+                let spot=if kind==DeadBallKind::Corner{
+                    Vec3::ground(if side==TeamSideV4::Home{105.0}else{0.0},0.5)
+                }else{Vec3::ground(if side==TeamSideV4::Home{70.0}else{35.0},24.0)};
+                s.open_dead_ball(kind,side,spot,false,false).unwrap();
+                for _ in 0..40 {
+                    s.step_one_des_event(true).unwrap();
+                    if s.state.dead_ball.is_none(){break;}
+                }
+                assert!(s.state.dead_ball.is_none());
+                let f=s.pending_flight.as_ref().expect("timed specialist delivery");
+                let launch=f.trajectory.start_time_ms;
+                assert_eq!(launch,s.sim_time_ms());
+                assert_eq!(f.trajectory.start_pos.xy(),spot.xy());
+                assert!(f.resolves_at_ms>launch);
+                assert_eq!(s.state.ball.control,BallControlState::Loose);
+                assert!(s.state.ball.owner_player_id.is_none());
+                let taker=s.carrier_idx;
+                assert!(s.state.players[taker].pos.distance(spot.xy())<=0.75);
+                if kind==DeadBallKind::Corner {assert!(f.offside_at_launch.is_empty());}
+                if let Some(path)=&f.pass_contact_motion {
+                    assert_ne!(path.candidate.player_id,s.state.players[taker].player_id);
+                    let sample=path.experimental_plan().unwrap().unwrap().sample_at(f.resolves_at_ms-launch).unwrap();
+                    assert!(sample.state.position.distance(path.target)<=path.candidate.reach_m+1e-5);
+                }
+                let at=f.resolves_at_ms;
+                let ck=s.export_checkpoint().unwrap();
+                let mut restored=MatchSessionV4::from_checkpoint(ck).unwrap();
+                for current in [&mut s,&mut restored] {
+                    for _ in 0..100 {
+                        if current.sim_time_ms()>=at{break;}
+                        current.step_one_des_event(true).unwrap();
+                    }
+                    assert_eq!(current.sim_time_ms(),at);
+                }
+                assert_eq!(s.export_checkpoint().unwrap().checksum_hex,restored.export_checkpoint().unwrap().checksum_hex);
+            }
+        }
+    }
+
+    #[test]
+    fn b12_batch2_clearance_is_timed_then_contested_and_restorable() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            let input=make_v4_input(12053,SimulationMode::FastBatch,RulesModeV4::Standard);
+            let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+            session.step_one_des_event(true).unwrap();
+            session.scheduler.invalidate_live_play();
+            let idx=session.kickoff_carrier_index(side);
+            let pos=Vec2::new(if side==TeamSideV4::Home{40.0}else{65.0},34.0);
+            session.state.players[idx].pos=pos;
+            session.state.players[idx].vel=Vec2::default();
+            session.carrier_idx=idx;
+            session.possession_side=side;
+            session.state.ball.pos=Vec3::ground(pos.x,pos.y);
+            session.state.ball.control=BallControlState::Controlled;
+            session.state.ball.owner_side=Some(side);
+            session.state.ball.owner_player_id=Some(session.state.players[idx].player_id.clone());
+            let launch=session.sim_time_ms();
+            let before:Vec<_>=session.state.players.iter().map(|p|(p.pos,p.vel)).collect();
+            let result=session.step_live_action_des(idx,DecisionPlanV4{
+                action:PlannedActionV4::Clearance,decision_delay_ms:1,is_one_touch:false,carry:None,
+            }).unwrap();
+            assert_eq!(result,(side,idx,false,0));
+            assert_eq!(session.state.ball.pos.xy(),pos);
+            assert_eq!(session.state.ball.control,BallControlState::Loose);
+            assert!(session.state.ball.owner_player_id.is_none() && session.state.ball.owner_side.is_none());
+            assert_eq!(before,session.state.players.iter().map(|p|(p.pos,p.vel)).collect::<Vec<_>>());
+            let f=session.pending_flight.as_ref().unwrap();
+            assert!(matches!(&f.action,FlightActionV4::LooseRecovery{cause,..} if cause=="CLEARANCE_AIRBORNE"));
+            assert!(f.resolves_at_ms>launch && f.early_interaction.is_none());
+            let at=f.resolves_at_ms;
+            let landing=f.trajectory.position_at_ms(at).clamp_to_pitch();
+            let ck=session.export_checkpoint().unwrap();
+            let mut restored=MatchSessionV4::from_checkpoint(ck).unwrap();
+            for s in [&mut session,&mut restored] {
+                for _ in 0..100 {
+                    if s.sim_time_ms()>=at {break;}
+                    s.step_one_des_event(true).unwrap();
+                }
+                assert_eq!(s.sim_time_ms(),at);
+                assert_eq!(s.state.ball.pos,landing);
+                assert_eq!(s.state.ball.control,BallControlState::Loose);
+                let recovery=s.pending_flight.as_ref().expect("separate recovery");
+                assert!(matches!(&recovery.action,FlightActionV4::LooseRecovery{cause,..} if cause=="CLEARANCE_RECOVERY"));
+                assert_eq!(recovery.trajectory.start_time_ms,at);
+                assert_eq!(recovery.trajectory.start_pos,landing);
+                assert!(recovery.resolves_at_ms>at);
+                assert!(recovery.early_interaction.is_some() || recovery.pass_contact_motion.is_some());
+                let end=recovery.resolves_at_ms;
+                for _ in 0..100 {
+                    if s.sim_time_ms()>=end {break;}
+                    s.step_one_des_event(true).unwrap();
+                }
+                assert_eq!(s.sim_time_ms(),end);
+                assert!(s.pending_flight.is_none());
+                assert!(matches!(s.state.ball.control,BallControlState::Controlled|BallControlState::DeadBall));
+            }
+            assert_eq!(session.export_checkpoint().unwrap().checksum_hex,restored.export_checkpoint().unwrap().checksum_hex);
+        }
+    }
+
+    #[test]
+    fn b12_batch2_restart_waits_for_actual_taker_and_no_post_goal_reset() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            let input=make_v4_input(12051,SimulationMode::FastBatch,RulesModeV4::Standard);
+            let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+            session.step_one_des_event(true).unwrap();
+            let taker=session.kickoff_carrier_index(side);
+            let center=Vec3::center_spot();
+            session.state.players[taker].pos=Vec2::new(if side==TeamSideV4::Home{30.0}else{75.0},34.0);
+            session.state.players[taker].vel=Vec2::default();
+            let opponent=session.state.players.iter().position(|p|p.side==side.opposite()&&!p.is_goalkeeper&&p.on_pitch).unwrap();
+            session.state.players[opponent].pos=Vec2::new(if side==TeamSideV4::Home{51.0}else{54.0},34.0);
+            session.state.players[opponent].vel=Vec2::default();
+            session.open_dead_ball(DeadBallKind::Kickoff,side,center,false,false).unwrap();
+            let db=session.state.dead_ball.clone().unwrap();
+            assert!(!session.experimental_restart_ready(&db).unwrap());
+            // Real DES integrates every approach; the final kickoff does
+            // not overwrite the positions or erase measured momentum.
+            let mut before_restart=None;
+            for _ in 0..30 {
+                let before=session.state.players[taker].pos;
+                let clock=session.sim_time_ms();
+                let db=session.state.dead_ball.clone().unwrap();
+                session.step_one_des_event(true).unwrap();
+                assert!(session.state.players[taker].pos.distance(before)
+                    <= 10.0*(session.sim_time_ms()-clock) as f32/1000.0+0.01);
+                if session.state.dead_ball.is_none(){
+                    assert_eq!(session.carrier_idx,taker);
+                    assert!(session.experimental_restart_ready(&db).unwrap());
+                    let positions:Vec<_>=session.state.players.iter().map(|p|(p.pos,p.vel)).collect();
+                    // Calling the kickoff publisher again must not reset
+                    // player positions (test-only observation of the helper).
+                    session.restart_after_goal_kickoff(side);
+                    assert_eq!(positions,session.state.players.iter().map(|p|(p.pos,p.vel)).collect::<Vec<_>>());
+                    before_restart=Some(before);
+                    break;
+                }
+            }
+            assert!(before_restart.is_some(),"kickoff did not complete");
+            assert!(session.state.players[taker].pos.distance(center.xy())<=0.75);
+        }
+    }
+
+    #[test]
+    fn b12_batch2_ordinary_restart_does_not_assign_remote_taker() {
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            let input=make_v4_input(12052,SimulationMode::FastBatch,RulesModeV4::Standard);
+            let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+            session.step_one_des_event(true).unwrap();
+            let spot=Vec3::ground(52.0,0.0);
+            for p in &mut session.state.players {
+                if p.side==side && !p.is_goalkeeper {p.pos=Vec2::new(52.0,20.0);p.vel=Vec2::default();}
+            }
+            session.open_dead_ball(DeadBallKind::ThrowIn,side,spot,false,false).unwrap();
+            assert!(!session.experimental_restart_ready(session.state.dead_ball.as_ref().unwrap()).unwrap());
+            for _ in 0..30 {
+                session.step_one_des_event(true).unwrap();
+                if session.state.dead_ball.is_none(){break;}
+            }
+            assert!(session.state.dead_ball.is_none());
+            let p=&session.state.players[session.carrier_idx];
+            assert_eq!(p.side,side);
+            assert!(p.pos.distance(spot.xy())<=0.75);
+            assert_eq!(session.state.ball.owner_player_id.as_deref(),Some(p.player_id.as_str()));
+        }
+    }
+
+    #[test]
+    fn b12_batch1_intents_survive_clock_probe_and_checkpoint() {
+        let input=make_v4_input(12051,SimulationMode::FastBatch,RulesModeV4::Standard);
+        let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+        session.step_one_des_event(true).unwrap();
+        session.scheduler.invalidate_live_play();
+        // Establish the ordinary settled possession phase; the first
+        // phase transition after kickoff would legitimately invalidate.
+        let side=session.possession_side;
+        session.state.team_state_mut(side).phase=crate::v4::state::TacticalPhaseV4::InPossession;
+        session.state.team_state_mut(side.opposite()).phase=crate::v4::state::TacticalPhaseV4::OutOfPossession;
+        session.state.transition_remaining_ms=0;
+        session.begin_player_decision(false).unwrap();
+        let now=session.sim_time_ms();
+        let end=session.pending_decision.as_ref().unwrap().executes_at_ms;
+        assert!(end>now+2);
+        session.schedule_test_clock_probe(now+1).unwrap();
+        session.step_one_des_event(true).unwrap();
+        let ck=session.export_checkpoint().unwrap();
+        let batch=ck.payload.tactical_intents.as_ref().expect("intent epoch survives passive probe");
+        let before=serde_json::to_string(batch).unwrap();
+        let mut restored=MatchSessionV4::from_checkpoint(ck.clone()).unwrap();
+        assert_eq!(serde_json::to_string(restored.tactical_intents.as_ref().unwrap()).unwrap(),before);
+        for s in [&mut session,&mut restored]{
+            s.schedule_test_clock_probe(now+2).unwrap();
+            s.step_one_des_event(true).unwrap();
+            assert_eq!(serde_json::to_string(s.tactical_intents.as_ref().unwrap()).unwrap(),before);
+        }
+        assert_eq!(session.export_checkpoint().unwrap().checksum_hex,restored.export_checkpoint().unwrap().checksum_hex);
+        let side=session.possession_side;
+        let spot=session.state.ball.pos;
+        session.open_dead_ball(DeadBallKind::InjuryStoppage,side,spot,true,false).unwrap();
+        assert!(session.tactical_intents.is_none());
+        assert!(session.pending_decision.is_none());
+        let legacy=MatchSessionV4::new(session.input.clone()).unwrap().export_checkpoint().unwrap();
+        assert!(legacy.payload.tactical_intents.is_none());
+        assert!(!serde_json::to_string(&legacy).unwrap().contains("tacticalIntents"));
+    }
+
+    #[test]
+    fn b12_batch1_motion_lifetime_rejects_corrupt_reservations_and_cancels_on_stoppage() {
+        let input=make_v4_input(12051,SimulationMode::FastBatch,RulesModeV4::Standard);
+        let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+        session.step_one_des_event(true).unwrap();
+        session.begin_player_decision(false).unwrap();
+        let valid=session.export_checkpoint().unwrap();
+        assert!(valid.payload.pending_decision.is_some());
+        let corruptions:Vec<Box<dyn Fn(&mut MatchCheckpointV4)>>=vec![
+            Box::new(|c|{let d=c.payload.pending_decision.as_mut().unwrap();
+                d.preparation_motion=None;}),
+            Box::new(|c|{let d=c.payload.pending_decision.as_mut().unwrap();
+                d.challenger=d.preparation_motion.clone();}),
+            Box::new(|c|{let d=c.payload.pending_decision.as_mut().unwrap();
+                d.executes_at_ms=d.release_at_ms+1;}),
+            Box::new(|c|{let d=c.payload.pending_decision.as_mut().unwrap();
+                d.preparation_motion.as_mut().unwrap().started_at_ms+=1;}),
+            Box::new(|c|{let id=c.payload.pending_decision.as_ref().unwrap().player_id.clone();
+                c.payload.state.players.iter_mut().find(|p|p.player_id==id).unwrap().on_pitch=false;}),
+        ];
+        for corrupt in corruptions {
+            let mut c=valid.clone();
+            corrupt(&mut c);
+            c.checksum_hex=compute_checkpoint_checksum(&serde_json::to_string(&c.payload).unwrap());
+            assert!(MatchSessionV4::from_checkpoint(c).is_err());
+        }
+        let side=session.possession_side;
+        let spot=session.state.ball.pos;
+        session.open_dead_ball(DeadBallKind::InjuryStoppage,side,spot,true,false).unwrap();
+        assert!(session.pending_decision.is_none() && session.pending_flight.is_none() && session.pending_carry.is_none());
+        let checkpoint=session.export_checkpoint().unwrap();
+        assert!(MatchSessionV4::from_checkpoint(checkpoint).is_ok());
+    }
+
+    #[test]
+    fn b12_exp5_contact_outcome_is_atomic_in_both_directions() {
+        use crate::v4::shooting::{resolve_shot_v4_des_with_motion,ShotContactResolution};
+        use crate::rng::DeterministicRng;
+        let input=make_v4_input(12056,SimulationMode::FastBatch,RulesModeV4::Standard);
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            for kind in [ShotKindV4::Driven,ShotKindV4::Header] {
+                let mut initial=MatchStateV4::from_input(&input);
+                let shooter=initial.players.iter().position(|p|p.side==side && p.on_pitch && !p.is_goalkeeper).unwrap();
+                let defender=initial.players.iter().position(|p|p.side!=side && p.on_pitch && !p.is_goalkeeper).unwrap();
+                let mirror=|x:f32|if side==TeamSideV4::Home {x} else {105.0-x};
+                for p in &mut initial.players {
+                    p.pos=Vec2::new(mirror(60.0),8.0);
+                    p.vel=Vec2::default();
+                }
+                initial.players[shooter].pos=Vec2::new(mirror(86.0),34.0);
+                // At the start of either a header or driven shot a nearby
+                // high-reach defender has a real playable opportunity.
+                initial.players[defender].pos=Vec2::new(mirror(86.6),34.0);
+                let profile=initial.players[defender].profile_idx;
+                initial.player_profiles[profile].attrs.physical.jumping_reach=20;
+                let candidates=vec![crate::v4::ball_play::pass_reach_candidate_for_motion(&initial,defender,true,true)];
+                let mut accepted=0;
+                let mut declined=0;
+                for seed in 0..64 {
+                    let mut state=initial.clone();
+                    let mut rng=DeterministicRng::new(seed);
+                    let shot=resolve_shot_v4_des_with_motion(&mut state,&input,&input.timing_model,
+                        shooter,None,Some(kind),false,true,&mut rng);
+                    let had_block=shot.outcome.events.iter().any(|e|e.kind==EventTypeV4::Block);
+                    let launch=shot.trajectory.start_time_ms;
+                    let available=match_physics::find_locomotion_shot_block(&shot.trajectory,&candidates,
+                        launch,launch+shot.planned_flight_ms);
+                    match shot.early_interaction {
+                        ShotContactResolution::CommittedBlock(witness)=>{
+                            accepted+=1;
+                            assert!(had_block);
+                            assert!(available.is_some());
+                            assert_eq!(witness.hit.defender_id.as_deref(),Some(initial.players[defender].player_id.as_str()));
+                            assert_eq!(witness.motion.candidate,candidates[0]);
+                            assert_eq!(witness.hit.time_ms,launch+shot.flight_ms);
+                            let sample=witness.motion.experimental_plan().unwrap().unwrap()
+                                .sample_at(shot.flight_ms).unwrap();
+                            assert!(sample.state.position.distance(witness.hit.ball_pos.xy())<=witness.motion.candidate.reach_m+1e-5);
+                        }
+                        ShotContactResolution::None=>{
+                            assert!(!had_block);
+                            if available.is_some() {declined+=1;}
+                        }
+                        ShotContactResolution::CommittedSave(witness)=>{
+                            assert!(!had_block);
+                            assert!(shot.outcome.events.iter().any(|e|e.kind==EventTypeV4::Save));
+                            assert_eq!(witness.time_ms,launch+shot.flight_ms);
+                            let sample=witness.motion.experimental_plan().unwrap().unwrap().sample_at(shot.flight_ms).unwrap();
+                            assert!(sample.state.position.distance(witness.ball_pos.xy())<=witness.motion.candidate.reach_m+1e-5);
+                            if available.is_some() {declined+=1;}
+                        }
+                        ShotContactResolution::LegacyHit(_)=>panic!("legacy contact leaked into experiment"),
+                    }
+                }
+                assert!(accepted>0,"no accepted contact for {side:?} {kind:?}");
+                assert!(declined>0,"no declined opportunity for {side:?} {kind:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn b12_exp6_keeper_reach_and_held_save_are_separate_actions() {
+        use crate::v4::shooting::{resolve_shot_v4_des_with_motion,ShotContactResolution};
+        use crate::rng::DeterministicRng;
+        let input=make_v4_input(12061,SimulationMode::FastBatch,RulesModeV4::Standard);
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            let mut initial=MatchStateV4::from_input(&input);
+            let shooter=initial.players.iter().position(|p|p.side==side && p.on_pitch && !p.is_goalkeeper).unwrap();
+            let keeper=initial.players.iter().position(|p|p.side!=side && p.on_pitch && p.is_goalkeeper).unwrap();
+            let mirror=|x:f32|if side==TeamSideV4::Home {x}else{105.0-x};
+            for p in &mut initial.players {
+                p.pos=Vec2::new(mirror(50.0),5.0);
+                p.vel=Vec2::default();
+            }
+            initial.players[shooter].pos=Vec2::new(mirror(85.0),34.0);
+            initial.players[keeper].pos=Vec2::new(mirror(102.0),34.0);
+            let profile=initial.players[keeper].profile_idx;
+            initial.player_profiles[profile].attrs.goalkeeping.aerial_reach=20;
+            initial.player_profiles[profile].attrs.goalkeeping.reflexes=20;
+            let mut held=0;
+            for seed in 0..96 {
+                let mut near=initial.clone();
+                let mut far=initial.clone();
+                far.players[keeper].pos.y=4.0;
+                let mut a=DeterministicRng::new(seed);
+                let mut b=a.clone();
+                let close=resolve_shot_v4_des_with_motion(&mut near,&input,&input.timing_model,
+                    shooter,None,Some(ShotKindV4::Driven),false,true,&mut a);
+                let distant=resolve_shot_v4_des_with_motion(&mut far,&input,&input.timing_model,
+                    shooter,None,Some(ShotKindV4::Driven),false,true,&mut b);
+                assert!(!distant.outcome.events.iter().any(|ev|ev.kind==EventTypeV4::Save));
+                if let ShotContactResolution::CommittedSave(contact)=close.early_interaction {
+                    assert_eq!(contact.motion.candidate.player_id,initial.players[keeper].player_id);
+                    assert_eq!(contact.ball_pos,close.trajectory.position_at_ms(contact.time_ms));
+                    assert_eq!(contact.time_ms,close.trajectory.start_time_ms+close.flight_ms);
+                    if near.ball.control==BallControlState::Controlled {
+                        held+=1;
+                        assert_eq!(near.ball.owner_player_id.as_deref(),Some(initial.players[keeper].player_id.as_str()));
+                        assert_eq!(close.outcome.next_carrier_idx,keeper);
+                        assert!(!close.outcome.events.iter().any(|ev|ev.kind==EventTypeV4::GoalkeeperDistribution));
+                        assert_eq!(near.ball.pos,contact.ball_pos);
+                    }
+                }
+            }
+            assert!(held>0,"no held save in deterministic reachable fixture {side:?}");
+        }
+    }
+
+    #[test]
+    fn b12_exp5_parry_ends_one_flight_then_schedules_recovery() {
+        // Explicit reachable shot fixture, not a dependency on the event
+        // distribution of an older behavior ID. The real scheduler, RNG,
+        // shot resolver and recovery run unchanged. The historical failing
+        // seed 326125 remains in b12_exp5_previous_failure_regressions.
+        for side in [TeamSideV4::Home, TeamSideV4::Away] {
+            let mut exercised = false;
+            for seed in 12061_i64..12157 {
+                let input = make_v4_input(seed, SimulationMode::FastBatch, RulesModeV4::Standard);
+                let mut session = MatchSessionV4::new_locomotion_experiment(input).unwrap();
+                session.step_one_des_event(true).unwrap();
+                session.scheduler.invalidate_live_play();
+                let shooter_idx = session.state.players.iter().position(|p|
+                    p.side == side && p.on_pitch && !p.is_goalkeeper).unwrap();
+                let keeper_idx = session.state.players.iter().position(|p|
+                    p.side != side && p.on_pitch && p.is_goalkeeper).unwrap();
+                let mirror = |x: f32| if side == TeamSideV4::Home { x } else { PITCH_LENGTH_M-x };
+                for p in &mut session.state.players {
+                    p.pos = Vec2::new(mirror(50.0), 5.0);
+                    p.target_pos = p.pos;
+                    p.vel = Vec2::default();
+                }
+                session.state.players[shooter_idx].pos = Vec2::new(mirror(85.0), 34.0);
+                session.state.players[shooter_idx].target_pos = session.state.players[shooter_idx].pos;
+                session.state.players[keeper_idx].pos = Vec2::new(mirror(102.0), 34.0);
+                session.state.players[keeper_idx].target_pos = session.state.players[keeper_idx].pos;
+                session.carrier_idx = shooter_idx;
+                session.possession_side = side;
+                session.state.ball.pos = Vec3::ground(mirror(85.0), 34.0);
+                session.state.ball.vel = Vec3::default();
+                session.state.ball.control = BallControlState::Controlled;
+                session.state.ball.owner_side = Some(side);
+                session.state.ball.owner_player_id = Some(session.state.players[shooter_idx].player_id.clone());
+                session.schedule_shot_flight(shooter_idx, None, Some(ShotKindV4::Driven)).unwrap();
+                let flight = session.pending_flight.as_ref().expect("scheduled test shot");
+                if flight.ball_after.control != BallControlState::Loose { continue; }
+                assert!(matches!(flight.action, FlightActionV4::Shot { shooter_idx: i } if i == shooter_idx));
+                let at=flight.resolves_at_ms;
+                let launch=flight.trajectory.start_time_ms;
+                let offside=flight.offside_at_launch.clone();
+                assert!(at<=flight.planned_arrival_ms && at>launch);
+                assert!(flight.early_interaction.is_none());
+                let save_path=flight.pass_contact_motion.clone().expect("reserved saving keeper");
+                let terminal=save_path.experimental_plan().unwrap().unwrap().sample_at(at-launch).unwrap().state;
+                assert!(terminal.position.distance(save_path.target)<=save_path.candidate.reach_m+1e-5);
+                assert!(flight.ball_after.owner_player_id.is_none());
+                assert!(flight.ball_after.owner_side.is_none());
+                assert_eq!(flight.ball_after.last_touch_side,Some(side.opposite()));
+                assert_eq!(flight.outcome.events.iter().filter(|e|e.kind==EventTypeV4::ShotOnTarget).count(),1);
+                assert_eq!(flight.outcome.events.iter().filter(|e|e.kind==EventTypeV4::Rebound).count(),1);
+                assert!(!flight.outcome.events.iter().any(|e|e.kind==EventTypeV4::Block));
+                let ck=session.export_checkpoint().unwrap();
+                let mut restored=MatchSessionV4::from_checkpoint(
+                    serde_json::from_str(&serde_json::to_string(&ck).unwrap()).unwrap()).unwrap();
+                for current in [&mut session,&mut restored] {
+                    for _ in 0..100 {
+                        if current.sim_time_ms()>=at {break;}
+                        current.step_one_des_event(true).unwrap();
+                        current.completed_beats+=1;
+                    }
+                    assert_eq!(current.sim_time_ms(),at);
+                    let keeper=current.state.players.iter().find(|p|p.player_id==save_path.candidate.player_id).unwrap();
+                    assert!(keeper.is_goalkeeper);
+                    assert_eq!(keeper.pos,terminal.position);
+                    assert_eq!(keeper.vel,terminal.velocity);
+                    let pending=current.pending_flight.as_ref().expect("scheduled loose rebound race");
+                    assert_eq!(pending.trajectory.start_time_ms,at);
+                    assert!(pending.resolves_at_ms>at);
+                    assert_eq!(pending.offside_at_launch,offside);
+                    assert!(matches!(&pending.action,FlightActionV4::LooseRecovery{origin_side,cause}
+                        if *origin_side==side && cause=="SHOT_REBOUND_LOOSE"));
+                    assert_eq!(current.state.ball.control,BallControlState::Loose);
+                    assert!(current.state.ball.owner_player_id.is_none());
+                    assert!(current.state.ball.owner_side.is_none());
+                    let recovery_at=pending.resolves_at_ms;
+                    for _ in 0..100 {
+                        if current.sim_time_ms()>=recovery_at {break;}
+                        current.step_one_des_event(true).unwrap();
+                        current.completed_beats+=1;
+                    }
+                    assert_eq!(current.sim_time_ms(),recovery_at);
+                    assert!(current.pending_flight.is_none());
+                    // Recovery may yield possession or an offside restart;
+                    // neither may resolve a synthetic second shot.
+                    assert!(matches!(current.state.ball.control,BallControlState::Controlled|BallControlState::DeadBall));
+                }
+                assert_eq!(session.export_checkpoint().unwrap().checksum_hex,restored.export_checkpoint().unwrap().checksum_hex);
+                exercised = true;
+                break;
+            }
+            assert!(exercised, "no scheduled parry in reachable fixture for {side:?}");
+        }
+    }
+
+    #[test]
+    fn b12_exp5_shot_block_path_survives_checkpoint_and_real_des() {
+        // Find a real committed block in deterministic match fixtures;
+        // no synthetic player displacement, mocked contact, or forced RNG.
+        for index in 0..4 {
+            let (input,_)=fixture(index,SimulationMode::FastBatch);
+            let mut session=MatchSessionV4::new_locomotion_experiment(input).unwrap();
+            for _ in 0..3000 {
+                if session.is_full_time() {break;}
+                session.step_one_des_event(true).unwrap();
+                session.completed_beats+=1;
+                let Some(f)=session.pending_flight.as_ref() else {continue;};
+                if !matches!(f.action,FlightActionV4::Shot{..}) {continue;}
+                let Some(hit)=f.early_interaction.as_ref().filter(|h|h.kind==InteractionKind::ShotBlocked) else {continue;};
+                let path=f.pass_contact_motion.clone().expect("reserved shot-block actor");
+                let at=f.resolves_at_ms;
+                assert_eq!(hit.time_ms,at);
+                assert_eq!(hit.defender_id.as_deref(),Some(path.candidate.player_id.as_str()));
+                let target=hit.ball_pos.xy();
+                let plan=path.experimental_plan().unwrap().unwrap();
+                let terminal=plan.sample_at(at-path.started_at_ms).unwrap().state;
+                assert!(terminal.position.distance(target)<=path.candidate.reach_m+1e-5);
+                let ck=session.export_checkpoint().unwrap();
+                // A checksum-valid snapshot cannot hide a scheduled block
+                // by deleting both contact fields while leaving its event.
+                let mut corrupt=ck.clone();
+                let flight=corrupt.payload.pending_flight.as_mut().unwrap();
+                flight.early_interaction=None;
+                flight.pass_contact_motion=None;
+                corrupt.checksum_hex=compute_checkpoint_checksum(&serde_json::to_string(&corrupt.payload).unwrap());
+                assert!(MatchSessionV4::from_checkpoint(corrupt).is_err());
+                let mut resumed=MatchSessionV4::from_checkpoint(
+                    serde_json::from_str(&serde_json::to_string(&ck).unwrap()).unwrap()).unwrap();
+                for current in [&mut session,&mut resumed] {
+                    for _ in 0..100 {
+                        if current.sim_time_ms()>=at {break;}
+                        current.step_one_des_event(true).unwrap();
+                        current.completed_beats+=1;
+                    }
+                    assert_eq!(current.sim_time_ms(),at);
+                    let actor=current.state.players.iter().find(|p|p.player_id==path.candidate.player_id).unwrap();
+                    assert_eq!(actor.pos,terminal.position);
+                    assert_eq!(actor.vel,terminal.velocity);
+                    assert_eq!(actor.facing_rad,terminal.facing_rad);
+                }
+                assert_eq!(session.export_checkpoint().unwrap().checksum_hex,resumed.export_checkpoint().unwrap().checksum_hex);
+                return;
+            }
+        }
+        panic!("no committed shot block in the deterministic regression fixtures");
+    }
+
+    fn fixture(index: usize, mode: SimulationMode) -> (MatchInputV4, &'static str) {
+        let seed = 104729_i64 + index as i64 * 7907;
+        let (name, hl, al, press) = match index % 4 {
+            0 => ("reference",14,12,None),
+            1 => ("balanced",14,14,None),
+            2 => ("strong_away",12,14,None),
+            _ => ("high_press",14,12,Some(85)),
+        };
+        let mut home = make_v4_team("H","HOME_V4",hl);
+        let mut away = make_v4_team("A","AWAY_V4",al);
+        if let Some(press) = press {
+            home.team_instructions.pressing_intensity = press;
+            away.team_instructions.pressing_intensity = press;
+        }
+        (make_v4_input_teams(seed,mode,RulesModeV4::Standard,home,away),name)
+    }
+
+    fn run(input: MatchInputV4, experiment: bool) -> Value {
+        let start = Instant::now();
+        let mut session = if experiment {
+            MatchSessionV4::new_locomotion_experiment(input).unwrap()
+        } else { MatchSessionV4::new(input).unwrap() };
+        let mut last_probe_launch = None;
+        let (mut probe_on_target, mut probe_no_reach, mut probe_reachable_goal) = (0_u32,0_u32,0_u32);
+        let (mut probe_segment, mut probe_depth, mut probe_speed, mut probe_ms) = (0.0_f64,0.0_f64,0.0_f64,0.0_f64);
+        // Advance individual atomic events for a useful first-failure clock.
+        // Full time still uses the same result builder and session lifecycle.
+        while !session.is_full_time() {
+            if session.stage.is_break() {
+                if let Err(err) = session.begin_next_period_internal() {
+                    return json!({"ok":false,"time_ms":session.sim_time_ms(),"error":format!("{err:?}")});
+                }
+                continue;
+            }
+            if let Err(err) = session.step_one_des_event(true) {
+                let outside: Vec<_> = session.state.players.iter().filter(|p| p.on_pitch && !p.sent_off &&
+                    (p.pos.x<0.0 || p.pos.x>PITCH_LENGTH_M || p.pos.y<0.0 ||
+                        p.pos.y>match_contracts::spatial::PITCH_WIDTH_M))
+                    .map(|p|json!({"id":p.player_id,"pos":p.pos,"vel":p.vel})).collect();
+                return json!({"ok":false,"time_ms":session.sim_time_ms(),"error":format!("{err:?}"),
+                    "next_event_ms":session.scheduler.peek_next_valid_time_ms(),
+                    "ball_control":session.state.ball.control,"ball_position":session.state.ball.pos,
+                    "pending_flight":session.pending_flight.as_ref().map(|f| &f.pass_contact_motion),
+                    "pending_carry":session.pending_carry.as_ref().map(|c| &c.motion),
+                    "pending_preparation":session.pending_decision.as_ref().map(|d| &d.preparation_motion),
+                    "outside_players":outside});
+            }
+            // Read-only diagnostics at the actual scheduled shot launch.
+            // Recompute reach only for goals; a committed save already owns its witness.
+            if experiment {
+                if let Some(flight) = session.pending_flight.as_ref() {
+                    if let FlightActionV4::Shot { shooter_idx } = &flight.action {
+                        let launch = flight.trajectory.start_time_ms;
+                        if last_probe_launch != Some(launch) {
+                            last_probe_launch = Some(launch);
+                            let side = session.state.players[*shooter_idx].side;
+                            let attacking = if side == TeamSideV4::Home { &flight.counter_delta.home } else { &flight.counter_delta.away };
+                            if attacking.shots_on_target > 0 {
+                                let timer = Instant::now();
+                                probe_on_target += 1;
+                                let keeper = session.state.players.iter().position(|p|p.side==side.opposite() && p.is_goalkeeper && p.on_pitch && !p.sent_off);
+                                if let Some(idx) = keeper {
+                                    let p = &session.state.players[idx];
+                                    let goal = crate::v4::spatial::attacking_goal_center(side);
+                                    probe_segment += crate::v4::spatial::point_to_segment_distance_m(p.pos,flight.trajectory.start_pos.xy(),goal) as f64;
+                                    probe_depth += (p.pos.x-goal.x).abs() as f64;
+                                    probe_speed += p.vel.x.hypot(p.vel.y) as f64;
+                                }
+                                if attacking.goals > 0 {
+                                    let reach = keeper.and_then(|idx|crate::v4::goalkeeper::shot_contact_candidate(&session.state,idx))
+                                        .and_then(|candidate|match_physics::find_locomotion_goalkeeper_contact(&flight.trajectory,&candidate,launch,flight.planned_arrival_ms));
+                                    if reach.is_some() { probe_reachable_goal += 1; } else { probe_no_reach += 1; }
+                                }
+                                probe_ms += timer.elapsed().as_secs_f64()*1000.0;
+                            }
+                        }
+                    }
+                }
+            }
+            session.completed_beats += 1;
+            if session.completed_beats > 250_000 {
+                return json!({"ok":false,"time_ms":session.sim_time_ms(),"error":"experiment watchdog"});
+            }
+        }
+        session.finished = true;
+        let result = session.build_result();
+        let players: Vec<_> = session.state.players.iter().map(|p| json!({
+            "id":p.player_id, "slot":p.slot_id,"goalkeeper":p.is_goalkeeper,
+            "distance_m":p.fatigue.distance_m,"aerobic":p.fatigue.aerobic,
+            "anaerobic":p.fatigue.anaerobic,"sprint_counter":p.fatigue.sprint_count,
+            "high_intensity_counter":p.fatigue.high_intensity_actions,
+        })).collect();
+        let diag=result.diagnostics.as_ref().expect("paired result must have diagnostics");
+        let mut report = json!({
+            "ok":true,"behavior_id":result.engine_version,"wall_ms":(start.elapsed().as_secs_f64()*1000.0-probe_ms).max(0.0),
+            "pass_receiver_unreached":diag.home.pass_receiver_unreached+diag.away.pass_receiver_unreached,
+            "pass_execution_errors":diag.home.pass_execution_errors+diag.away.pass_execution_errors,
+            "pass_intercepted":diag.home.turnovers.pass_intercepted+diag.away.turnovers.pass_intercepted,
+            "pass_out_of_play":diag.home.turnovers.pass_out_of_play+diag.away.turnovers.pass_out_of_play,
+            "first_touch_errors":diag.home.turnovers.first_touch_error+diag.away.turnovers.first_touch_error,
+            "pass_contacts_loose":diag.home.pass_contacts_loose+diag.away.pass_contacts_loose,
+            "pass_risk_pairs":diag.des.pass_risk_pairs,
+            "pass_risk_initial_sum":diag.des.pass_risk_initial_sum,
+            "pass_risk_release_sum":diag.des.pass_risk_release_sum,
+            "reaim_choices":diag.des.reaim_choices,
+            "possessions":diag.home.possessions+diag.away.possessions,
+            "final_third_possessions":diag.home.final_third_possessions+diag.away.final_third_possessions,
+            "penalty_area_possessions":diag.home.penalty_area_possessions+diag.away.penalty_area_possessions,
+            "possessions_with_shot":diag.home.possessions_with_shot+diag.away.possessions_with_shot,
+            "shots_from_box":diag.home.shots_from_box+diag.away.shots_from_box,
+            "shots_blocked":diag.home.shots_blocked+diag.away.shots_blocked,
+            "shots_on_target":diag.home.shots_on_target+diag.away.shots_on_target,
+            "shots_off_target":diag.home.shots_off_target+diag.away.shots_off_target,
+            "shot_xg":diag.home.shot_xg+diag.away.shot_xg,
+            "saves":session.state.home.saves+session.state.away.saves,
+            "carry_starts":diag.des.carry_starts,
+            "carry_contacts":diag.des.carry_contacts,
+            "carry_turnovers":diag.des.carry_turnovers,
+            "tackle_opportunities":diag.des.tackle_opportunities,
+            "tackle_commit_choices":diag.des.tackle_commit_choices,
+            "counter_semantics":if experiment {"upward_speed_crossings_4_2_and_7_mps"} else {"legacy_interval_counts"},
+            "fingerprint":result.event_timeline_fingerprint,"events":result.event_count,
+            "time_ms":session.sim_time_ms(),"live_ms":session.state.des_clock.ball_in_play_ms,
+            "dead_ms":session.state.des_clock.ball_out_of_play_ms,
+            "home_goals":result.summary.home.goals,"away_goals":result.summary.away.goals,
+            "shots":u32::from(result.summary.home.shots)+u32::from(result.summary.away.shots),
+            "passes":u32::from(result.summary.home.passes_attempted)+u32::from(result.summary.away.passes_attempted),
+            "completed_passes":u32::from(result.summary.home.passes_completed)+u32::from(result.summary.away.passes_completed),
+            "fouls":u32::from(result.summary.home.fouls)+u32::from(result.summary.away.fouls),
+            "players":players,
+        });
+        // Keep the flat report schema, but split macro expansion into
+        // small objects rather than raising the crate's recursion limit.
+        let probes = json!({
+            "shot_probe_on_target":probe_on_target,"shot_probe_no_reach":probe_no_reach,
+            "shot_probe_reachable_goal":probe_reachable_goal,"shot_probe_keeper_segment_m":probe_segment,
+            "shot_probe_keeper_depth_m":probe_depth,"shot_probe_keeper_speed_mps":probe_speed,
+            "shot_probe_ms":probe_ms,
+        });
+        let fields = report.as_object_mut().expect("match report object");
+        for (key, value) in probes.as_object().expect("probe report object") {
+            assert!(fields.insert(key.clone(), value.clone()).is_none(), "duplicate report field {key}");
+        }
+        report
+    }
+
+    #[test]
+    #[ignore = "external-reference observation of actual committed paths"]
+    fn b12_tracking_candidate_population(){
+        use crate::v4::movement::tracking_probe;
+        let mut matches=Vec::new();
+        for index in 0..8{
+            let (input,cohort)=fixture(index,SimulationMode::FastBatch);
+            let seed=input.seed;
+            let reference=run(input.clone(),true);
+            assert_eq!(reference["ok"],true);
+            tracking_probe::begin();
+            let observed=run(input,true);
+            let players=tracking_probe::finish();
+            assert_eq!(observed["ok"],true);
+            let mut a=reference.as_object().unwrap().clone();
+            let mut b=observed.as_object().unwrap().clone();
+            for key in ["wall_ms","shot_probe_ms"]{a.remove(key);b.remove(key);}
+            assert_eq!(a,b,"tracking must not alter the full match report");
+            assert!(players.len()>=22 && players.iter().all(|p|p["samples"].as_u64().unwrap()>0));
+            matches.push(json!({"seed":seed,"cohort":cohort,"fingerprint":observed["fingerprint"],"players":players}));
+        }
+        let report=json!({"schema":1,"behavior_id":LOCOMOTION_EXPERIMENT_ID,
+            "sampling_hz":5,"speed_outlier_mps":12,"matches":matches,
+            "limitations":"Exact sampled committed positions, includes stoppages, no interpolation across periods or inactive gaps. Eight synthetic fixtures; no attribute/role equivalence with anonymized Metrica."});
+        let path=std::env::var("B12_TRACKING_CANDIDATE_PATH").expect("set B12_TRACKING_CANDIDATE_PATH");
+        std::fs::write(path,serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    }
+
+    #[test]
+    #[ignore = "test-only scoped cost measurement"]
+    fn b12_batch3_cost_profile(){
+        let mut rows=Vec::new();
+        for index in 0..4{
+            for experiment in [false,true]{
+                let (input,cohort)=fixture(index,SimulationMode::FastBatch);
+                let seed=input.seed;
+                super::b12_cost_profile::begin();
+                let mut session=if experiment{MatchSessionV4::new_locomotion_experiment(input)}
+                    else{MatchSessionV4::new(input)}.unwrap();
+                let result=session.run_to_full_time().unwrap();
+                let costs=super::b12_cost_profile::finish();
+                assert!(result.ok && costs["event_total"].0>0);
+                assert_eq!(costs["atomic_clone"].0,costs["event_total"].0);
+                let scopes:serde_json::Map<String,Value>=costs.into_iter().map(|(name,(count,ns))|
+                    (name.to_string(),json!({"count":count,"total_ms":ns as f64/1_000_000.0}))).collect();
+                rows.push(json!({"seed":seed,"cohort":cohort,"experiment":experiment,
+                    "behavior_id":result.engine_version,"fingerprint":result.event_timeline_fingerprint,
+                    "scopes":scopes}));
+            }
+        }
+        let report=json!({"schema":1,"scope":"b12_cost_profile","rows":rows,
+            "limitations":"Inclusive wall-clock scopes; one pair per cohort. Not disjoint costs or hardware profiling."});
+        let path=std::env::var("B12_COST_PROFILE_PATH").expect("set B12_COST_PROFILE_PATH");
+        std::fs::write(path,serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    }
+
+    #[test]
+    #[ignore = "experimental full-match cross-mode test, not production golden"]
+    fn b12_experiment_cross_mode() {
+        let (input,_) = fixture(0,SimulationMode::FastBatch);
+        let mut full = input.clone();
+        full.simulation_mode = SimulationMode::FullEvent;
+        let a = run(input,true);
+        let b = run(full,true);
+        assert_eq!(a["ok"],true,"{a}");
+        assert_eq!(b["ok"],true,"{b}");
+        for key in ["fingerprint","events","time_ms","home_goals","away_goals","players",
+            "shot_probe_on_target","shot_probe_no_reach","shot_probe_reachable_goal",
+            "shot_probe_keeper_segment_m","shot_probe_keeper_depth_m","shot_probe_keeper_speed_mps"] {
+            assert_eq!(a[key],b[key],"mismatch {key}");
+        }
+    }
+
+    #[test]
+    #[ignore = "full matches reproducing exp1 failures"]
+    fn b12_exp2_previous_failure_regressions() {
+        // One recorded exp1 failure from each cohort, identical fixture and seed.
+        let mut failures = Vec::new();
+        for seed in [167985_i64,397288,183799,191706] {
+            let index=((seed-104729)/7907) as usize;
+            let (input,cohort)=fixture(index,SimulationMode::FastBatch);
+            assert_eq!(input.seed,seed);
+            let report=run(input,true);
+            if report["ok"] != true {
+                failures.push(json!({"seed":seed,"cohort":cohort,"failure":report}));
+            }
+        }
+        assert!(failures.is_empty(),"exp2 regression failures: {failures:?}");
+    }
+
+    #[test]
+    #[ignore = "full matches reproducing exp5 shot-block handoff failures"]
+    fn b12_exp5_previous_failure_regressions() {
+        let mut failures=Vec::new();
+        for seed in [326125_i64,270776,152171,128450,515893,112636,1322407,349846] {
+            let index=((seed-104729)/7907) as usize;
+            let (input,cohort)=fixture(index,SimulationMode::FastBatch);
+            assert_eq!(input.seed,seed);
+            let result=run(input,true);
+            if result["ok"]!=true {failures.push(json!({"seed":seed,"cohort":cohort,"failure":result}));}
+        }
+        assert!(failures.is_empty(),"exp5 handoff regression failures: {failures:?}");
+    }
+
+    #[test]
+    #[ignore = "paired full-match experiment, run in separate evidence workflow"]
+    fn b12_experiment_paired_report() {
+        let shard = std::env::var("B12_EXPERIMENT_SHARD").ok().map(|s|s.parse::<usize>().unwrap()).unwrap_or(0);
+        let count = std::env::var("B12_EXPERIMENT_COUNT").ok().map(|s|s.parse::<usize>().unwrap()).unwrap_or(250);
+        assert!(shard<4 && (1..=250).contains(&count));
+        let mut rows=Vec::with_capacity(count);
+        let mut failures=0;
+        for i in 0..count {
+            let index=4*i+shard;
+            let (input,cohort)=fixture(index,SimulationMode::FastBatch);
+            let seed=input.seed;
+            let legacy=run(input.clone(),false);
+            let experiment=run(input,true);
+            if legacy["ok"]!=true || experiment["ok"]!=true { failures+=1; }
+            rows.push(json!({"seed":seed,"cohort":cohort,"legacy":legacy,"experiment":experiment}));
+        }
+        let report=json!({"schema":1,"scope":"hybrid_experiment_full_match_pairs",
+            "behavior_id":LOCOMOTION_EXPERIMENT_ID,"shard":shard,"attempted_pairs":count,
+            "failed_pairs":failures,"rows":rows});
+        if let Ok(path)=std::env::var("B12_EXPERIMENT_REPORT_PATH") {
+            std::fs::write(path,serde_json::to_vec(&report).unwrap()).unwrap();
+        }
+        println!("B12_EXPERIMENT shard={shard} attempted={count} failures={failures}");
+        assert_eq!(failures,0,"inspect paired experiment failure rows");
+    }
 }

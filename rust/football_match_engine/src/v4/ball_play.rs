@@ -138,10 +138,29 @@ pub(crate) fn pass_reach_candidate(
         agility,
         reaction_ms: (310.0 - ant * 120.0 - concentration * 55.0).round() as i64,
         reach_m: 0.85 + agility * 0.25,
+        locomotion: None,
         playable_height_m: if is_aerial {
             1.65 + normalize_attr(attrs.physical.jumping_reach) * 0.75
         } else { 1.20 },
     }
+}
+
+/// Use the same capability snapshot as tactical locomotion for the
+/// experimental authoritative contact search. PI observation remains legacy.
+pub(crate) fn pass_reach_candidate_for_motion(
+    state: &MatchStateV4, idx: usize, is_aerial: bool, experimental: bool,
+) -> PassReachCandidate {
+    let mut candidate = pass_reach_candidate(state, idx, is_aerial);
+    if experimental {
+        let p = &state.players[idx];
+        let capability = match_physics::movement::MovementCapability::from_attributes(
+            &player_attrs(state,p).physical, p.fatigue.aerobic, p.fatigue.anaerobic)
+            .expect("validated experiment player attributes and condition");
+        candidate.speed_mps = capability.max_speed_mps;
+        candidate.acceleration_mps2 = capability.acceleration_mps2;
+        candidate.locomotion = Some(match_physics::ReachLocomotion { capability, facing_rad: p.facing_rad });
+    }
+    candidate
 }
 
 /// Second-last active opponent, in the attacking side's coordinate system.
@@ -254,6 +273,27 @@ pub fn execute_pass_and_first_touch_des(
     _interceptor_idx: Option<usize>,
     passer_ctx: LocalSpatialContext,
     is_one_touch: bool,
+    rng: &mut DeterministicRng,
+) -> DesBallPlayOutcome {
+    execute_pass_and_first_touch_des_with_motion(state,input,timing,passer_idx,target_idx,kind,
+        distance_m,progress_gain_m,_lane_risk,_interceptor_idx,passer_ctx,is_one_touch,false,rng)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_pass_and_first_touch_des_with_motion(
+    state: &mut MatchStateV4,
+    input: &MatchInputV4,
+    timing: &TimingModelConfig,
+    passer_idx: usize,
+    target_idx: usize,
+    kind: PassKindV4,
+    distance_m: f32,
+    progress_gain_m: f32,
+    _lane_risk: f32,
+    _interceptor_idx: Option<usize>,
+    passer_ctx: LocalSpatialContext,
+    is_one_touch: bool,
+    experimental: bool,
     rng: &mut DeterministicRng,
 ) -> DesBallPlayOutcome {
     let mut events = Vec::with_capacity(5);
@@ -374,9 +414,9 @@ pub fn execute_pass_and_first_touch_des(
 
     let defenders: Vec<_> = state.players.iter().enumerate()
         .filter(|(_, p)| p.on_pitch && !p.sent_off && p.side == def_side && !p.is_goalkeeper)
-        .map(|(idx, _)| pass_reach_candidate(state, idx, kind.is_aerial()))
+        .map(|(idx, _)| pass_reach_candidate_for_motion(state, idx, kind.is_aerial(), experimental))
         .collect();
-    let receiver = pass_reach_candidate(state, target_idx, kind.is_aerial());
+    let receiver = pass_reach_candidate_for_motion(state, target_idx, kind.is_aerial(), experimental);
     // Recovery of inaccurate passes by arbitrary teammates is a separate
     // stage. For an accurate pass, the intended receiver races defenders.
     let contact = find_pass_contact(&traj, &defenders,

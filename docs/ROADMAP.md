@@ -27,6 +27,8 @@ B1.1 (PHY-01) dùng [WORLD_CONTRACTS](WORLD_CONTRACTS.md) làm hợp đồng chi
 
 Bước đầu tiên: PHY-01 inventory các đơn vị và frame trong match_contracts, match_physics, match_rules, engine clock/scheduler; lập bảng caller, invariant, test mirror/dt. Không đổi hành vi trong commit inventory; nếu phát hiện bug cần sửa thành commit B riêng.
 
+Chi tiết PHY-02: [PLAYER_LOCOMOTION](PLAYER_LOCOMOTION.md), B1.2.1–B1.2.8. Chỉ chuyển gameplay sau khi solver cô lập được kiểm thử.
+
 ## B2. Player Intelligence
 
 | ID | Mục tiêu | Điều kiện |

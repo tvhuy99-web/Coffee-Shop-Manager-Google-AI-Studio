@@ -12,6 +12,7 @@ pub(crate) struct EngineForecastAdapter<'a> {
     state: &'a MatchStateV4,
     input: &'a MatchInputV4,
     timing: &'a TimingModelConfig,
+    experimental_motion: bool,
     pass_cache: RefCell<Option<(TeamSideV4,u32,PassForecast)>>,
 }
 
@@ -20,7 +21,11 @@ impl<'a> EngineForecastAdapter<'a> {
         Self::with_timing(state,input,&input.timing_model)
     }
     pub(crate) fn with_timing(state:&'a MatchStateV4,input:&'a MatchInputV4,timing:&'a TimingModelConfig)->Self {
-        Self {state,input,timing,pass_cache:RefCell::new(None)}
+        Self::with_motion(state,input,timing,false)
+    }
+    pub(crate) fn with_motion(state:&'a MatchStateV4,input:&'a MatchInputV4,timing:&'a TimingModelConfig,
+        experimental_motion:bool)->Self {
+        Self {state,input,timing,experimental_motion,pass_cache:RefCell::new(None)}
     }
 }
 
@@ -36,7 +41,7 @@ impl SpatialForecastPort for EngineForecastAdapter<'_> {
     }
     fn pass_risk(&self,side:TeamSideV4,awareness:f32,from:Vec2,target_idx:usize,kind:PassKindV4)->f32 {
         let mut cache=self.pass_cache.borrow_mut();
-        if cache.as_ref().map(|(s,a,_)|(*s,*a))!=Some((side,awareness.to_bits())) { *cache=Some((side,awareness.to_bits(),PassForecast::new(self.state,side,awareness))); }
+        if cache.as_ref().map(|(s,a,_)|(*s,*a))!=Some((side,awareness.to_bits())) { *cache=Some((side,awareness.to_bits(),if self.experimental_motion {PassForecast::with_motion(self.state,side,awareness,true)} else {PassForecast::new(self.state,side,awareness)})); }
         cache.as_ref().unwrap().2.lane_risk(self.state,self.input,self.timing,from,target_idx,kind)
     }
     fn carry_endpoint(&self,idx:usize,direction:Vec2,duration_ms:i64)->Vec2 {
@@ -80,5 +85,54 @@ mod tests {
             }
         }
         assert_eq!(serde_json::to_string(&state).unwrap(), before);
+    }
+
+    #[test]
+    fn b12_observed_forecast_does_not_use_hidden_condition_or_attributes() {
+        let input=make_v4_input(12046,SimulationMode::FastBatch,RulesModeV4::Standard);
+        let mut state=MatchStateV4::from_input(&input);
+        // Exercise both moving and stationary observations rather than only
+        // kickoff positions. Alter capabilities, never the visible motion.
+        for (idx,p) in state.players.iter_mut().enumerate() {
+            p.vel=Vec2::new((idx%5) as f32-2.0,(idx%3) as f32-1.0);
+        }
+        let mut altered=state.clone();
+        for p in &mut altered.players {
+            p.fatigue.aerobic=5.0;
+            p.fatigue.anaerobic=0.0;
+        }
+        for profile in &mut altered.player_profiles {
+            profile.attrs.physical.pace=1;
+            profile.attrs.physical.acceleration=20;
+            profile.attrs.physical.agility=1;
+            profile.attrs.mental.anticipation=20;
+        }
+        let a=EngineForecastAdapter::with_motion(&state,&input,&input.timing_model,true);
+        let b=EngineForecastAdapter::with_motion(&altered,&input,&input.timing_model,true);
+        let before=serde_json::to_string(&state).unwrap();
+        let altered_before=serde_json::to_string(&altered).unwrap();
+        // Exercise the actual PI port, including cache changes between
+        // sides and awareness levels, and repeat queries in reverse order.
+        let mut queries=Vec::new();
+        for side in [TeamSideV4::Home,TeamSideV4::Away] {
+            for awareness in [0.3_f32,0.8] {
+                let from=Vec2::new(48.0,34.0);
+                for idx in 0..state.players.len() {
+                    if state.players[idx].side!=side {continue;}
+                    for kind in [PassKindV4::Short,PassKindV4::Long] {
+                        let x=a.pass_risk(side,awareness,from,idx,kind);
+                        let y=b.pass_risk(side,awareness,from,idx,kind);
+                        assert_eq!(x.to_bits(),y.to_bits());
+                        assert!((0.0..=1.0).contains(&x));
+                        queries.push((side,awareness,from,idx,kind,x.to_bits()));
+                    }
+                }
+            }
+        }
+        for (side,awareness,from,idx,kind,bits) in queries.into_iter().rev() {
+            assert_eq!(a.pass_risk(side,awareness,from,idx,kind).to_bits(),bits);
+        }
+        assert_eq!(serde_json::to_string(&state).unwrap(),before);
+        assert_eq!(serde_json::to_string(&altered).unwrap(),altered_before);
     }
 }

@@ -1,0 +1,128 @@
+name: B1.2 milestone 3 diagnostic evidence
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'rust/tests/engine/v4_tests.rs'
+      - 'tools/b12_tracking_reference.py'
+      - 'tools/compare_b12_tracking.py'
+      - 'rust/football_match_engine/src/v4/movement.rs'
+      - 'rust/football_match_engine/src/v4/session_parts/01_world.rs'
+      - 'rust/football_match_engine/src/v4/session_tests.rs'
+      - '.github/workflows/b12-milestone3-evidence.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: b12-milestone3-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+jobs:
+  attribute_audit:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'feature/b1-1-world-contracts'
+    name: Experimental attribute audit (${{ matrix.group }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [technical, mental, physical, goalkeeping, hidden]
+    env:
+      PI_AUDIT_GROUP: ${{ matrix.group }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Named field and role isolation; actual experimental full matches
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          (
+            cd rust/football_match_engine
+            cargo test --locked --release --lib v4::tests::pi_attribute_audit_changes_only_the_named_field_and_role -- --exact
+            PI_AUDIT_REPORT_PATH="$GITHUB_WORKSPACE/evidence/attribute-audit.json" cargo test --locked --release --lib v4::tests::b12_experimental_attribute_audit_population -- --ignored --exact --nocapture
+          ) 2>&1 | tee evidence/attribute-audit.log
+          python3 tools/summarize_pi_attribute_audit.py evidence/attribute-audit.json evidence/attribute-summary.json
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from tools.verify_b12_experiment_report import BEHAVIOR
+          report=json.loads(Path('evidence/attribute-audit.json').read_text())
+          counts={'technical':13,'mental':14,'physical':8,'goalkeeping':9,'hidden':10}
+          group=os.environ['PI_AUDIT_GROUP']
+          assert report['execution']=='experimental_locomotion'
+          assert report['behaviorId']==BEHAVIOR
+          assert report['group']==group and report['careerDifferences']==0
+          assert report['simulations']==8+16*counts[group] and len(report['pairs'])==8*counts[group]
+          assert len({row['attribute'] for row in report['pairs']})==counts[group]
+          PY
+          git rev-parse HEAD > evidence/commit.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: b12-candidate-audit-${{ matrix.group }}
+          path: evidence/
+          if-no-files-found: error
+  cost_profile:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'feature/b1-1-world-contracts'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -euo pipefail
+          mkdir -p evidence
+          (cd rust/football_match_engine
+           B12_COST_PROFILE_PATH="$GITHUB_WORKSPACE/evidence/cost-profile.json" cargo test --release --locked --lib b12_batch3_cost_profile -- --ignored --nocapture
+          ) 2>&1 | tee evidence/cost-profile.log
+          git rev-parse HEAD > evidence/commit.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: b12-cost-profile
+          path: evidence/
+  tracking_reference:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'feature/b1-1-world-contracts'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify parser fixtures
+        run: python3 tools/b12_tracking_reference.py --self-test
+      - name: Download pinned public Metrica tracking, verify Git blob hashes, measure
+        run: |
+          set -euo pipefail
+          mkdir -p evidence "$RUNNER_TEMP/metrica"
+          python3 tools/b12_tracking_reference.py --download "$RUNNER_TEMP/metrica" evidence/tracking-reference.json
+          git rev-parse HEAD > evidence/commit.txt
+      - name: Observe candidate at identical 5 Hz and compare distributions
+        run: |
+          set -euo pipefail
+          (
+            cd rust/football_match_engine
+            cargo test --release --locked --lib b12_tracking_probe_gap_period_and_jump -- --nocapture
+            B12_TRACKING_CANDIDATE_PATH="$GITHUB_WORKSPACE/evidence/tracking-candidate.json" cargo test --release --locked --lib b12_tracking_candidate_population -- --ignored --nocapture
+          ) 2>&1 | tee evidence/tracking-candidate.log
+          # Compare a frozen pre-calibration behavior on the same eight
+          # fixtures, using its own non-invasive 5 Hz recorder.
+          git fetch --no-tags --depth=1 origin 7426c802b44faeff6fbadc9cc27ed7e872984daf
+          git worktree add --detach "$RUNNER_TEMP/b12-calibration-reference" 7426c802b44faeff6fbadc9cc27ed7e872984daf
+          (
+            cd "$RUNNER_TEMP/b12-calibration-reference/rust/football_match_engine"
+            B12_TRACKING_CANDIDATE_PATH="$GITHUB_WORKSPACE/evidence/tracking-before-effort.json" cargo test --release --locked --lib b12_tracking_candidate_population -- --ignored --nocapture
+          ) 2>&1 | tee evidence/tracking-before-effort.log
+          python3 tools/compare_b12_tracking.py evidence/tracking-reference.json evidence/tracking-candidate.json evidence/tracking-comparison.json evidence/tracking-before-effort.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: b12-tracking-reference
+          path: evidence/
+          if-no-files-found: error
+  summary:
+    if: always() && !cancelled() && needs.attribute_audit.result != 'skipped'
+    needs: [attribute_audit, cost_profile, tracking_reference]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every evidence job
+        run: |
+          test "${{ needs.attribute_audit.result }}" = success
+          test "${{ needs.cost_profile.result }}" = success
+          test "${{ needs.tracking_reference.result }}" = success

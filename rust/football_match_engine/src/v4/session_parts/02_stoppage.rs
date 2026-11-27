@@ -165,6 +165,7 @@ impl MatchSessionV4 {
         let high_line = instructions.line_height >= 68;
         let wasting = instructions.time_wasting >= 55;
         *self.state.active_instructions_mut(side) = instructions;
+        self.tactical_intents=None;
         let ball_pos = self.state.ball.pos;
         self.emit(
             EventTypeV4::TacticalPhaseChanged,
@@ -252,6 +253,12 @@ impl MatchSessionV4 {
             &mut self.rng,
         );
 
+        let restart_spot=if self.uses_locomotion_experiment() && kind==DeadBallKind::PenaltyKick {
+            let p=crate::v4::spatial::penalty_spot(restart_side);
+            Vec3::ground(p.x,p.y)
+        }else if self.uses_locomotion_experiment() && kind==DeadBallKind::GoalKick {
+            Vec3::ground(if restart_side==TeamSideV4::Home{5.5}else{PITCH_LENGTH_M-5.5},34.0)
+        }else{restart_spot};
         let db = DeadBallState::new(
             kind,
             initial_phase,
@@ -268,6 +275,7 @@ impl MatchSessionV4 {
         self.pending_flight = None;
         self.pending_decision = None;
         self.pending_carry = None;
+        self.tactical_intents=None;
         self.state.dead_ball = Some(db);
 
         self.scheduler
@@ -281,6 +289,150 @@ impl MatchSessionV4 {
             )
             .map_err(|e| V4Error::InvalidClock(e.into()))?;
 
+        Ok(())
+    }
+
+    /// Deterministic eligible taker for ordinary restarts; kickoff retains
+    /// the existing designated striker. Do not select a random distant actor
+    /// after setup. Specialist restarts share the legacy designated-taker selector.
+    fn experimental_restart_actor(&self, db: &DeadBallState) -> Option<usize> {
+        match db.kind {
+            DeadBallKind::GoalCelebration | DeadBallKind::Kickoff =>
+                Some(self.kickoff_carrier_index(db.restart_side)),
+            DeadBallKind::GoalKick => Some(self.find_goalkeeper_index(db.restart_side)),
+            DeadBallKind::ThrowIn | DeadBallKind::Offside | DeadBallKind::InjuryStoppage
+                | DeadBallKind::SubstitutionWindow =>
+                self.state.players.iter().enumerate().filter(|(_,p)|
+                    p.side==db.restart_side && p.on_pitch && !p.sent_off && !p.is_goalkeeper)
+                    .min_by(|(_,a),(_,b)|a.pos.distance(db.restart_spot.xy())
+                        .total_cmp(&b.pos.distance(db.restart_spot.xy()))
+                        .then_with(||a.player_id.cmp(&b.player_id))).map(|(idx,_)|idx),
+            DeadBallKind::Corner | DeadBallKind::DirectFreeKick | DeadBallKind::IndirectFreeKick
+                | DeadBallKind::QuickFreeKick | DeadBallKind::PenaltyKick => {
+                let side=db.restart_side;
+                let plan=match side {
+                    TeamSideV4::Home=>&self.input.home_team.set_piece_plan,
+                    TeamSideV4::Away=>&self.input.away_team.set_piece_plan,
+                };
+                let (slots,metric):(&[String],fn(&crate::v4::attributes::PlayerAttributes54)->u8)=match db.kind {
+                    DeadBallKind::Corner=>(&plan.corner_taker_slot_ids,|a|a.technical.corners),
+                    DeadBallKind::PenaltyKick=>(&plan.penalty_taker_slot_ids,|a|a.technical.penalties),
+                    _=>(
+                        if distance_to_attacking_goal(side,db.restart_spot.xy())<=28.0 {
+                            &plan.close_free_kick_taker_slot_ids
+                        }else{&plan.far_free_kick_taker_slot_ids},
+                        |a|a.technical.free_kicks),
+                };
+                Some(crate::v4::set_pieces::pick_planned_or_best_specialist(
+                    &self.state,&self.input,side,slots,metric))
+            }
+        }
+    }
+
+    /// Return explicit legal-side setup targets, not replacement positions.
+    /// Margins are provisional player-center/ball-control tolerances, not
+    /// a complete Law 8/15/16 body geometry implementation.
+    fn experimental_restart_targets(&self,db:&DeadBallState)->Vec<Option<(Vec2,f32)>> {
+        let mut targets=vec![None;self.state.players.len()];
+        let Some(taker)=self.experimental_restart_actor(db) else{return targets;};
+        let kickoff=matches!(db.kind,DeadBallKind::GoalCelebration|DeadBallKind::Kickoff);
+        if kickoff && db.phase==DeadBallPhase::Celebrating {return targets;}
+        let center=Vec3::center_spot().xy();
+        let penalty=db.kind==DeadBallKind::PenaltyKick;
+        let penalty_keeper=penalty.then(||self.find_goalkeeper_index(db.restart_side.opposite()));
+        for (idx,p) in self.state.players.iter().enumerate(){
+            if !p.on_pitch || p.sent_off {continue;}
+            if idx==taker {
+                let target=if kickoff {
+                    Vec2::new(center.x+if p.side==TeamSideV4::Home{-0.3}else{0.3},center.y)
+                }else{
+                    let spot=db.restart_spot.xy();
+                    Vec2::new(spot.x.clamp(0.3,PITCH_LENGTH_M-0.3),spot.y.clamp(0.3,67.7))
+                };
+                targets[idx]=Some((target,3.5));
+            }else if penalty {
+                let spot=db.restart_spot.xy();
+                if penalty_keeper==Some(idx) {
+                    targets[idx]=Some((Vec2::new(if p.side==TeamSideV4::Home{0.2}else{PITCH_LENGTH_M-0.2},34.0),3.5));
+                }else{
+                    // Conservative player-center setup: outside the area,
+                    // behind the mark and farther than the arc radius.
+                    let x=if db.restart_side==TeamSideV4::Home{p.pos.x.min(spot.x-10.0)}
+                        else{p.pos.x.max(spot.x+10.0)};
+                    targets[idx]=Some((Vec2::new(x.clamp(0.5,PITCH_LENGTH_M-0.5),p.pos.y.clamp(0.5,67.5)),3.5));
+                }
+            }else if kickoff {
+                // Move only as far as necessary to the own half, leaving
+                // opposing players outside the center circle. No forced
+                // return to a formation slot or post-goal velocity reset.
+                let own_x=if p.side==TeamSideV4::Home {p.pos.x.min(center.x-1.0)}
+                    else {p.pos.x.max(center.x+1.0)};
+                let mut target=Vec2::new(own_x,p.pos.y.clamp(1.0,67.0));
+                if p.side!=db.restart_side && target.distance(center)<10.0 {
+                    target.x=if p.side==TeamSideV4::Home {center.x-10.0}else{center.x+10.0};
+                }
+                targets[idx]=Some((target,3.5));
+            }
+        }
+        targets
+    }
+
+    fn experimental_restart_ready(&self,db:&DeadBallState)->Result<bool,V4Error>{
+        let Some(taker)=self.experimental_restart_actor(db) else {
+            return Ok(!matches!(db.kind,DeadBallKind::ThrowIn|DeadBallKind::Offside
+                |DeadBallKind::InjuryStoppage|DeadBallKind::SubstitutionWindow));
+        };
+        let p=self.state.players.get(taker).ok_or_else(||V4Error::InvalidInput("restart taker missing".into()))?;
+        if p.side!=db.restart_side || !p.on_pitch || p.sent_off {
+            return Err(V4Error::InvalidInput("restart taker inactive".into()));
+        }
+        let kickoff=matches!(db.kind,DeadBallKind::GoalCelebration|DeadBallKind::Kickoff);
+        let spot=if kickoff{Vec3::center_spot().xy()}else{db.restart_spot.xy()};
+        if p.pos.distance(spot)>0.75 || p.vel.distance(Vec2::default())>0.8 {return Ok(false);}
+        if db.kind==DeadBallKind::PenaltyKick {
+            let keeper=self.find_goalkeeper_index(db.restart_side.opposite());
+            for (idx,p) in self.state.players.iter().enumerate(){
+                if idx==taker||!p.on_pitch||p.sent_off{continue;}
+                if idx==keeper{
+                    let goal_x=if p.side==TeamSideV4::Home{0.0}else{PITCH_LENGTH_M};
+                    if (p.pos.x-goal_x).abs()>0.5 || (p.pos.y-34.0).abs()>3.0
+                        || p.vel.distance(Vec2::default())>0.8{return Ok(false);}
+                }else{
+                    let behind=if db.restart_side==TeamSideV4::Home{p.pos.x<=spot.x}else{p.pos.x>=spot.x};
+                    if !behind || is_in_attacking_penalty_box(db.restart_side,p.pos)
+                        || p.pos.distance(spot)<9.15{return Ok(false);}
+                }
+            }
+        }
+        if kickoff {
+            for (idx,p) in self.state.players.iter().enumerate(){
+                if idx==taker || !p.on_pitch || p.sent_off {continue;}
+                let own=if p.side==TeamSideV4::Home{p.pos.x<=spot.x}else{p.pos.x>=spot.x};
+                if !own || (p.side!=db.restart_side && p.pos.distance(spot)<9.15){return Ok(false);}
+            }
+        }
+        Ok(true)
+    }
+
+    /// Extend the existing dead-ball phase by a distance-derived approach
+    /// interval, then re-check actual positions. Never snap at the deadline.
+    fn defer_experimental_restart(&mut self,db:&DeadBallState)->Result<(),V4Error>{
+        let now=self.state.des_clock.sim_time_ms;
+        if now-db.started_at_ms>120_000 {
+            return Err(V4Error::InvalidClock("restart positioning exceeded 120s watchdog".into()));
+        }
+        let targets=self.experimental_restart_targets(db);
+        let distance=targets.iter().zip(&self.state.players)
+            .filter_map(|(t,p)|t.map(|(target,_)|p.pos.distance(target)))
+            .fold(0.0f32,f32::max);
+        let duration=((distance/3.5+2.0)*1000.0).ceil() as i64;
+        let duration=duration.clamp(1000,30_000);
+        let active=self.state.dead_ball.as_mut().ok_or_else(||V4Error::InvalidClock("missing restart phase".into()))?;
+        active.advance_to(DeadBallPhase::ExecutingRestart,now,duration,duration);
+        self.scheduler.schedule(active.phase_ends_at_ms,EventPriority::DeadBallAndSubstitution,
+            CancellationScope::PeriodScoped,DesEventPayload::DeadBallPhaseComplete{
+                phase_tag:format!("{:?}::ExecutingRestart",db.kind)})
+            .map_err(|e|V4Error::InvalidClock(e.into()))?;
         Ok(())
     }
 
@@ -347,6 +499,10 @@ impl MatchSessionV4 {
             return Ok(());
         }
 
+        if self.uses_locomotion_experiment() && !self.experimental_restart_ready(&db_snapshot)? {
+            return self.defer_experimental_restart(&db_snapshot);
+        }
+
         // Dead ball completed! Record total duration diagnostics & compensable lost time
         // for the initial phase if not yet counted.
         let total_db_ms = now_ms.saturating_sub(db_snapshot.started_at_ms).max(0);
@@ -365,6 +521,25 @@ impl MatchSessionV4 {
         let restart_side = db.restart_side;
         let def_side = restart_side.opposite();
 
+        if self.uses_locomotion_experiment() &&
+            (db.kind==DeadBallKind::Corner ||
+                (matches!(db.kind,DeadBallKind::DirectFreeKick|DeadBallKind::IndirectFreeKick|DeadBallKind::QuickFreeKick)
+                && (db.kind==DeadBallKind::IndirectFreeKick || distance_to_attacking_goal(restart_side,db.restart_spot.xy())>28.0))) {
+            let taker=self.experimental_restart_actor(&db)
+                .ok_or_else(||V4Error::InvalidInput("missing delivery taker".into()))?;
+            return self.schedule_experimental_set_piece_delivery(&db,taker);
+        }
+        if self.uses_locomotion_experiment() && matches!(db.kind,
+            DeadBallKind::PenaltyKick|DeadBallKind::DirectFreeKick|DeadBallKind::QuickFreeKick) {
+            let taker=self.experimental_restart_actor(&db)
+                .ok_or_else(||V4Error::InvalidInput("missing specialist shooter".into()))?;
+            self.possession_side=restart_side;
+            self.carrier_idx=taker;
+            self.last_passer_idx=None;
+            let kind=if db.kind==DeadBallKind::PenaltyKick{ShotKindV4::Driven}else{ShotKindV4::Curled};
+            return self.schedule_shot_with_restart(taker,None,Some(kind),
+                Some((db.kind,db.restart_spot.xy(),self.ruleset.allow_penalty_rebound)));
+        }
         match db.kind {
             DeadBallKind::GoalCelebration | DeadBallKind::Kickoff => {
                 let kicker_idx = self.restart_after_goal_kickoff(restart_side);
@@ -421,6 +596,10 @@ impl MatchSessionV4 {
                     self.carrier_idx = sp_out.next_carrier_idx;
                     self.ensure_valid_carrier();
                     let one_touch = self.state.ball.control == BallControlState::Loose;
+                    if self.uses_locomotion_experiment() && one_touch {
+                        self.state.ball.vel=Vec3::default();
+                        return self.start_pass_recovery(restart_side,Vec::new(),"PENALTY_REBOUND_LOOSE");
+                    }
                     self.schedule_next_decision(
                         self.carrier_idx,
                         self.possession_side,
@@ -466,7 +645,10 @@ impl MatchSessionV4 {
             | DeadBallKind::InjuryStoppage
             | DeadBallKind::SubstitutionWindow => {
                 self.possession_side = restart_side;
-                self.carrier_idx = if db.kind == DeadBallKind::GoalKick {
+                self.carrier_idx = if self.uses_locomotion_experiment() {
+                    self.experimental_restart_actor(&db)
+                        .ok_or_else(||V4Error::InvalidInput("no eligible ordinary restart taker".into()))?
+                } else if db.kind == DeadBallKind::GoalKick {
                     self.find_goalkeeper_index(restart_side)
                 } else {
                     self.pick_outfield_index(restart_side)

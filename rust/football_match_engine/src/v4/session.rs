@@ -1,12 +1,36 @@
 use std::collections::BTreeMap;
 
+// Inclusive wall-clock scopes, test-only and thread-local. No state or RNG.
+#[cfg(test)]
+mod b12_cost_profile {
+    use std::{cell::RefCell,collections::BTreeMap,time::Instant};
+    pub(super) type Rows=BTreeMap<&'static str,(u64,u128)>;
+    thread_local!{static ROWS:RefCell<Option<Rows>>=RefCell::new(None);}
+    pub(super) fn begin(){ROWS.with(|r|*r.borrow_mut()=Some(BTreeMap::new()));}
+    pub(super) fn finish()->Rows{ROWS.with(|r|r.borrow_mut().take().expect("profiling enabled"))}
+    pub(super) struct Scope{key:&'static str,start:Option<Instant>}
+    pub(super) fn scope(key:&'static str)->Scope{
+        Scope{key,start:ROWS.with(|r|r.borrow().is_some().then(Instant::now))}
+    }
+    impl Drop for Scope {
+        fn drop(&mut self){
+            if let Some(start)=self.start{
+                let elapsed=start.elapsed().as_nanos();
+                ROWS.with(|r|if let Some(rows)=r.borrow_mut().as_mut(){
+                    let row=rows.entry(self.key).or_default();row.0+=1;row.1+=elapsed;
+                });
+            }
+        }
+    }
+}
+
 use crate::clock::Period;
 use crate::fingerprints;
 use crate::rng::DeterministicRng;
 use crate::v4::coach_adapter::evaluate_ai_managers;
 use crate::v4::substitution::apply_manual_substitution_group;
 use crate::v4::attributes::normalize_attr;
-use crate::v4::ball_play::{resolve_carry_contact, execute_pass_and_first_touch_des, is_receiver_offside, pass_reach_candidate, EmittedPlayEvent};
+use crate::v4::ball_play::{resolve_carry_contact, execute_pass_and_first_touch_des_with_motion, is_receiver_offside, pass_reach_candidate, pass_reach_candidate_for_motion, EmittedPlayEvent};
 use crate::v4::checkpoint::{
     PendingFlightSnapshotV4, FlightActionV4, FlightCounterDeltaV4, PendingDecisionV4, PendingCarryV4,
     compute_checkpoint_checksum, verify_checkpoint, MatchCheckpointV4, MatchSessionSnapshotV4,
@@ -98,8 +122,11 @@ pub struct MatchSessionV4 {
     pending_flight: Option<PendingFlightSnapshotV4>,
     pending_decision: Option<PendingDecisionV4>,
     pending_carry: Option<PendingCarryV4>,
+    tactical_intents: Option<crate::v4::movement::TacticalIntentBatch>,
     tackle_ready_at: BTreeMap<String,i64>,
     goal_audit: Option<crate::v4::transition::GoalDeltaAudit>,
+    #[cfg(test)]
+    locomotion_experiment: bool,
 }
 
 impl MatchSessionV4 {
@@ -157,9 +184,35 @@ impl MatchSessionV4 {
             pending_flight: None,
             pending_decision: None,
             pending_carry: None,
+            tactical_intents: None,
             tackle_ready_at: BTreeMap::new(),
             goal_audit: None,
+            #[cfg(test)]
+            locomotion_experiment: false,
         })
+    }
+
+    /// Internal experiment only; not selectable by JNI, MatchInput or shipping binaries.
+    #[cfg(test)]
+    pub(crate) fn new_locomotion_experiment(input: MatchInputV4) -> Result<Self, V4Error> {
+        let mut session = Self::new(input)?;
+        session.locomotion_experiment = true;
+        Ok(session)
+    }
+
+    fn uses_locomotion_experiment(&self) -> bool {
+        #[cfg(test)]
+        { self.locomotion_experiment }
+        #[cfg(not(test))]
+        { false }
+    }
+
+    fn runtime_behavior_label(&self) -> String {
+        if self.uses_locomotion_experiment() {
+            crate::v4::checkpoint::LOCOMOTION_EXPERIMENT_ID.to_string()
+        } else {
+            ENGINE_VERSION_V4.to_string()
+        }
     }
 
     pub fn is_full_time(&self) -> bool {
@@ -224,7 +277,9 @@ impl MatchSessionV4 {
             pi_policy_id: PI_POLICY_ID.into(),
             pending_decision: self.pending_decision.clone(),
             pending_carry: self.pending_carry.clone(),
+            tactical_intents: self.tactical_intents.clone(),
             tackle_ready_at: self.tackle_ready_at.clone(),
+            locomotion_experiment_id: self.uses_locomotion_experiment().then(|| crate::v4::checkpoint::LOCOMOTION_EXPERIMENT_ID.to_string()),
         };
 
         let payload_json = serde_json::to_string(&payload)?;
@@ -232,7 +287,7 @@ impl MatchSessionV4 {
 
         Ok(MatchCheckpointV4 {
             checkpoint_schema_version: CHECKPOINT_SCHEMA_VERSION_V4,
-            engine_version: ENGINE_VERSION_V4.to_string(),
+            engine_version: self.runtime_behavior_label(),
             protocol_version: ENGINE_PROTOCOL_VERSION_V4,
             event_schema_version: EVENT_SCHEMA_VERSION_V4,
             ruleset_identity: self.ruleset.identity.clone(),
@@ -289,8 +344,11 @@ impl MatchSessionV4 {
             pending_flight: payload.pending_flight,
             pending_decision: payload.pending_decision,
             pending_carry: payload.pending_carry,
+            tactical_intents: payload.tactical_intents,
             tackle_ready_at: payload.tackle_ready_at,
             goal_audit: None,
+            #[cfg(test)]
+            locomotion_experiment: payload.locomotion_experiment_id.is_some(),
         })
     }
 
@@ -323,6 +381,7 @@ impl MatchSessionV4 {
         crate::v4::transition::verify_roster_profiles(&candidate.state,&candidate.input)?;
         crate::v4::transition::verify_uncontrolled_ball(&candidate.state)?;
         crate::v4::transition::verify_clock_accounting(&candidate.state,candidate.home_possession_ms,candidate.away_possession_ms)?;
+        crate::v4::transition::verify_scheduler_clock(&candidate.state, &candidate.scheduler)?;
         crate::v4::transition::verify_command_journal(&candidate.command_timeline,candidate.next_command_id,candidate.sim_time_ms())?;
         crate::v4::transition::verify_event_journal(&candidate.events,candidate.event_count,candidate.last_delivered_event_index,
             candidate.retain_events,candidate.finished,candidate.sim_time_ms())?;
@@ -982,6 +1041,7 @@ impl MatchSessionV4 {
         self.pending_flight = None;
         self.pending_decision = None;
         self.pending_carry = None;
+        self.tactical_intents = None;
         self.state.dead_ball = None;
         self.state.des_clock.begin_period(period, regulation_ms);
         self.state.sync_legacy_clock();
@@ -1069,14 +1129,26 @@ impl MatchSessionV4 {
     }
 
     pub(super) fn step_one_des_event(&mut self, auto_advance_breaks: bool) -> Result<(), V4Error> {
+        #[cfg(test)]
+        let _cost_total=b12_cost_profile::scope("event_total");
         // The retained journal is append-only inside a DES step. Exclude it
         // from the candidate clone to avoid quadratic copying in FullEvent.
         // The live session retains the old journal throughout execution.
         let history=std::mem::take(&mut self.events);
-        let mut candidate=self.clone();
+        let mut candidate={
+            #[cfg(test)]
+            let _cost_clone=b12_cost_profile::scope("atomic_clone");
+            self.clone()
+        };
         self.events=history;
         let before_count=self.event_count;
-        candidate.step_one_des_event_checked(auto_advance_breaks)?;
+        {
+            #[cfg(test)]
+            let _cost_checked=b12_cost_profile::scope("checked_event");
+            candidate.step_one_des_event_checked(auto_advance_breaks)?;
+        }
+        #[cfg(test)]
+        let _cost_commit=b12_cost_profile::scope("journal_commit");
         let new_count=candidate.event_count.checked_sub(before_count)
             .ok_or_else(||V4Error::InvalidInput("INV-11: event sequence regressed".into()))?;
         if candidate.retain_events {
@@ -1108,7 +1180,12 @@ impl MatchSessionV4 {
         audit.verify(before,&self.state)?;
         crate::v4::transition::verify_commit_progress(before_ms,self.sim_time_ms(),before_events,self.event_count,before_steps,self.completed_beats)?;
         crate::v4::transition::verify_clock_accounting(&self.state,self.home_possession_ms,self.away_possession_ms)?;
+        crate::v4::transition::verify_scheduler_clock(&self.state, &self.scheduler)?;
         crate::v4::transition::verify_uncontrolled_ball(&self.state)?;
+        if self.uses_locomotion_experiment() {
+            crate::v4::checkpoint::verify_experimental_motion_lifetime(&self.state,
+                self.pending_flight.as_ref(),self.pending_decision.as_ref(),self.pending_carry.as_ref())?;
+        }
         Ok(())
     }
 
@@ -1159,7 +1236,11 @@ impl MatchSessionV4 {
                     self.sync_stage_from_clock();
 
                     // CRITICAL-08: Centralized world integration BEFORE dispatching any event.
-                    let interrupted_by_injury = self.advance_world_for_dt(dt_ms, is_ball_in_play)?;
+                    let interrupted_by_injury = {
+                        #[cfg(test)]
+                        let _cost_world=b12_cost_profile::scope(if is_ball_in_play{"world_live"}else{"world_dead"});
+                        self.advance_world_for_dt(dt_ms, is_ball_in_play)?
+                    };
                     // Injury invalidates live-play actions, but must never discard a
                     // period boundary already popped from the scheduler. Losing the
                     // announcement/end check can leave a half running until watchdog.
@@ -1174,6 +1255,25 @@ impl MatchSessionV4 {
                     }
                 }
 
+                // Ordinary action/manager/restart events start a new intent
+                // epoch. Clock-only checks preserve the observed targets.
+                // Actual tactical commands invalidate in their apply handler;
+                // unmatched clock probes do not.
+                if !matches!(&ev.payload, DesEventPayload::AnnounceAddedTime{..}
+                    | DesEventPayload::CheckPeriodEnd{..} | DesEventPayload::TacticalCommandEffective{..}) {
+                    self.tactical_intents=None;
+                }
+                #[cfg(test)]
+                let _cost_dispatch=b12_cost_profile::scope(match &ev.payload {
+                    DesEventPayload::AnnounceAddedTime{..}|DesEventPayload::CheckPeriodEnd{..}=>"dispatch_clock",
+                    DesEventPayload::TacticalCommandEffective{..}|DesEventPayload::AiManagerCheck{..}=>"dispatch_manager",
+                    DesEventPayload::DeadBallPhaseComplete{..}=>"dispatch_restart",
+                    DesEventPayload::EarlyInteractionResolved{..}=>"dispatch_contact",
+                    DesEventPayload::BallInFlightArrival{..}=>"dispatch_pass_arrival",
+                    DesEventPayload::ShotArrival{..}=>"dispatch_shot_arrival",
+                    DesEventPayload::FirstTouchComplete{..}=>"dispatch_first_touch",
+                    _=>"dispatch_other_live",
+                });
                 match ev.payload {
                     DesEventPayload::AnnounceAddedTime { period: p } => {
                         self.handle_announce_added_time(p, auto_advance_breaks)?;

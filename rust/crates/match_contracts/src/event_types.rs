@@ -283,6 +283,6 @@ pub enum InjuryKind {
     MuscleNonContact,
 }
 
-#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+#[derive(Debug,Clone,Copy,PartialEq,Eq,Serialize,Deserialize)]
 pub enum DefensiveRole { Press, Screen, Cover, Mark }
 

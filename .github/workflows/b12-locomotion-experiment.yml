@@ -1,0 +1,148 @@
+name: B1.2 experimental locomotion evidence
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'rust/**'
+      - 'tools/verify_b12_experiment_report.py'
+      - 'tools/test_verify_b12_experiment_report.py'
+      - 'tools/compare_b12_performance.py'
+      - '.github/workflows/b12-locomotion-experiment.yml'
+  workflow_dispatch:
+    inputs:
+      evidence_tier:
+        description: 'smoke (48), integration (200), or full (1000)'
+        type: choice
+        options: [smoke, integration, full]
+        default: full
+
+env:
+  B12_PAIRS_PER_SHARD: ${{ github.event_name == 'workflow_dispatch' && (inputs.evidence_tier == 'smoke' && '12' || inputs.evidence_tier == 'integration' && '50' || '250') || '250' }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: b12-experiment-${{ github.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'feature/b1-1-world-contracts'
+    name: B1.2 shot-contact regression gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report validator unit tests (synthetic fixtures only)
+        run: python3 -m unittest discover -s tools -p test_verify_b12_experiment_report.py -v
+      - name: Focused atomic-contact and checkpoint regressions
+        run: |
+          set -euo pipefail
+          cd rust/football_match_engine
+          cargo test --release --locked --lib b12_exp5_contact_outcome_is_atomic_in_both_directions -- --nocapture
+          cargo test --release --locked --lib b12_exp5_shot_block_path_survives_checkpoint_and_real_des -- --nocapture
+          cargo test --release --locked --lib b12_exp5_parry_ends_one_flight_then_schedules_recovery -- --nocapture
+          cargo test --release --locked --lib b12_exp6_keeper_reach_and_held_save_are_separate_actions -- --nocapture
+          cargo test --release --locked -p match_physics --lib b12_goalkeeper_contact_respects_box_reaction_and_momentum -- --nocapture
+          cargo test --release --locked -p match_physics --lib b12_exp10_keeper_contact_short_window_and_integer_oracle -- --nocapture
+          cargo test --release --locked -p match_physics --lib b12_exp11_block_contact -- --nocapture
+          cargo test --release --locked -p match_physics --lib b12_batch1_ -- --nocapture
+          cargo test --release --locked --lib b12_batch1_ -- --nocapture
+          cargo test --release --locked --lib b12_batch2_ -- --nocapture
+          cargo test --release --locked -p match_physics --lib b12_batch2_ -- --nocapture
+          cargo test --release --locked -p match_physics --lib b12_batch3_ -- --nocapture
+          cargo test --release --locked --lib b12_batch3_forecast_pruning_preserves_risk -- --nocapture
+          cargo test --release --locked --lib b12_candidate_live_uses_same_target_policy_rng_and_terminal_velocity -- --nocapture
+          cargo test --release --locked -p match_physics --lib b12_acceleration_filter_preserves_direct_contact_results -- --nocapture
+          cargo test --release --locked --lib b12_exp7_keeper_guard_geometry_is_mirrored_and_goal_side -- --nocapture
+          cargo test --release --locked --lib b12_exp7_keeper_facing_is_independent_of_guard_movement -- --nocapture
+          cargo test --release --locked --lib b12_exp8_keeper_restart_target_stays_in_own_goal_area -- --nocapture
+          cargo test --release --locked --lib b12_exp8_keeper_restart_motion_uses_solver_not_teleport -- --nocapture
+          cargo test --release --locked --lib b12_exp9_only_actual_owner_gets_carrier_intent -- --nocapture
+          cargo test --release --locked --lib b12_exp9_guard_uses_solver_braking_without_shape_speed_cap -- --nocapture
+      - name: Replay eight previous exp5 and exp5r1 failures
+        run: |
+          set -euo pipefail
+          cd rust/football_match_engine
+          cargo test --release --locked --lib b12_exp5_previous_failure_regressions -- --ignored --nocapture
+  paired:
+    needs: preflight
+    if: needs.preflight.result == 'success'
+    name: B1.2 hybrid pairs (shard ${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Paired full matches (selected evidence tier)
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          (
+            cd rust/football_match_engine
+            B12_EXPERIMENT_SHARD=${{ matrix.shard }} B12_EXPERIMENT_COUNT="$B12_PAIRS_PER_SHARD" B12_EXPERIMENT_REPORT_PATH="$GITHUB_WORKSPACE/evidence/b12-exp-${{ matrix.shard }}.json" cargo test --release --locked --lib b12_experiment_paired_report -- --ignored --nocapture
+          ) 2>&1 | tee evidence/b12-exp-${{ matrix.shard }}.log
+      - name: Same-runner exact parity and timing against frozen Mốc 2
+        # Compare every pair, including the full development gate.
+        if: success()
+        run: |
+          set -euo pipefail
+          # Frozen source, detached worktree only (no new branch).
+          # Only compare this behavior identity; future behavior changes
+          # must establish a fresh reference instead of weakening parity.
+          if ! grep -Fq 'BEHAVIOR = "b1.2-batch2-specialist-shots"' tools/verify_b12_experiment_report.py; then
+            echo "Different behavior; frozen Mốc 2 parity not applicable"
+            exit 0
+          fi
+          ref=411f580c04f4b840a70bdd026c5d91f1c7f9fa69
+          git fetch --no-tags --depth=1 origin "$ref"
+          git worktree add --detach "$RUNNER_TEMP/b12-reference" "$ref"
+          (
+            cd "$RUNNER_TEMP/b12-reference/rust/football_match_engine"
+            B12_EXPERIMENT_SHARD=${{ matrix.shard }} B12_EXPERIMENT_COUNT="$B12_PAIRS_PER_SHARD" B12_EXPERIMENT_REPORT_PATH="$GITHUB_WORKSPACE/evidence/reference-${{ matrix.shard }}.json" cargo test --release --locked --lib b12_experiment_paired_report -- --ignored --nocapture
+          ) 2>&1 | tee evidence/reference-${{ matrix.shard }}.log
+          python3 tools/compare_b12_performance.py "evidence/reference-${{ matrix.shard }}.json" "evidence/b12-exp-${{ matrix.shard }}.json" "evidence/performance-${{ matrix.shard }}.json"
+      - name: Replay recorded exp1 failure seeds
+        if: always() && matrix.shard == 0
+        run: |
+          set -euo pipefail
+          cd rust/football_match_engine
+          cargo test --release --locked --lib b12_exp2_previous_failure_regressions -- --ignored --nocapture
+      - name: Experimental cross-mode consistency
+        if: always() && matrix.shard == 0
+        run: |
+          set -euo pipefail
+          cd rust/football_match_engine
+          cargo test --release --locked --lib b12_experiment_cross_mode -- --ignored --nocapture
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: b12-experiment-shard-${{ matrix.shard }}
+          path: evidence/
+          if-no-files-found: error
+  summary:
+    name: B1.2 hybrid experiment evidence summary
+    needs: paired
+    if: always() && !cancelled() && needs.paired.result != 'skipped'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: b12-experiment-shard-*
+          merge-multiple: true
+          path: evidence
+      - name: Validate exact selected population and summarize
+        run: python3 tools/verify_b12_experiment_report.py evidence "$B12_PAIRS_PER_SHARD"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: b12-experiment-summary
+          path: evidence/b12-experiment-summary.json
+          if-no-files-found: error

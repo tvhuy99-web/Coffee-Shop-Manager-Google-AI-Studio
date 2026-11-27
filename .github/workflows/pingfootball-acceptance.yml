@@ -87,6 +87,8 @@ jobs:
             cargo test --workspace --locked --all-targets -- --nocapture
             cargo test --release --locked --lib pi_attribute_isolated_ -- --nocapture
             cargo test --release --locked --lib pi_psychology_ -- --nocapture
+            B12_SHADOW_SEEDS=1000 B12_SHADOW_REPORT_PATH="$GITHUB_WORKSPACE/evidence/b12-shadow-raw.json" cargo test --release --locked --lib b12_shadow_locomotion_report -- --ignored --nocapture
+            python3 "$GITHUB_WORKSPACE/tools/verify_b12_shadow_report.py" "$GITHUB_WORKSPACE/evidence/b12-shadow-raw.json" "$GITHUB_WORKSPACE/evidence/b12-shadow-summary.json"
             /usr/bin/time -v -o "$GITHUB_WORKSPACE/evidence/a4-host-process-resources.txt" env A4_PERF_REPORT_PATH="$GITHUB_WORKSPACE/evidence/a4-performance.json" cargo test --release --locked --lib a4_transaction_performance_report -- --ignored --nocapture
           ) 2>&1 | tee evidence/rust.log
       - uses: actions/upload-artifact@v4

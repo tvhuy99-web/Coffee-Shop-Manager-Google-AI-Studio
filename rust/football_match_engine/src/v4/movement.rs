@@ -178,102 +178,7 @@ pub(crate) fn advance_off_ball_movement_with_report(
     rng: &mut DeterministicRng,
 )->Vec<DefensiveIntent> {
     let dt = dt_sec.max(0.0);
-    // Scale stochastic target jitter/lapses by sqrt(min(dt, 1.0)) so short DES substeps (< 1s)
-    // do not cause players to oscillate or jitter unrealistically.
-    let noise_scale = dt.min(1.0).sqrt();
-    let ball_xy = state.ball.pos.xy();
-    let ball_progress_home = attacking_progress_m(TeamSideV4::Home, ball_xy) / PITCH_LENGTH_M;
-    // Read the opponent line once from the same world snapshot for every runner.
-    // Do not restrain a run after the pass has already been kicked.
-    let receiving_line = if state.ball.control == BallControlState::Controlled {
-        let launch_pos = state.players.get(carrier_idx)
-            .filter(|p| p.on_pitch && !p.sent_off && p.side == possession_side)
-            .map_or(ball_xy, |p| p.pos);
-        offside_reference_progress_m(state, possession_side, launch_pos)
-    } else {
-        None
-    };
-
-    // Snapshot every position before any player's movement is integrated.
-    // Support choices cannot see teammates' future positions just because
-    // they occur earlier in the storage order.
-    let controlled=state.ball.control==BallControlState::Controlled;
-    let observed:Vec<_>=state.players.iter().enumerate().filter(|(_,p)|p.on_pitch && !p.sent_off)
-        .map(|(idx,p)|ObservedPlayer{idx,side:p.side,pos:p.pos,is_gk:p.is_goalkeeper}).collect();
-    // Choose shape intentions before moving players; preserve RNG draw order.
-    let mut targets:Vec<Option<Vec2>>=vec![None;state.players.len()];
-    let mut support_order=Vec::new();
-    for idx in 0..state.players.len() {
-        if !state.players[idx].on_pitch || state.players[idx].sent_off {
-            continue;
-        }
-        let side = state.players[idx].side;
-        let is_gk = state.players[idx].is_goalkeeper;
-        let in_poss = side == possession_side;
-        let phase = state.team_state(side).phase;
-        let attrs = *player_attrs(state, &state.players[idx]);
-        let ti = state.active_instructions(side).clone();
-
-        let anchor = slot_anchor_m(state, input, &state.players[idx], in_poss);
-
-        let target = select_movement_target(MovementObservation {
-            is_carrier: idx == carrier_idx,
-            is_gk, in_poss, side, phase,
-            attrs: &attrs, instructions: &ti, anchor, ball_xy, ball_progress_home,
-            receiving_line, noise_scale,
-            slot_id: state.players[idx].slot_id.as_str(),
-            position_familiarity: state.players[idx].position_familiarity,
-            aerobic: state.players[idx].fatigue.aerobic,
-        }, rng);
-
-        targets[idx]=Some(target);
-        if controlled && in_poss && !is_gk && idx!=carrier_idx {
-            support_order.push(idx);
-        }
-    }
-    // Nearest available support gets first choice; the stable player ID
-    // breaks ties rather than incidental storage order. Reservations are
-    // shared team intentions, never claimed future coordinates.
-    support_order.sort_by(|a,b|{
-        state.players[*a].pos.distance(ball_xy).total_cmp(&state.players[*b].pos.distance(ball_xy))
-            .then_with(||state.players[*a].player_id.cmp(&state.players[*b].player_id))
-    });
-    let mut reserved=Vec::with_capacity(support_order.len());
-    for idx in support_order {
-        let p=&state.players[idx];
-        let attrs=player_attrs(state,p);
-        let awareness=((normalize_attr(attrs.mental.off_the_ball)*0.5
-            +normalize_attr(attrs.mental.anticipation)*0.25+normalize_attr(attrs.mental.decisions)*0.25)
-            *p.position_familiarity).clamp(0.0,1.0);
-        let legal_limit=receiving_line.map(|line|line-0.6-1.8*awareness+3.0*(1.0-awareness));
-        let shape=targets[idx].expect("active support player has a shape");
-        let target=select_coordinated_support_target(SupportObservation{idx,side:p.side,pos:p.pos,
-            ball:ball_xy,shape,players:&observed,awareness,
-            reach_m:player_max_speed_mps(attrs,p)*1.6,legal_limit},&reserved);
-        targets[idx]=Some(target);
-        reserved.push(target);
-    }
-
-    // Assign defensive roles only against controlled possession. Pass/loose
-    // ball physical contact paths and in-flight movement remain independent.
-    let defense=if controlled {
-        let side=possession_side.opposite();
-        let ti=state.active_instructions(side);
-        let candidates:Vec<_>=state.players.iter().enumerate().filter(|(_,p)|
-            p.on_pitch && !p.sent_off && !p.is_goalkeeper && p.side==side)
-            .map(|(idx,p)|{
-                let attrs=player_attrs(state,p);
-                DefenderObservation{idx,id:p.player_id.as_str(),pos:p.pos,shape:targets[idx].unwrap_or(p.pos),
-                    speed:player_max_speed_mps(attrs,p),work:normalize_attr(attrs.mental.work_rate),
-                    reading:normalize_attr(attrs.mental.positioning)*0.45+normalize_attr(attrs.mental.anticipation)*0.35
-                        +normalize_attr(attrs.mental.teamwork)*0.20,
-                    energy:(p.fatigue.aerobic*0.6+p.fatigue.anaerobic*0.4)/100.0}
-            }).collect();
-        assign_defense(side,ball_xy,carrier_idx,&observed,&candidates,
-            ti.pressing_intensity as f32/100.0,
-            state.team_state(side).phase==crate::v4::state::TacticalPhaseV4::DefensiveTransition)
-    }else{Vec::new()};
-    for a in &defense {targets[a.idx]=Some(a.target);}
+    let (targets, defense) = select_movement_targets(state, input, possession_side, carrier_idx, dt_sec, rng, false);
 
     // Integrate once using the final destination to enforce the speed budget
     // and avoid overshooting.
@@ -315,6 +220,657 @@ pub(crate) fn advance_off_ball_movement_with_report(
         }
     }
     defense
+}
+
+// Provisional speed bands; these are workload definitions, not match quotas.
+const EXP_HIGH_MPS: f32 = 4.2;
+const EXP_SPRINT_MPS: f32 = 7.0;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct ExperimentalMotionLoad {
+    pub high_s: f32,
+    pub high_distance_m: f32,
+    pub high_entries: u32,
+    pub sprint_s: f32,
+    pub sprint_entries: u32,
+}
+
+impl ExperimentalMotionLoad {
+    fn interval(self, start:Self) -> Result<Self,V4Error> {
+        Ok(Self { high_s:self.high_s-start.high_s,
+            high_distance_m:self.high_distance_m-start.high_distance_m,
+            high_entries:self.high_entries.checked_sub(start.high_entries)
+                .ok_or_else(||candidate_motion_error("high-speed entry count decreased"))?,
+            sprint_s:self.sprint_s-start.sprint_s,
+            sprint_entries:self.sprint_entries.checked_sub(start.sprint_entries)
+                .ok_or_else(||candidate_motion_error("sprint entry count decreased"))? })
+    }
+    fn add(&mut self, other:Self) {
+        self.high_s+=other.high_s;
+        self.high_distance_m+=other.high_distance_m;
+        self.high_entries=self.high_entries.saturating_add(other.high_entries);
+        self.sprint_s+=other.sprint_s;
+        self.sprint_entries=self.sprint_entries.saturating_add(other.sprint_entries);
+    }
+}
+
+fn sample_experimental_motion(plan:&MotionPlan, elapsed_ms:i64)
+    -> Result<(MotionResult,ExperimentalMotionLoad), V4Error> {
+    let (motion,high,sprint)=plan.sample_with_exposure(elapsed_ms,EXP_HIGH_MPS,EXP_SPRINT_MPS)
+        .map_err(candidate_motion_error)?;
+    Ok((motion,ExperimentalMotionLoad {
+        high_s:high.above_threshold_s, high_distance_m:high.above_threshold_distance_m,
+        high_entries:high.entries, sprint_s:sprint.above_threshold_s, sprint_entries:sprint.entries }))
+}
+
+/// Exactly one workload row per active actor per DES interval.
+pub(crate) fn record_experimental_motion(
+    row:&mut Option<ExperimentalMotionLoad>, load:ExperimentalMotionLoad,
+) -> Result<(),V4Error> {
+    if row.is_some() { return Err(candidate_motion_error("duplicate motion workload")); }
+    *row=Some(load);
+    Ok(())
+}
+
+/// Desired speed from the current tactical responsibility and remaining
+/// distance. The solver still enforces acceleration, braking and capability.
+/// These arrival horizons are exp3 hypotheses, not tracking-fitted parameters.
+fn experimental_tactical_speed(distance_m:f32, phase:crate::v4::state::TacticalPhaseV4,
+    role:Option<match_contracts::event_types::DefensiveRole>, is_gk:bool) -> f32 {
+    use crate::v4::state::TacticalPhaseV4::*;
+    use match_contracts::event_types::DefensiveRole::*;
+    let horizon_s=match role {
+        Some(Press)=>1.0,
+        Some(Screen|Cover|Mark)=>2.0,
+        None if is_gk=>3.0,
+        None if matches!(phase,AttackingTransition|DefensiveTransition)=>1.5,
+        None=>3.0,
+    };
+    distance_m/horizon_s
+}
+
+/// Position on the line from the current ball to the own goal center.
+/// The legacy keeper's depth request remains an upper bound, but the keeper
+/// must not advance beyond the ball while defending a close-range attack.
+/// This is a positioning intent only; the solver still limits actual motion.
+fn experimental_keeper_guard_target(side: TeamSideV4, ball: Vec2, shape: Vec2) -> Vec2 {
+    let ball_depth = if side == TeamSideV4::Home { ball.x } else { PITCH_LENGTH_M - ball.x };
+    let shape_depth = if side == TeamSideV4::Home { shape.x } else { PITCH_LENGTH_M - shape.x };
+    let depth = shape_depth.max(0.0).min(ball_depth.max(0.0) * 0.45);
+    let fraction = if ball_depth > 0.0 { depth / ball_depth } else { 0.0 };
+    let center_y = PITCH_WIDTH_M * 0.5;
+    let y = center_y + (ball.y - center_y) * fraction;
+    Vec2::new(if side == TeamSideV4::Home { depth } else { PITCH_LENGTH_M - depth }, y).clamp_to_pitch()
+}
+
+/// Goalkeepers do not share outfield celebration, wall or attacking-box
+/// setup targets. The goal-area center is a conservative provisional
+/// restart intent; a valid own goal kick may use its actual restart spot.
+/// This selects an intent only, not a teleport or a legal penalty stance.
+pub(crate) fn experimental_keeper_restart_target(
+    side: TeamSideV4,
+    kind: crate::v4::rules::DeadBallKind,
+    restart_side: TeamSideV4,
+    spot: Vec2,
+) -> Vec2 {
+    use match_contracts::spatial::{SIX_YARD_LENGTH_M, SIX_YARD_MIN_Y, SIX_YARD_MAX_Y};
+    use crate::v4::rules::DeadBallKind;
+    let own_depth = if side == TeamSideV4::Home { spot.x } else { PITCH_LENGTH_M - spot.x };
+    if kind == DeadBallKind::GoalKick && restart_side == side
+        && (0.5..=SIX_YARD_LENGTH_M).contains(&own_depth)
+        && (SIX_YARD_MIN_Y..=SIX_YARD_MAX_Y).contains(&spot.y) {
+        return spot;
+    }
+    Vec2::new(
+        if side == TeamSideV4::Home { SIX_YARD_LENGTH_M } else { PITCH_LENGTH_M - SIX_YARD_LENGTH_M },
+        PITCH_WIDTH_M * 0.5,
+    )
+}
+
+/// Serializable intent, not an outcome or a promised future position.
+#[derive(Debug,Clone,serde::Serialize,serde::Deserialize)]
+pub(crate) struct TacticalActorIntent {
+    player_id: String,
+    target: Vec2,
+    requested_speed: Option<f32>,
+    facing_rad: Option<f32>,
+    role: Option<match_contracts::event_types::DefensiveRole>,
+    marked_idx: Option<usize>,
+}
+
+#[derive(Debug,Clone,serde::Serialize,serde::Deserialize)]
+pub(crate) struct TacticalIntentBatch {
+    planned_at_ms: i64,
+    rows: Vec<Option<TacticalActorIntent>>,
+}
+
+impl TacticalIntentBatch {
+    pub(crate) fn validate(&self,state:&MatchStateV4,reserved:&[bool],now_ms:i64)->Result<(),V4Error>{
+        if self.planned_at_ms<0 || self.planned_at_ms>now_ms
+            || self.rows.len()!=state.players.len() || reserved.len()!=state.players.len() {
+            return Err(candidate_motion_error("tactical intent batch clock/roster"));
+        }
+        for (idx,(row,p)) in self.rows.iter().zip(&state.players).enumerate() {
+            if let Some(row)=row {
+                if !p.on_pitch || p.sent_off || reserved[idx] || row.player_id!=p.player_id
+                    || !row.target.x.is_finite() || !row.target.y.is_finite()
+                    || row.requested_speed.is_some_and(|v|!v.is_finite() || v<0.0)
+                    || row.facing_rad.is_some_and(|v|!v.is_finite())
+                    || row.marked_idx.is_some_and(|i|i>=state.players.len()) {
+                    return Err(candidate_motion_error("invalid tactical actor intent"));
+                }
+            } else if p.on_pitch && !p.sent_off && !reserved[idx] {
+                return Err(candidate_motion_error("missing active tactical actor intent"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One reservation mask used by the world and checkpoint validation.
+pub(crate) fn experimental_reserved_actors(state:&MatchStateV4,
+    flight:Option<&crate::v4::checkpoint::PendingFlightSnapshotV4>,
+    decision:Option<&crate::v4::checkpoint::PendingDecisionV4>,
+    carry:Option<&crate::v4::checkpoint::PendingCarryV4>)->Vec<bool>{
+    state.players.iter().map(|p|{
+        flight.and_then(|f|f.pass_contact_motion.as_ref())
+            .is_some_and(|m|m.candidate.player_id==p.player_id)
+        || carry.is_some_and(|c|c.motion.candidate.player_id==p.player_id
+            || c.challenger.as_ref().is_some_and(|m|m.candidate.player_id==p.player_id))
+        || decision.is_some_and(|d|d.challenger.as_ref().is_some_and(|m|m.candidate.player_id==p.player_id)
+            || d.preparation_motion.as_ref().is_some_and(|m|m.candidate.player_id==p.player_id))
+    }).collect()
+}
+
+/// Choose from the current observation once per semantic action epoch.
+/// Target jitter no longer depends on the length of the next DES interval.
+/// The existing one-second reference noise scale is retained, not calibrated.
+pub(crate) fn plan_experimental_tactical_intents(
+    state:&MatchStateV4,input:&MatchInputV4,possession_side:TeamSideV4,
+    carrier_idx:usize,planned_at_ms:i64,rng:&mut DeterministicRng,reserved:&[bool],
+)->Result<TacticalIntentBatch,V4Error>{
+    if reserved.len()!=state.players.len(){return Err(candidate_motion_error("tactical reservation mask"));}
+    let (targets,defense)=select_movement_targets(state,input,possession_side,carrier_idx,1.0,rng,true);
+    let ball=state.ball.pos.xy();
+    let mut rows=Vec::with_capacity(state.players.len());
+    for (idx,target) in targets.into_iter().enumerate() {
+        let p=&state.players[idx];
+        if !p.on_pitch || p.sent_off || reserved[idx] {rows.push(None);continue;}
+        let target=target.ok_or_else(||candidate_motion_error("missing tactical target"))?;
+        let assignment=defense.iter().find(|a|a.idx==idx);
+        let role=assignment.map(|a|a.role);
+        let phase=state.team_state(p.side).phase;
+        let guarding=p.is_goalkeeper && (p.side!=possession_side || state.ball.control==BallControlState::Loose);
+        let target=if guarding{experimental_keeper_guard_target(p.side,ball,target)}else{target};
+        let facing_rad=if guarding && p.pos.distance(ball)>0.001 {
+            Some((ball.y-p.pos.y).atan2(ball.x-p.pos.x))
+        }else{None};
+        let requested_speed=if guarding{None}else{
+            Some(experimental_tactical_speed(p.pos.distance(target),phase,role,p.is_goalkeeper))
+        };
+        rows.push(Some(TacticalActorIntent{player_id:p.player_id.clone(),target,requested_speed,
+            facing_rad,role,marked_idx:assignment.and_then(|a|a.marked_idx)}));
+    }
+    let batch=TacticalIntentBatch{planned_at_ms,rows};
+    batch.validate(state,reserved,planned_at_ms)?;
+    Ok(batch)
+}
+
+/// Apply previously chosen targets from the actual current motion state.
+/// Capability follows current fatigue; reserved contact paths remain exact.
+/// This is intent persistence, not a claim of partition-invariant integration.
+pub(crate) fn integrate_experimental_tactical_intents(
+    state:&mut MatchStateV4,batch:&TacticalIntentBatch,duration_ms:i64,
+    reserved:&[bool],budgets:&mut [f32],loads:&mut [Option<ExperimentalMotionLoad>],
+)->Result<Vec<DefensiveIntent>,V4Error>{
+    batch.validate(state,reserved,state.des_clock.sim_time_ms)?;
+    if budgets.len()!=state.players.len() || loads.len()!=state.players.len(){
+        return Err(candidate_motion_error("tactical accounting mask"));
+    }
+    let mut defense=Vec::new();
+    for (idx,row) in batch.rows.iter().enumerate(){
+        let Some(row)=row else {
+            if !reserved[idx] {
+                // Inactive actors do not consume a movement interval.
+                state.players[idx].last_moved_m=0.0;
+            }
+            continue;
+        };
+        let attrs=*player_attrs(state,&state.players[idx]);
+        // A committed contact has its own full-capability plan and never
+        // passes through this unreserved tactical integration.
+        let urgent=row.role==Some(match_contracts::event_types::DefensiveRole::Press)
+            || row.requested_speed.is_none();
+        let (bound,load)=integrate_experimental_actor_with_effort(&mut state.players[idx],&attrs,row.target,
+            row.requested_speed,row.facing_rad,duration_ms,urgent)?;
+        budgets[idx]=bound;
+        record_experimental_motion(&mut loads[idx],load)?;
+        if let Some(role)=row.role{
+            defense.push(DefensiveIntent{idx,target:row.target,role,marked_idx:row.marked_idx});
+        }
+    }
+    Ok(defense)
+}
+
+/// Isolated one-interval adapter for the existing focused tests.
+#[cfg(test)]
+pub(crate) fn advance_experimental_tactical_motion(
+    state: &mut MatchStateV4, input: &MatchInputV4, possession_side: TeamSideV4,
+    carrier_idx: usize, duration_ms: i64, rng: &mut DeterministicRng,
+    reserved: &[bool], budgets: &mut [f32], loads: &mut [Option<ExperimentalMotionLoad>],
+) -> Result<Vec<DefensiveIntent>, V4Error> {
+    let batch=plan_experimental_tactical_intents(state,input,possession_side,carrier_idx,
+        state.des_clock.sim_time_ms,rng,reserved)?;
+    integrate_experimental_tactical_intents(state,&batch,duration_ms,reserved,budgets,loads)
+}
+
+/// Does not charge fatigue; the centralized DES interval accounting owns it.
+/// Overspeed is braked, not clipped; target and boundary behavior are measured.
+pub(crate) fn integrate_experimental_actor(
+    player: &mut PlayerRuntimeStateV4,
+    attrs: &PlayerAttributes54,
+    target: Vec2,
+    requested_speed: Option<f32>,
+    duration_ms: i64,
+) -> Result<(f32,ExperimentalMotionLoad), V4Error> {
+    integrate_experimental_actor_with_facing(player, attrs, target, requested_speed, None, duration_ms)
+}
+
+fn integrate_experimental_actor_with_facing(
+    player: &mut PlayerRuntimeStateV4,
+    attrs: &PlayerAttributes54,
+    target: Vec2,
+    requested_speed: Option<f32>,
+    desired_facing_rad: Option<f32>,
+    duration_ms: i64,
+) -> Result<(f32,ExperimentalMotionLoad), V4Error> {
+    // Existing restart/setup execution and focused full-capability callers.
+    integrate_experimental_actor_with_effort(player,attrs,target,requested_speed,
+        desired_facing_rad,duration_ms,true)
+}
+
+/// Unreserved tactical movement requests a fraction of available
+/// translational effort. Maximal reach remains a physical capability,
+/// not the default expenditure for every routine shape adjustment.
+/// The 0.5 floor is a calibration hypothesis, not a fitted percentile.
+fn tactical_effort_cap(mut cap:MovementCapability,intensity:f32,urgent:bool)->MovementCapability{
+    if !urgent{
+        let effort=intensity.clamp(0.5,1.0);
+        cap.acceleration_mps2*=effort;
+        cap.braking_mps2*=effort;
+        cap.lateral_mps2*=effort;
+    }
+    cap
+}
+
+fn integrate_experimental_actor_with_effort(
+    player:&mut PlayerRuntimeStateV4,attrs:&PlayerAttributes54,target:Vec2,
+    requested_speed:Option<f32>,desired_facing_rad:Option<f32>,duration_ms:i64,urgent:bool,
+)->Result<(f32,ExperimentalMotionLoad),V4Error>{
+    let capability=MovementCapability::from_attributes(&attrs.physical,player.fatigue.aerobic,
+        player.fatigue.anaerobic).map_err(candidate_motion_error)?;
+    let intensity=requested_speed.map_or(1.0,|v|(v/capability.max_speed_mps).clamp(0.0,1.0));
+    let cap=tactical_effort_cap(capability,intensity,urgent);
+    let intent=MovementIntent{target,intensity,desired_facing_rad,reaction_ms:0};
+    let mut current = MotionState { position: player.pos, velocity: player.vel, facing_rad: player.facing_rad };
+    let mut remaining = duration_ms;
+    let mut distance = 0.0_f32;
+    let mut budget = 0.0_f32;
+    let mut workload=ExperimentalMotionLoad::default();
+    while remaining > 0 {
+        // Explicit technical plan horizon; no extra RNG or condition update.
+        let span = remaining.min(match_physics::movement::MAX_MOTION_HORIZON_MS);
+        let plan = MotionPlan::new(current, intent, cap).map_err(candidate_motion_error)?;
+        let (result,load)=sample_experimental_motion(&plan,span)?;
+        #[cfg(test)]
+        tracking_probe::record_relative(player,&plan,duration_ms-remaining,span)?;
+        workload.add(load);
+        let bound = plan.maximum_path_speed_mps() * match_contracts::units::ms_to_seconds_f32(span);
+        let eps = 32.0 * f32::EPSILON * PITCH_LENGTH_M.max(PITCH_WIDTH_M) + 4.0 * f32::EPSILON * bound;
+        if result.distance_m > bound + eps || current.position.distance(result.state.position) > result.distance_m + eps {
+            return Err(candidate_motion_error("experimental motion budget"));
+        }
+        distance += result.distance_m;
+        budget += bound;
+        current = result.state;
+        remaining -= span;
+    }
+    player.pos = current.position;
+    player.vel = current.velocity;
+    player.facing_rad = current.facing_rad;
+    player.target_pos = target;
+    player.last_moved_m = distance;
+    Ok((budget,workload))
+}
+
+/// Commit the exact solver path selected by the authoritative contact race.
+/// No replan, clipping, velocity snap, or extra condition charge.
+pub(crate) fn commit_experimental_contact(
+    player: &mut PlayerRuntimeStateV4,
+    path: &match_physics::PassContactMotion,
+    before_ms: i64,
+    now_ms: i64,
+) -> Result<(f32,ExperimentalMotionLoad), V4Error> {
+    if player.player_id != path.candidate.player_id || player.side != path.candidate.side
+        || before_ms < path.started_at_ms || now_ms < before_ms
+    {
+        return Err(candidate_motion_error("invalid committed contact actor or time"));
+    }
+    let plan = path.experimental_plan().map_err(candidate_motion_error)?
+        .ok_or_else(|| candidate_motion_error("missing contact locomotion"))?;
+    let (start,start_load)=sample_experimental_motion(&plan,before_ms-path.started_at_ms)?;
+    let (end,end_load)=sample_experimental_motion(&plan,now_ms-path.started_at_ms)?;
+    let workload=end_load.interval(start_load)?;
+    let current = MotionState { position: player.pos, velocity: player.vel, facing_rad: player.facing_rad };
+    if current != start.state {
+        return Err(V4Error::InvalidInput(format!(
+            "INV-02: committed contact origin mismatch for {} at {}: current {:?}, path {:?}",
+            player.player_id,before_ms,current,start.state)));
+    }
+    let distance = end.distance_m-start.distance_m;
+    let bound = plan.maximum_path_speed_mps()*match_contracts::units::ms_to_seconds_f32(now_ms-before_ms);
+    let eps = 32.0*f32::EPSILON*PITCH_LENGTH_M.max(PITCH_WIDTH_M) + 4.0*f32::EPSILON*end.distance_m;
+    if !distance.is_finite() || distance < 0.0 || distance > bound+eps
+        || start.state.position.distance(end.state.position)>distance+eps {
+        return Err(candidate_motion_error("committed contact path budget"));
+    }
+    crate::v4::transition::verify_motion_budget(player.pos,end.state.position,bound,&player.player_id)?;
+    #[cfg(test)]
+    tracking_probe::record(player,&plan,path.started_at_ms,before_ms,now_ms)?;
+    player.pos=end.state.position;
+    player.vel=end.state.velocity;
+    player.facing_rad=end.state.facing_rad;
+    player.target_pos=path.target;
+    player.last_moved_m=distance;
+    Ok((bound,workload))
+}
+
+/// The experimental policy must not confuse a retained scheduler actor index
+/// (e.g. the last passer) with exclusive physical control of the ball.
+pub(crate) fn experimental_controlled_actor(state: &MatchStateV4) -> Option<usize> {
+    if state.ball.control != BallControlState::Controlled { return None; }
+    let id = state.ball.owner_player_id.as_deref()?;
+    let side = state.ball.owner_side?;
+    state.players.iter().position(|p| p.on_pitch && !p.sent_off
+        && p.side == side && p.player_id == id)
+}
+
+/// Select intentions from one immutable world snapshot; shared with the isolated
+/// B1.2 candidate adapter. Legacy integration and RNG draw order are unchanged.
+fn select_movement_targets(
+    state: &MatchStateV4,
+    input: &MatchInputV4,
+    possession_side: TeamSideV4,
+    carrier_idx: usize,
+    dt_sec: f32,
+    rng: &mut DeterministicRng,
+    experimental: bool,
+) -> (Vec<Option<Vec2>>, Vec<DefensiveIntent>) {
+    let carrier = if experimental { experimental_controlled_actor(state) } else { Some(carrier_idx) };
+    let dt = dt_sec.max(0.0);
+    // Scale stochastic target jitter/lapses by sqrt(min(dt, 1.0)) so short DES substeps (< 1s)
+    // do not cause players to oscillate or jitter unrealistically.
+    let noise_scale = dt.min(1.0).sqrt();
+    let ball_xy = state.ball.pos.xy();
+    let ball_progress_home = attacking_progress_m(TeamSideV4::Home, ball_xy) / PITCH_LENGTH_M;
+    // Read the opponent line once from the same world snapshot for every runner.
+    // Do not restrain a run after the pass has already been kicked.
+    let receiving_line = if state.ball.control == BallControlState::Controlled {
+        let launch_pos = carrier.and_then(|idx| state.players.get(idx))
+            .filter(|p| p.on_pitch && !p.sent_off && p.side == possession_side)
+            .map_or(ball_xy, |p| p.pos);
+        offside_reference_progress_m(state, possession_side, launch_pos)
+    } else {
+        None
+    };
+
+    // Snapshot every position before any player's movement is integrated.
+    // Support choices cannot see teammates' future positions just because
+    // they occur earlier in the storage order.
+    let controlled=state.ball.control==BallControlState::Controlled;
+    let observed:Vec<_>=state.players.iter().enumerate().filter(|(_,p)|p.on_pitch && !p.sent_off)
+        .map(|(idx,p)|ObservedPlayer{idx,side:p.side,pos:p.pos,is_gk:p.is_goalkeeper}).collect();
+    // Choose shape intentions before moving players; preserve RNG draw order.
+    let mut targets:Vec<Option<Vec2>>=vec![None;state.players.len()];
+    let mut support_order=Vec::new();
+    for idx in 0..state.players.len() {
+        if !state.players[idx].on_pitch || state.players[idx].sent_off {
+            continue;
+        }
+        let side = state.players[idx].side;
+        let is_gk = state.players[idx].is_goalkeeper;
+        let in_poss = side == possession_side;
+        let phase = state.team_state(side).phase;
+        let attrs = *player_attrs(state, &state.players[idx]);
+        let ti = state.active_instructions(side).clone();
+
+        let anchor = slot_anchor_m(state, input, &state.players[idx], in_poss);
+
+        let target = select_movement_target(MovementObservation {
+            is_carrier: carrier == Some(idx),
+            is_gk, in_poss, side, phase,
+            attrs: &attrs, instructions: &ti, anchor, ball_xy, ball_progress_home,
+            receiving_line, noise_scale,
+            slot_id: state.players[idx].slot_id.as_str(),
+            position_familiarity: state.players[idx].position_familiarity,
+            aerobic: state.players[idx].fatigue.aerobic,
+        }, rng);
+
+        targets[idx]=Some(target);
+        if controlled && in_poss && !is_gk && carrier != Some(idx) {
+            support_order.push(idx);
+        }
+    }
+    // Nearest available support gets first choice; the stable player ID
+    // breaks ties rather than incidental storage order. Reservations are
+    // shared team intentions, never claimed future coordinates.
+    support_order.sort_by(|a,b|{
+        state.players[*a].pos.distance(ball_xy).total_cmp(&state.players[*b].pos.distance(ball_xy))
+            .then_with(||state.players[*a].player_id.cmp(&state.players[*b].player_id))
+    });
+    let mut reserved=Vec::with_capacity(support_order.len());
+    for idx in support_order {
+        let p=&state.players[idx];
+        let attrs=player_attrs(state,p);
+        let awareness=((normalize_attr(attrs.mental.off_the_ball)*0.5
+            +normalize_attr(attrs.mental.anticipation)*0.25+normalize_attr(attrs.mental.decisions)*0.25)
+            *p.position_familiarity).clamp(0.0,1.0);
+        let legal_limit=receiving_line.map(|line|line-0.6-1.8*awareness+3.0*(1.0-awareness));
+        let shape=targets[idx].expect("active support player has a shape");
+        let target=select_coordinated_support_target(SupportObservation{idx,side:p.side,pos:p.pos,
+            ball:ball_xy,shape,players:&observed,awareness,
+            reach_m:player_max_speed_mps(attrs,p)*1.6,legal_limit},&reserved);
+        targets[idx]=Some(target);
+        reserved.push(target);
+    }
+
+    // Assign defensive roles only against controlled possession. Pass/loose
+    // ball physical contact paths and in-flight movement remain independent.
+    let defense=if let Some(carrier_idx) = carrier.filter(|_| controlled) {
+        let side=possession_side.opposite();
+        let ti=state.active_instructions(side);
+        let candidates:Vec<_>=state.players.iter().enumerate().filter(|(_,p)|
+            p.on_pitch && !p.sent_off && !p.is_goalkeeper && p.side==side)
+            .map(|(idx,p)|{
+                let attrs=player_attrs(state,p);
+                DefenderObservation{idx,id:p.player_id.as_str(),pos:p.pos,shape:targets[idx].unwrap_or(p.pos),
+                    speed:player_max_speed_mps(attrs,p),work:normalize_attr(attrs.mental.work_rate),
+                    reading:normalize_attr(attrs.mental.positioning)*0.45+normalize_attr(attrs.mental.anticipation)*0.35
+                        +normalize_attr(attrs.mental.teamwork)*0.20,
+                    energy:(p.fatigue.aerobic*0.6+p.fatigue.anaerobic*0.4)/100.0}
+            }).collect();
+        assign_defense(side,ball_xy,carrier_idx,&observed,&candidates,
+            ti.pressing_intensity as f32/100.0,
+            state.team_state(side).phase==crate::v4::state::TacticalPhaseV4::DefensiveTransition)
+    }else{Vec::new()};
+    for a in &defense {targets[a.idx]=Some(a.target);}
+
+    (targets, defense)
+}
+
+use match_physics::movement::{MotionPlan, MotionState, MotionResult, MovementCapability, MovementIntent};
+use crate::v4::error::V4Error;
+
+/// Candidate paths are explicit. A committed forecast takes precedence over a
+/// newly selected tactical target; no preliminary player displacement is applied.
+/// This is an isolated adapter, not yet the MatchSession production integrator.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CommittedMotion {
+    pub player_idx: usize,
+    pub plan: MotionPlan,
+    pub elapsed_before_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerMotionInterval {
+    pub player_idx: usize,
+    pub start: MotionResult,
+    pub end: MotionResult,
+    pub duration_ms: i64,
+    pub target: Vec2,
+}
+
+impl PlayerMotionInterval {
+    pub fn distance_m(&self) -> f32 { self.end.distance_m - self.start.distance_m }
+    pub fn acceleration_load_mps(&self) -> f32 {
+        self.end.acceleration_load_mps - self.start.acceleration_load_mps
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MotionIntervalContext {
+    pub possession_side: TeamSideV4,
+    pub is_dead_ball: bool,
+}
+
+fn candidate_motion_error(detail: impl std::fmt::Debug) -> V4Error {
+    V4Error::InvalidInput(format!("B1.2 candidate locomotion: {detail:?}"))
+}
+
+/// Isolated solver comparison using the legacy target policy and draw order.
+/// This adapter measures locomotion independently of changes to intentions.
+/// The DES experiment uses advance_experimental_tactical_motion instead.
+/// RNG and world state are committed only if the entire interval validates.
+pub fn advance_candidate_live_motion(
+    state: &mut MatchStateV4,
+    input: &MatchInputV4,
+    possession_side: TeamSideV4,
+    carrier_idx: usize,
+    duration_ms: i64,
+    rng: &mut DeterministicRng,
+    committed: &[CommittedMotion],
+) -> Result<(Vec<PlayerMotionInterval>, Vec<DefensiveIntent>), V4Error> {
+    if duration_ms <= 0 || duration_ms > match_physics::movement::MAX_MOTION_HORIZON_MS {
+        return Err(candidate_motion_error("invalid live duration"));
+    }
+    crate::v4::transition::verify_commit_structure(state)?;
+    let mut next_rng = rng.clone();
+    let dt = match_contracts::units::ms_to_seconds_f32(duration_ms);
+    let (targets, defense) = select_movement_targets(state, input, possession_side, carrier_idx, dt, &mut next_rng, false);
+    let intents: Vec<_> = targets.into_iter().map(|target| target.map(|target|
+        MovementIntent { target, intensity: 1.0, desired_facing_rad: None, reaction_ms: 0 }
+    )).collect();
+    let rows = advance_candidate_motion(state, &intents, committed, duration_ms,
+        MotionIntervalContext { possession_side, is_dead_ball: false })?;
+    *rng = next_rng;
+    Ok((rows, defense))
+}
+
+/// Stage one motion and condition result per active player, verify all rows,
+/// then publish both atomically. Do not charge interval fatigue again.
+/// For a dead-ball interval the caller supplies low-intensity intents; the
+/// same physical solver is used. Administrative kickoff resets are separate.
+pub fn advance_candidate_motion(
+    state: &mut MatchStateV4,
+    intents: &[Option<MovementIntent>],
+    committed: &[CommittedMotion],
+    duration_ms: i64,
+    context: MotionIntervalContext,
+) -> Result<Vec<PlayerMotionInterval>, V4Error> {
+    if duration_ms <= 0 || duration_ms > match_physics::movement::MAX_MOTION_HORIZON_MS
+        || intents.len() != state.players.len()
+    {
+        return Err(candidate_motion_error("invalid interval or intent count"));
+    }
+    crate::v4::transition::verify_commit_structure(state)?;
+    let mut paths = vec![None; state.players.len()];
+    for row in committed {
+        let p = state.players.get(row.player_idx).ok_or_else(|| candidate_motion_error("unknown committed actor"))?;
+        if !p.on_pitch || p.sent_off || row.elapsed_before_ms < 0
+            || paths[row.player_idx].replace(*row).is_some()
+        {
+            return Err(candidate_motion_error("invalid or duplicate committed actor"));
+        }
+    }
+    let mut rows = Vec::new();
+    let mut next_fatigue = Vec::new();
+    let dt = match_contracts::units::ms_to_seconds_f32(duration_ms);
+    for (idx, p) in state.players.iter().enumerate() {
+        if !p.on_pitch || p.sent_off {
+            if intents[idx].is_some() { return Err(candidate_motion_error("ineligible actor intent")); }
+            continue;
+        }
+        let current = MotionState { position: p.pos, velocity: p.vel, facing_rad: p.facing_rad };
+        let (plan, elapsed, target) = if let Some(path) = paths[idx] {
+            (path.plan, path.elapsed_before_ms, path.plan.target())
+        } else {
+            let intent = intents[idx].ok_or_else(|| candidate_motion_error("missing active actor intent"))?;
+            let profile = state.player_profiles.get(p.profile_idx)
+                .ok_or_else(|| candidate_motion_error("missing actor profile"))?;
+            let cap = MovementCapability::from_attributes(&profile.attrs.physical, p.fatigue.aerobic, p.fatigue.anaerobic)
+                .map_err(candidate_motion_error)?;
+            (MotionPlan::new(current, intent, cap).map_err(candidate_motion_error)?, 0, intent.target)
+        };
+        let end_ms = elapsed.checked_add(duration_ms).ok_or_else(|| candidate_motion_error("interval overflow"))?;
+        let start = plan.sample_at(elapsed).map_err(candidate_motion_error)?;
+        let end = plan.sample_at(end_ms).map_err(candidate_motion_error)?;
+        if start.state != current {
+            return Err(candidate_motion_error("committed path does not start at authoritative state"));
+        }
+        let distance = end.distance_m - start.distance_m;
+        let load = end.acceleration_load_mps - start.acceleration_load_mps;
+        let roundoff = 32.0 * f32::EPSILON * PITCH_LENGTH_M.max(PITCH_WIDTH_M)
+            + 4.0 * f32::EPSILON * end.distance_m;
+        if !distance.is_finite() || distance < 0.0 || !load.is_finite() || load < 0.0
+            || distance > plan.maximum_path_speed_mps() * dt + roundoff
+            || start.state.position.distance(end.state.position) > distance + roundoff
+        {
+            return Err(candidate_motion_error("invalid realized path length"));
+        }
+        // Preserve the existing two-pool model and intensity classification,
+        // but use the actual path, including during stoppages. No second
+        // interval charge may be applied by the caller to these rows.
+        let profile = state.player_profiles.get(p.profile_idx)
+            .ok_or_else(|| candidate_motion_error("missing fatigue profile"))?;
+        let press = state.active_instructions(p.side).pressing_intensity as f32 / 100.0;
+        let speed = distance / dt.max(0.05);
+        let high = !context.is_dead_ball && !p.is_goalkeeper
+            && (speed >= 4.2 || (p.side != context.possession_side && press >= 0.70 && speed >= 3.2));
+        let mut fatigue = p.fatigue;
+        fatigue.apply_interval(dt, distance, high, context.is_dead_ball,
+            profile.attrs.physical.stamina, profile.attrs.physical.natural_fitness);
+        if !fatigue.distance_m.is_finite() || fatigue.distance_m < p.fatigue.distance_m
+            || !(0.0..=100.0).contains(&fatigue.aerobic)
+            || !(0.0..=100.0).contains(&fatigue.anaerobic)
+        {
+            return Err(candidate_motion_error("invalid resulting condition"));
+        }
+        next_fatigue.push(fatigue);
+        rows.push(PlayerMotionInterval { player_idx: idx, start, end, duration_ms, target });
+    }
+    for (row, fatigue) in rows.iter().zip(next_fatigue) {
+        let p = &mut state.players[row.player_idx];
+        p.pos = row.end.state.position;
+        p.vel = row.end.state.velocity;
+        p.facing_rad = row.end.state.facing_rad;
+        p.target_pos = row.target;
+        p.last_moved_m = row.distance_m();
+        p.fatigue = fatigue;
+    }
+    for p in &mut state.players {
+        if !p.on_pitch || p.sent_off { p.last_moved_m = 0.0; }
+    }
+    Ok(rows)
 }
 
 /// Legacy fallback lookup of a player's 54 attributes from `MatchInputV4` (lineup + bench).
@@ -378,5 +934,508 @@ fn slot_anchor_m(
         Vec2::from_normalized_slot(player.side, nx, ny)
     } else {
         Vec2::new(PITCH_LENGTH_M * 0.5, PITCH_WIDTH_M * 0.5)
+    }
+}
+
+
+#[cfg(test)]
+mod candidate_locomotion_tests {
+    use super::*;
+    use crate::v4::input::{RulesModeV4, SimulationMode};
+    use crate::v4::tests::make_v4_input;
+
+    fn fixture() -> (MatchInputV4, MatchStateV4) {
+        let input = make_v4_input(12046, SimulationMode::FullEvent, RulesModeV4::Standard);
+        let state = MatchStateV4::from_input(&input);
+        (input, state)
+    }
+
+    fn stationary(state: &MatchStateV4) -> Vec<Option<MovementIntent>> {
+        state.players.iter().map(|p| {
+            (p.on_pitch && !p.sent_off).then_some(MovementIntent {
+                target: p.pos, intensity: 0.0, desired_facing_rad: None, reaction_ms: 0,
+            })
+        }).collect()
+    }
+
+    fn context(dead: bool) -> MotionIntervalContext {
+        MotionIntervalContext { possession_side: TeamSideV4::Home, is_dead_ball: dead }
+    }
+
+    fn snap(state: &MatchStateV4) -> String { serde_json::to_string(state).unwrap() }
+
+    #[test]
+    fn b12_candidate_live_uses_same_target_policy_rng_and_terminal_velocity() {
+        let (input, mut state) = fixture();
+        let mut legacy = state.clone();
+        let mut old_rng = DeterministicRng::new(19);
+        let mut new_rng = old_rng.clone();
+        advance_off_ball_movement_with_report(&mut legacy, &input, TeamSideV4::Home, 10, 0.5, &mut old_rng);
+        let (rows, _) = advance_candidate_live_motion(&mut state, &input, TeamSideV4::Home, 10, 500, &mut new_rng, &[]).unwrap();
+        assert_eq!(old_rng.state(), new_rng.state());
+        assert_eq!(rows.len(), state.players.iter().filter(|p|p.on_pitch&&!p.sent_off).count());
+        for r in rows {
+            assert_eq!(state.players[r.player_idx].target_pos, legacy.players[r.player_idx].target_pos);
+            assert_eq!(state.players[r.player_idx].vel, r.end.state.velocity);
+            assert_eq!(state.players[r.player_idx].last_moved_m, r.distance_m());
+        }
+    }
+
+    #[test]
+    fn b12_candidate_committed_path_wins_and_actual_distance_is_charged_once() {
+        let (_, mut state) = fixture();
+        let idx = 1;
+        let p = &mut state.players[idx];
+        p.pos = Vec2::new(50.0, 34.0);
+        p.vel = Vec2::new(6.0, 0.0);
+        p.facing_rad = 0.0;
+        let original = p.fatigue;
+        let cap = MovementCapability { max_speed_mps: 8.0, acceleration_mps2: 4.0,
+            braking_mps2: 5.0, lateral_mps2: 3.0, body_turn_radps: 3.0 };
+        let plan = MotionPlan::new(MotionState { position: p.pos, velocity: p.vel, facing_rad: p.facing_rad },
+            MovementIntent { target: Vec2::new(20.0, 34.0), intensity: 1.0, desired_facing_rad: None, reaction_ms: 0 },cap).unwrap();
+        let intents = stationary(&state);
+        let rows = advance_candidate_motion(&mut state, &intents,
+            &[CommittedMotion { player_idx: idx, plan, elapsed_before_ms: 0 }], 2400, context(false)).unwrap();
+        let row = rows.iter().find(|r|r.player_idx == idx).unwrap();
+        assert_eq!(row.end, plan.sample_at(2400).unwrap());
+        assert!(row.distance_m() > row.start.state.position.distance(row.end.state.position) + 2.0);
+        assert_eq!(state.players[idx].last_moved_m, row.distance_m());
+        assert!((state.players[idx].fatigue.distance_m-original.distance_m-row.distance_m()).abs()<1e-4);
+        assert!(row.acceleration_load_mps()>6.0);
+        let before = snap(&state);
+        assert!(advance_candidate_motion(&mut state, &intents,
+            &[CommittedMotion { player_idx: idx, plan, elapsed_before_ms: 0 }], 100, context(false)).is_err());
+        assert_eq!(snap(&state), before);
+    }
+
+    #[test]
+    fn b12_candidate_split_committed_path_preserves_motion_and_distance() {
+        let (_, mut whole) = fixture();
+        let idx = 1;
+        let p = &mut whole.players[idx];
+        p.pos = Vec2::new(50.0,34.0);
+        p.vel = Vec2::new(4.0,0.0);
+        p.facing_rad = 0.0;
+        let distance_before = p.fatigue.distance_m;
+        let cap = MovementCapability { max_speed_mps: 8.0, acceleration_mps2: 4.0,
+            braking_mps2: 5.0, lateral_mps2: 3.0, body_turn_radps: 3.0 };
+        let plan = MotionPlan::new(MotionState { position: p.pos, velocity: p.vel, facing_rad: p.facing_rad },
+            MovementIntent { target: Vec2::new(20.0,34.0), intensity: 1.0, desired_facing_rad: None, reaction_ms: 0 },cap).unwrap();
+        let mut split = whole.clone();
+        let row = CommittedMotion { player_idx: idx, plan, elapsed_before_ms: 0 };
+        let intents = stationary(&whole);
+        advance_candidate_motion(&mut whole,&intents,&[row],1777,context(false)).unwrap();
+        let intents = stationary(&split);
+        advance_candidate_motion(&mut split,&intents,&[row],623,context(false)).unwrap();
+        let intents = stationary(&split);
+        advance_candidate_motion(&mut split,&intents,&[CommittedMotion { elapsed_before_ms:623,..row }],1154,context(false)).unwrap();
+        let a=&whole.players[idx]; let b=&split.players[idx];
+        assert_eq!((a.pos,a.vel,a.facing_rad),(b.pos,b.vel,b.facing_rad));
+        assert!((a.fatigue.distance_m-b.fatigue.distance_m).abs()<1e-4);
+        assert!((b.fatigue.distance_m-distance_before-plan.sample_at(1777).unwrap().distance_m).abs()<1e-4);
+        // Energy and sprint counters intentionally retain the legacy interval
+        // classification; this is not a proof of condition split invariance.
+    }
+
+    #[test]
+    fn b12_candidate_dead_ball_uses_real_distance_and_skips_inactive() {
+        let (_, mut state) = fixture();
+        state.players[1].on_pitch = false;
+        let inactive = state.players[1].fatigue;
+        let initial = state.clone();
+        let mut intents = stationary(&state);
+        let p = &state.players[2];
+        intents[2] = Some(MovementIntent { target: Vec2::new(p.pos.x+10.0, p.pos.y),
+            intensity: 0.2, desired_facing_rad: None, reaction_ms: 0 });
+        let rows = advance_candidate_motion(&mut state, &intents, &[], 1000, context(true)).unwrap();
+        assert_eq!(state.players[1].fatigue, inactive);
+        assert!(!rows.iter().any(|r|r.player_idx==1));
+        for row in rows {
+            let delta=state.players[row.player_idx].fatigue.distance_m-initial.players[row.player_idx].fatigue.distance_m;
+            assert!((delta-row.distance_m()).abs()<1e-4);
+        }
+        assert!(state.players[2].last_moved_m>0.0);
+        assert_eq!(state.players[3].last_moved_m,0.0);
+    }
+
+    #[test]
+    fn b12_candidate_invalid_duplicate_or_late_row_rolls_back_world_and_rng() {
+        let (input, mut state) = fixture();
+        let mut intents = stationary(&state);
+        let before = snap(&state);
+        intents[20] = Some(MovementIntent { intensity: f32::NAN, ..intents[20].unwrap() });
+        assert!(advance_candidate_motion(&mut state,&intents,&[],500,context(false)).is_err());
+        assert_eq!(snap(&state),before);
+        let p=&state.players[1];
+        let cap=MovementCapability::from_attributes(&player_attrs(&state,p).physical,p.fatigue.aerobic,p.fatigue.anaerobic).unwrap();
+        let plan=MotionPlan::new(MotionState{position:p.pos,velocity:p.vel,facing_rad:p.facing_rad},
+            stationary(&state)[1].unwrap(),cap).unwrap();
+        let row=CommittedMotion{player_idx:1,plan,elapsed_before_ms:0};
+        let mut rng=DeterministicRng::new(19);
+        let rng_before=rng.state();
+        assert!(advance_candidate_live_motion(&mut state,&input,TeamSideV4::Home,10,500,&mut rng,&[row,row]).is_err());
+        assert_eq!(snap(&state),before);
+        assert_eq!(rng.state(),rng_before);
+    }
+}
+
+
+#[cfg(test)]
+mod b12_experimental_workload_tests {
+    use super::*;
+    use crate::v4::state::TacticalPhaseV4::*;
+    use match_contracts::event_types::DefensiveRole::*;
+
+    #[test]
+    fn b12_batch3_tactical_effort_is_submaximal_without_reducing_physical_speed(){
+        let cap=MovementCapability{max_speed_mps:8.0,acceleration_mps2:4.0,
+            braking_mps2:6.0,lateral_mps2:5.0,body_turn_radps:4.0};
+        let routine=tactical_effort_cap(cap,0.25,false);
+        assert_eq!(routine.max_speed_mps,cap.max_speed_mps);
+        assert_eq!(routine.body_turn_radps,cap.body_turn_radps);
+        assert_eq!((routine.acceleration_mps2,routine.braking_mps2,routine.lateral_mps2),(2.0,3.0,2.5));
+        assert_eq!(tactical_effort_cap(cap,0.25,true),cap);
+        assert_eq!(tactical_effort_cap(cap,1.0,false),cap);
+        for sign in [-1.0,1.0]{
+            let origin=MotionState{position:Vec2::new(52.5,34.0),velocity:Vec2::default(),facing_rad:0.0};
+            let intent=MovementIntent{target:Vec2::new(52.5+sign*20.0,34.0),intensity:0.5,
+                desired_facing_rad:None,reaction_ms:0};
+            let a=MotionPlan::new(origin,intent,cap).unwrap().sample_at(500).unwrap();
+            let b=MotionPlan::new(origin,intent,routine).unwrap().sample_at(500).unwrap();
+            assert!(b.state.position.distance(origin.position)<a.state.position.distance(origin.position));
+            assert!(b.state.velocity.x.abs()<a.state.velocity.x.abs());
+            assert!(b.distance_m<=routine.max_speed_mps*0.5);
+        }
+    }
+
+    #[test]
+    fn b12_tactical_speed_is_local_to_distance_and_responsibility() {
+        assert_eq!(experimental_tactical_speed(0.0,OutOfPossession,None,false),0.0);
+        assert_eq!(experimental_tactical_speed(6.0,InPossession,None,false),2.0);
+        assert_eq!(experimental_tactical_speed(6.0,AttackingTransition,None,false),4.0);
+        assert_eq!(experimental_tactical_speed(6.0,OutOfPossession,Some(Press),false),6.0);
+        assert_eq!(experimental_tactical_speed(6.0,OutOfPossession,Some(Cover),false),3.0);
+        assert_eq!(experimental_tactical_speed(6.0,DefensiveTransition,None,true),2.0);
+    }
+
+    #[test]
+    fn b12_exp7_keeper_guard_geometry_is_mirrored_and_goal_side() {
+        let shape = Vec2::new(8.0, 31.0);
+        for ball in [Vec2::new(30.0, 20.0), Vec2::new(3.0, 50.0), Vec2::new(0.0, 34.0)] {
+            let p = experimental_keeper_guard_target(TeamSideV4::Home, ball, shape);
+            let mirror = |v: Vec2| Vec2::new(PITCH_LENGTH_M-v.x,PITCH_WIDTH_M-v.y);
+            let q = experimental_keeper_guard_target(TeamSideV4::Away, mirror(ball), mirror(shape));
+            assert!(p.x >= 0.0 && p.x <= ball.x);
+            assert!(p.x <= shape.x);
+            assert!(mirror(p).distance(q) < 0.0001);
+            if ball.x > 0.0 {
+                assert!((p.y - (34.0+(ball.y-34.0)*p.x/ball.x)).abs() < 0.0001);
+            }
+        }
+        let central=experimental_keeper_guard_target(TeamSideV4::Home,Vec2::new(20.0,34.0),shape);
+        assert_eq!(central.y,34.0);
+    }
+
+    #[test]
+    fn b12_exp7_keeper_facing_is_independent_of_guard_movement() {
+        let input = crate::v4::tests::make_v4_input(
+            12046, crate::v4::input::SimulationMode::FullEvent,
+            crate::v4::input::RulesModeV4::Standard,
+        );
+        let mut state = MatchStateV4::from_input(&input);
+        let idx = state.players.iter().position(|p| p.is_goalkeeper && p.on_pitch).unwrap();
+        let attrs = *player_attrs(&state, &state.players[idx]);
+        let p = &mut state.players[idx];
+        p.pos = Vec2::new(5.0, 34.0);
+        p.vel = Vec2::default();
+        p.facing_rad = 0.0;
+        let start = p.pos;
+        let (bound, load) = integrate_experimental_actor_with_facing(
+            p, &attrs, Vec2::new(5.0, 42.0), Some(3.0), Some(0.0), 500).unwrap();
+        assert!(p.pos.y > start.y && p.vel.y > 0.0);
+        assert!((p.pos.x-start.x).abs() < 0.0001);
+        assert!(p.facing_rad.abs() < 0.0001);
+        assert!(p.last_moved_m > 0.0 && p.last_moved_m <= bound);
+        assert_eq!(load.high_entries, 0);
+        assert_eq!(load.sprint_entries, 0);
+    }
+
+    #[test]
+    fn b12_exp8_keeper_restart_target_stays_in_own_goal_area() {
+        use crate::v4::rules::DeadBallKind::*;
+        use match_contracts::spatial::SIX_YARD_LENGTH_M;
+        for side in [TeamSideV4::Home, TeamSideV4::Away] {
+            let x = |depth: f32| if side == TeamSideV4::Home { depth } else { PITCH_LENGTH_M - depth };
+            let home = Vec2::new(x(SIX_YARD_LENGTH_M), PITCH_WIDTH_M * 0.5);
+            let far = Vec2::new(x(104.5), 0.5);
+            let near = Vec2::new(x(4.0), 30.0);
+            for kind in [GoalCelebration, Kickoff, Corner, DirectFreeKick,
+                         IndirectFreeKick, QuickFreeKick, PenaltyKick, ThrowIn,
+                         Offside, InjuryStoppage, SubstitutionWindow] {
+                for restart_side in [side, side.opposite()] {
+                    assert_eq!(experimental_keeper_restart_target(side, kind, restart_side, far), home);
+                    assert_eq!(experimental_keeper_restart_target(side, kind, restart_side, near), home);
+                }
+            }
+            assert_eq!(experimental_keeper_restart_target(side, GoalKick, side, near), near);
+            assert_eq!(experimental_keeper_restart_target(side, GoalKick, side, far), home);
+            assert_eq!(experimental_keeper_restart_target(side, GoalKick, side.opposite(), far), home);
+        }
+    }
+
+    #[test]
+    fn b12_exp8_keeper_restart_motion_uses_solver_not_teleport() {
+        let input = crate::v4::tests::make_v4_input(
+            12046, crate::v4::input::SimulationMode::FullEvent,
+            crate::v4::input::RulesModeV4::Standard,
+        );
+        let mut state = MatchStateV4::from_input(&input);
+        for side in [TeamSideV4::Home, TeamSideV4::Away] {
+            let idx = state.players.iter().position(|p| p.side == side && p.is_goalkeeper && p.on_pitch).unwrap();
+            let attrs = *player_attrs(&state, &state.players[idx]);
+            let x = |depth: f32| if side == TeamSideV4::Home { depth } else { PITCH_LENGTH_M - depth };
+            let p = &mut state.players[idx];
+            p.pos = Vec2::new(x(12.0), 34.0);
+            p.vel = Vec2::default();
+            let initial = p.pos;
+            let target = experimental_keeper_restart_target(side,
+                crate::v4::rules::DeadBallKind::Corner, side, Vec2::new(x(104.5), 0.5));
+            let (bound, load) = integrate_experimental_actor(p, &attrs, target, Some(2.1), 500).unwrap();
+            assert!(p.pos.distance(target) < initial.distance(target));
+            assert!(p.pos.distance(target) > 0.0);
+            assert!(p.last_moved_m > 0.0 && p.last_moved_m <= bound);
+            assert_eq!(load.high_entries, 0);
+            assert_eq!(load.sprint_entries, 0);
+        }
+    }
+
+    #[test]
+    fn b12_exp9_only_actual_owner_gets_carrier_intent() {
+        let input = crate::v4::tests::make_v4_input(
+            12046, crate::v4::input::SimulationMode::FullEvent,
+            crate::v4::input::RulesModeV4::Standard,
+        );
+        for side in [TeamSideV4::Home, TeamSideV4::Away] {
+            let mut state = MatchStateV4::from_input(&input);
+            let keeper = state.players.iter().position(|p| p.side == side && p.is_goalkeeper && p.on_pitch).unwrap();
+            let outfield = state.players.iter().position(|p| p.side == side && !p.is_goalkeeper && p.on_pitch).unwrap();
+            let x = if side == TeamSideV4::Home { 70.0 } else { 35.0 };
+            let ball = Vec2::new(x, 24.0);
+            state.ball.pos = crate::v4::spatial::Vec3::ground(ball.x, ball.y);
+            state.ball.owner_side = None;
+            state.ball.owner_player_id = None;
+            for control in [BallControlState::InFlight, BallControlState::Loose] {
+                state.ball.control = control;
+                assert_eq!(experimental_controlled_actor(&state), None);
+                let mut a = DeterministicRng::new(77);
+                let mut b = a.clone();
+                let (first, _) = select_movement_targets(&state, &input, side, keeper, 1.0, &mut a, true);
+                let (second, _) = select_movement_targets(&state, &input, side, outfield, 1.0, &mut b, true);
+                assert_eq!(first, second);
+                assert_eq!(a.state(), b.state());
+                assert_ne!(first[keeper], Some(ball));
+                let (legacy, _) = select_movement_targets(&state, &input, side, keeper, 1.0,
+                    &mut DeterministicRng::new(77), false);
+                assert_eq!(legacy[keeper], Some(ball));
+            }
+            state.ball.control = BallControlState::Controlled;
+            state.ball.owner_side = Some(side);
+            state.ball.owner_player_id = Some(state.players[keeper].player_id.clone());
+            assert_eq!(experimental_controlled_actor(&state), Some(keeper));
+            let (targets, _) = select_movement_targets(&state, &input, side, outfield, 1.0,
+                &mut DeterministicRng::new(77), true);
+            assert_eq!(targets[keeper], Some(ball));
+            state.ball.owner_side = Some(side.opposite());
+            assert_eq!(experimental_controlled_actor(&state), None);
+        }
+    }
+
+    #[test]
+    fn b12_exp9_guard_uses_solver_braking_without_shape_speed_cap() {
+        let input = crate::v4::tests::make_v4_input(
+            12046, crate::v4::input::SimulationMode::FullEvent,
+            crate::v4::input::RulesModeV4::Standard,
+        );
+        for side in [TeamSideV4::Home, TeamSideV4::Away] {
+            let mut state = MatchStateV4::from_input(&input);
+            let keeper = state.players.iter().position(|p| p.side == side && p.is_goalkeeper && p.on_pitch).unwrap();
+            let opponent = state.players.iter().position(|p| p.side != side && !p.is_goalkeeper && p.on_pitch).unwrap();
+            let x = |depth: f32| if side == TeamSideV4::Home { depth } else { PITCH_LENGTH_M - depth };
+            state.ball.pos = crate::v4::spatial::Vec3::ground(x(12.0), 34.0);
+            state.ball.control = BallControlState::Controlled;
+            state.ball.owner_side = Some(side.opposite());
+            state.ball.owner_player_id = Some(state.players[opponent].player_id.clone());
+            state.players[keeper].pos = Vec2::new(x(4.0), 37.0);
+            state.players[keeper].vel = Vec2::default();
+            let initial = state.players[keeper].clone();
+            let attrs = *player_attrs(&state, &initial);
+            let mut rng = DeterministicRng::new(81);
+            let mut preview_rng = rng.clone();
+            let (targets, _) = select_movement_targets(&state, &input, side.opposite(), opponent, 1.0, &mut preview_rng, true);
+            let ball = state.ball.pos.xy();
+            let target = experimental_keeper_guard_target(side, ball, targets[keeper].unwrap());
+            let facing = Some((ball.y-initial.pos.y).atan2(ball.x-initial.pos.x));
+            let mut expected = initial.clone();
+            let mut slow = initial.clone();
+            let (expected_bound, _) = integrate_experimental_actor_with_facing(&mut expected, &attrs, target, None, facing, 1000).unwrap();
+            integrate_experimental_actor_with_facing(&mut slow, &attrs, target,
+                Some(initial.pos.distance(target)/2.0), facing, 1000).unwrap();
+            let count = state.players.len();
+            let mut reserved = vec![true; count];
+            reserved[keeper] = false;
+            let mut budgets = vec![0.0; count];
+            let mut loads = vec![None; count];
+            advance_experimental_tactical_motion(&mut state, &input, side.opposite(), opponent, 1000,
+                &mut rng, &reserved, &mut budgets, &mut loads).unwrap();
+            let actual = &state.players[keeper];
+            assert_eq!((actual.pos, actual.vel, actual.facing_rad),
+                       (expected.pos, expected.vel, expected.facing_rad));
+            assert!(actual.pos.distance(target) < slow.pos.distance(target));
+            assert!(actual.last_moved_m <= expected_bound);
+            assert_eq!(budgets[keeper], expected_bound);
+            assert!(loads[keeper].is_some());
+        }
+    }
+
+    #[test]
+    fn b12_workload_consumes_committed_prefix_once() {
+        let cap=MovementCapability{max_speed_mps:8.0,acceleration_mps2:4.0,
+            braking_mps2:5.0,lateral_mps2:3.0,body_turn_radps:3.0};
+        let plan=MotionPlan::new(MotionState{position:Vec2::new(20.0,34.0),
+            velocity:Vec2::default(),facing_rad:0.0},
+            MovementIntent{target:Vec2::new(100.0,34.0),intensity:1.0,
+                desired_facing_rad:None,reaction_ms:0},cap).unwrap();
+        let (_,whole)=sample_experimental_motion(&plan,3000).unwrap();
+        let (_,first)=sample_experimental_motion(&plan,1777).unwrap();
+        let tail=whole.interval(first).unwrap();
+        let mut combined=first;
+        combined.add(tail);
+        assert_eq!(combined.high_entries,whole.high_entries);
+        assert_eq!(combined.sprint_entries,whole.sprint_entries);
+        assert!((combined.high_s-whole.high_s).abs()<1e-5);
+        assert!((combined.high_distance_m-whole.high_distance_m).abs()<1e-5);
+        let mut row=None;
+        record_experimental_motion(&mut row,first).unwrap();
+        assert!(record_experimental_motion(&mut row,tail).is_err());
+        assert_eq!(row,Some(first));
+    }
+}
+
+
+/// Diagnostic-only observations of the actual committed continuous paths.
+/// Neither clock nor event queue is advanced to create an observation.
+#[cfg(test)]
+pub(crate) mod tracking_probe {
+    use super::*;
+    use std::{cell::RefCell,collections::BTreeMap};
+    use serde_json::{json,Value};
+
+    #[derive(Default)]
+    struct Actor {
+        is_goalkeeper:bool,
+        previous:Option<(String,i64,Vec2)>,
+        velocity:Option<(f64,f64,f64)>,
+        samples:u64,gaps:u64,outliers:u64,
+        distance:f64,seconds:f64,
+        speed:Vec<f64>,accel:Vec<f64>,tangent:Vec<f64>,
+    }
+    impl Actor {
+        fn observe(&mut self,period:&str,ms:i64,pos:Vec2)->Result<(),V4Error>{
+            if !pos.x.is_finite()||!pos.y.is_finite(){return Err(candidate_motion_error("nonfinite tracking sample"));}
+            self.samples+=1;
+            let previous=self.previous.replace((period.to_owned(),ms,pos));
+            let Some((old_period,old_ms,old_pos))=previous else{
+                self.gaps+=1;self.velocity=None;return Ok(());
+            };
+            if old_period==period && ms<=old_ms{
+                return Err(candidate_motion_error("duplicate or reversed tracking sample"));
+            }
+            if old_period!=period || ms-old_ms!=200{
+                self.gaps+=1;self.velocity=None;return Ok(());
+            }
+            let vx=(pos.x as f64-old_pos.x as f64)/0.2;
+            let vy=(pos.y as f64-old_pos.y as f64)/0.2;
+            let speed=vx.hypot(vy);
+            if speed>12.0{
+                self.outliers+=1;self.velocity=None;return Ok(());
+            }
+            self.distance+=speed*0.2;
+            self.seconds+=0.2;
+            self.speed.push(speed);
+            if let Some((ox,oy,os))=self.velocity.replace((vx,vy,speed)){
+                self.accel.push((vx-ox).hypot(vy-oy)/0.2);
+                self.tangent.push((speed-os).abs()/0.2);
+            }
+            Ok(())
+        }
+    }
+    #[derive(Default)]
+    struct Recorder {
+        interval:Option<(i64,String)>,
+        actors:BTreeMap<(String,String),Actor>,
+    }
+    thread_local!{static REC:RefCell<Option<Recorder>>=RefCell::new(None);}
+    pub(crate) fn begin(){REC.with(|r|{assert!(r.borrow().is_none());*r.borrow_mut()=Some(Recorder::default());});}
+    pub(crate) fn enabled()->bool{REC.with(|r|r.borrow().is_some())}
+    pub(crate) struct Interval;
+    impl Drop for Interval{
+        fn drop(&mut self){REC.with(|r|if let Some(rec)=r.borrow_mut().as_mut(){rec.interval=None;});}
+    }
+    pub(crate) fn interval(start:i64,period:String)->Interval{
+        REC.with(|r|if let Some(rec)=r.borrow_mut().as_mut(){rec.interval=Some((start,period));});
+        Interval
+    }
+    pub(super) fn record_relative(p:&PlayerRuntimeStateV4,plan:&MotionPlan,offset:i64,span:i64)->Result<(),V4Error>{
+        let start=REC.with(|r|r.borrow().as_ref().and_then(|x|x.interval.as_ref().map(|v|v.0)));
+        if let Some(start)=start{record(p,plan,start+offset,start+offset,start+offset+span)?;}
+        Ok(())
+    }
+    pub(super) fn record(p:&PlayerRuntimeStateV4,plan:&MotionPlan,origin:i64,from:i64,to:i64)->Result<(),V4Error>{
+        REC.with(|r|{
+            let mut cell=r.borrow_mut();
+            let Some(rec)=cell.as_mut() else{return Ok(());};
+            let Some((_,period))=rec.interval.as_ref() else{return Ok(());};
+            if !p.on_pitch||p.sent_off{return Ok(());}
+            let row=rec.actors.entry((format!("{:?}",p.side),p.player_id.clone())).or_default();
+            row.is_goalkeeper=p.is_goalkeeper;
+            // Half-open (from,to]: a boundary sample belongs to the
+            // preceding committed path, before the event is dispatched.
+            let mut at=(from.div_euclid(200)+1)*200;
+            while at<=to{
+                let pos=plan.sample_position_at(at-origin).map_err(candidate_motion_error)?;
+                row.observe(period,at,pos)?;
+                at+=200;
+            }
+            Ok(())
+        })
+    }
+    fn quantiles(mut a:Vec<f64>)->Value{
+        if a.is_empty(){return json!({"n":0});}
+        a.sort_by(f64::total_cmp);
+        let n=a.len();
+        let median=if n%2==0{(a[n/2-1]+a[n/2])*0.5}else{a[n/2]};
+        let q=|p:f64|a[((p*n as f64).ceil() as usize).max(1)-1];
+        json!({"n":n,"p50":median,"p90":q(0.90),"p95":q(0.95),"p99":q(0.99),"max":a[n-1]})
+    }
+    pub(crate) fn finish()->Vec<Value>{
+        REC.with(|r|r.borrow_mut().take().expect("tracking enabled").actors.into_iter()
+            .map(|((side,id),a)|json!({"side":side,"player_id":id,"is_goalkeeper":a.is_goalkeeper,
+                "samples":a.samples,"gaps":a.gaps,"outlier_intervals":a.outliers,
+                "observed_s":a.seconds,"distance_m":a.distance,
+                "speed_mps":quantiles(a.speed),"vector_acceleration_mps2":quantiles(a.accel),
+                "absolute_tangential_acceleration_mps2":quantiles(a.tangent)})).collect())
+    }
+
+    #[test]
+    fn b12_tracking_probe_gap_period_and_jump(){
+        let mut a=Actor::default();
+        for (period,ms,x) in [("1",200,10.0),("1",400,10.4),("1",600,10.8),
+            ("1",1000,11.0),("1",1200,11.4),("2",1400,30.0),("2",1600,60.0)]{
+            a.observe(period,ms,Vec2::new(x,34.0)).unwrap();
+        }
+        assert_eq!((a.speed.len(),a.accel.len(),a.gaps,a.outliers),(3,1,3,1));
+        assert!((a.distance-1.2).abs()<1e-5);
+        assert!(a.observe("2",1600,Vec2::new(60.0,34.0)).is_err());
     }
 }
