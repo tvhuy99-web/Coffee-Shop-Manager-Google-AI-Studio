@@ -3102,8 +3102,16 @@ fn pi_attribute_audit_changes_only_the_named_field_and_role() {
     assert_eq!(count,54);
 }
 
-fn pi_audit_match(input:MatchInputV4)->serde_json::Value {
-    let result=simulate_v4(input).expect("attribute audit match must simulate");
+fn pi_audit_match(input:MatchInputV4,experiment:bool)->serde_json::Value {
+    let result=if experiment {
+        let mut session=crate::v4::session::MatchSessionV4::new_locomotion_experiment(input)
+            .expect("experimental audit session");
+        let result=session.run_to_full_time().expect("experimental audit match");
+        assert_eq!(result.engine_version,crate::v4::checkpoint::LOCOMOTION_EXPERIMENT_ID);
+        result
+    }else{
+        simulate_v4(input).expect("attribute audit match must simulate")
+    };
     let diag=result.diagnostics.as_ref().expect("FastBatch diagnostics");
     diag.validate_basic().expect("valid diagnostics");
     assert!(result.ok);
@@ -3117,6 +3125,16 @@ fn pi_audit_match(input:MatchInputV4)->serde_json::Value {
 #[test]
 #[ignore = "population evidence: run in the dedicated five-group workflow"]
 fn pi_attribute_audit_population() {
+    pi_attribute_audit_population_impl(false);
+}
+
+#[test]
+#[ignore = "B1.2 experimental 54-attribute population"]
+fn b12_experimental_attribute_audit_population(){
+    pi_attribute_audit_population_impl(true);
+}
+
+fn pi_attribute_audit_population_impl(experiment:bool) {
     let group=std::env::var("PI_AUDIT_GROUP").expect("set PI_AUDIT_GROUP");
     assert!(PI_AUDIT_GROUPS.contains(&group.as_str()));
     let path=std::env::var("PI_AUDIT_REPORT_PATH").expect("set PI_AUDIT_REPORT_PATH");
@@ -3126,7 +3144,7 @@ fn pi_attribute_audit_population() {
     let seeds:Vec<i64>=(0..8).map(|i|104729+i*7907).collect();
     let mut baselines=Vec::new();
     for seed in &seeds {
-        baselines.push(pi_audit_match(pi_audit_input(*seed,&group,&names[0],12)));
+        baselines.push(pi_audit_match(pi_audit_input(*seed,&group,&names[0],12),experiment));
     }
     let mut rows=Vec::new();
     let mut career_differences=0usize;
@@ -3134,8 +3152,8 @@ fn pi_attribute_audit_population() {
     for name in &names {
         let career=PI_CAREER_HOOKS.contains(&name.as_str());
         for (i,seed) in seeds.iter().enumerate() {
-            let low=pi_audit_match(pi_audit_input(*seed,&group,name,5));
-            let high=pi_audit_match(pi_audit_input(*seed,&group,name,18));
+            let low=pi_audit_match(pi_audit_input(*seed,&group,name,5),experiment);
+            let high=pi_audit_match(pi_audit_input(*seed,&group,name,18),experiment);
             let mid=&baselines[i];
             let same=|a:&serde_json::Value,b:&serde_json::Value|{
                 ["timelineFingerprint","eventCount","summary","diagnostics"].iter().all(|key|a[*key]==b[*key])
@@ -3166,7 +3184,7 @@ fn pi_attribute_audit_population() {
         }
     }
     let simulations=baselines.len()+2*rows.len();
-    let report=serde_json::json!({
+    let mut report=serde_json::json!({
         "schemaVersion":1,"piVersion":crate::player_intelligence::PI_MODULE_VERSION,
         "policyId":crate::player_intelligence::PI_POLICY_ID,
         "group":group,"levels":[5,12,18],"seeds":seeds,
@@ -3180,6 +3198,10 @@ fn pi_attribute_audit_population() {
             "Whole-match outcomes can reflect indirect changes in opportunities, not direct skill execution.",
             "Rare events, big matches and action-level probabilities require isolated fixtures."]
     });
+    if experiment {
+        report["behaviorId"]=serde_json::json!(crate::v4::checkpoint::LOCOMOTION_EXPERIMENT_ID);
+        report["execution"]=serde_json::json!("experimental_locomotion");
+    }
     std::fs::write(&path,serde_json::to_string(&report).unwrap()).expect("write full evidence");
     println!("PI_ATTRIBUTE_AUDIT group={} attributes={} simulations={} careerDifferences={}",group,names.len(),simulations,career_differences);
     println!("PI_CAREER_CARRYOVER group={} pairsWithAllowedMoraleChanges={}",group,career_carryover_differences);

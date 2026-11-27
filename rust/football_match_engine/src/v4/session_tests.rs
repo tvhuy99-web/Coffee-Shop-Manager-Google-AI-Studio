@@ -1825,6 +1825,34 @@ mod locomotion_full_match_experiment {
     }
 
     #[test]
+    #[ignore = "test-only scoped cost measurement"]
+    fn b12_batch3_cost_profile(){
+        let mut rows=Vec::new();
+        for index in 0..4{
+            for experiment in [false,true]{
+                let (input,cohort)=fixture(index,SimulationMode::FastBatch);
+                let seed=input.seed;
+                super::b12_cost_profile::begin();
+                let mut session=if experiment{MatchSessionV4::new_locomotion_experiment(input)}
+                    else{MatchSessionV4::new(input)}.unwrap();
+                let result=session.run_to_full_time().unwrap();
+                let costs=super::b12_cost_profile::finish();
+                assert!(result.ok && costs["event_total"].0>0);
+                assert_eq!(costs["atomic_clone"].0,costs["event_total"].0);
+                let scopes:serde_json::Map<String,Value>=costs.into_iter().map(|(name,(count,ns))|
+                    (name.to_string(),json!({"count":count,"total_ms":ns as f64/1_000_000.0}))).collect();
+                rows.push(json!({"seed":seed,"cohort":cohort,"experiment":experiment,
+                    "behavior_id":result.engine_version,"fingerprint":result.event_timeline_fingerprint,
+                    "scopes":scopes}));
+            }
+        }
+        let report=json!({"schema":1,"scope":"b12_cost_profile","rows":rows,
+            "limitations":"Inclusive wall-clock scopes; one pair per cohort. Not disjoint costs or hardware profiling."});
+        let path=std::env::var("B12_COST_PROFILE_PATH").expect("set B12_COST_PROFILE_PATH");
+        std::fs::write(path,serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    }
+
+    #[test]
     #[ignore = "experimental full-match cross-mode test, not production golden"]
     fn b12_experiment_cross_mode() {
         let (input,_) = fixture(0,SimulationMode::FastBatch);

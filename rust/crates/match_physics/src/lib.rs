@@ -1231,6 +1231,7 @@ pub fn blocked_ball_velocity(v: Vec3, player: Vec2, contact: Vec3) -> Vec3 {
     }
 }
 
+#[derive(Debug)]
 pub enum LooseBallResolution {
     Player { candidate_idx: usize, time_ms: i64, ball_pos: Vec3 },
     Boundary(EarlyInteractionHit),
