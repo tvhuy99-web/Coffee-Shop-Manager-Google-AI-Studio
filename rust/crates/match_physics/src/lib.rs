@@ -570,8 +570,41 @@ impl PassReachCandidate {
         Some(speed * t + 0.5 * accel * active * active)
     }
 
+    /// Conservative directional broad phase for the experimental solver.
+    /// Relative to inertial coasting (p0 + v0*t), displacement caused by
+    /// acceleration is bounded by 0.5*a_max*(t-reaction)^2. This is
+    /// tighter than a disk around p0 when momentum points away from a
+    /// target. A false result proves that even the requested extra margin
+    /// cannot be reached; true still requires the exact motion query.
+    /// Invalid or legacy inputs are not excluded here.
+    pub fn may_reach_inertial_envelope(&self,target:Vec2,elapsed_ms:i64,margin:f32)->bool{
+        let Some(model)=self.locomotion else{return true;};
+        if elapsed_ms<0 || elapsed_ms>movement::MAX_MOTION_HORIZON_MS
+            || self.reaction_ms<0 || model.capability.validate().is_err()
+            || ![self.pos.x,self.pos.y,self.velocity.x,self.velocity.y,target.x,target.y,
+                self.reach_m,margin].iter().all(|x|x.is_finite())
+            || self.reach_m<0.0 || margin<0.0 {return true;}
+        let t=elapsed_ms as f64/1000.0;
+        let active=elapsed_ms.saturating_sub(self.reaction_ms).max(0) as f64/1000.0;
+        let a=model.capability.acceleration_mps2.max(model.capability.braking_mps2)
+            .max(model.capability.lateral_mps2) as f64;
+        let radius=0.5*a*active*active;
+        let x=self.pos.x as f64+self.velocity.x as f64*t;
+        let y=self.pos.y as f64+self.velocity.y as f64*t;
+        let dx=target.x as f64-x;
+        let dy=target.y as f64-y;
+        // Allow f32 output rounding and cumulative f64 integration error,
+        // including unusual finite inputs. Never reduce final reach.
+        let guard=0.01+8.0*f32::EPSILON as f64*(x.abs()+y.abs()+radius
+            +(target.x as f64).abs()+(target.y as f64).abs()
+            +(self.pos.x as f64).abs()+(self.pos.y as f64).abs()
+            +(self.velocity.x as f64).abs()*t+(self.velocity.y as f64).abs()*t);
+        dx.hypot(dy)<=radius+self.reach_m as f64+margin as f64+guard
+    }
+
     fn contact_bounds_allow(&self, ball:Vec3,elapsed_ms:i64)->bool{
         if ball.z > self.playable_height_m { return false; }
+        if !self.may_reach_inertial_envelope(ball.xy(),elapsed_ms,0.0){return false;}
         if self.locomotion.is_some() && self.pos.distance(ball.xy()) >
             self.motion_speed_bound_mps() * match_contracts::units::ms_to_seconds_f32(elapsed_ms) + self.reach_m + 0.01 {
             return false;
@@ -1578,6 +1611,39 @@ mod b12_contact_locomotion_tests {
         assert!(at.distance(p.pos)<0.0021);
         assert_eq!(at,plan.sample_at(1).unwrap().state.position);
         assert!(at.x<0.0);
+    }
+
+    #[test]
+    fn b12_batch3_inertial_envelope_never_rejects_reachable_margin(){
+        for side in [TeamSideV4::Home,TeamSideV4::Away]{
+            let sign=if side==TeamSideV4::Home{1.0}else{-1.0};
+            let x=if side==TeamSideV4::Home{40.0}else{65.0};
+            for vx in [-10.0,-4.0,0.0,4.0,10.0]{
+                for vy in [-3.0,0.0,3.0]{
+                    let mut p=candidate(x,vx*sign);
+                    p.side=side;p.velocity.y=vy;
+                    for reaction in [0,137,350]{
+                        p.reaction_ms=reaction;
+                        for t in [0,1,25,137,350,351,750,1500,3000]{
+                            for dx in [-12.0,-4.0,-1.0,0.0,1.0,4.0,12.0]{
+                                for dy in [-4.0,0.0,4.0]{
+                                    let target=Vec2::new(x+dx*sign,34.0+dy);
+                                    let residual=p.contact_position_toward(target,t).unwrap().distance(target);
+                                    for margin in [0.0,0.65,1.35]{
+                                        if residual<=p.reach_m+margin{
+                                            assert!(p.may_reach_inertial_envelope(target,t,margin));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut p=candidate(40.0,-6.0);
+        p.reaction_ms=220;
+        assert!(!p.may_reach_inertial_envelope(Vec2::new(42.0,34.0),200,0.65));
     }
 
     #[test]
